@@ -13,6 +13,8 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.locator("html")).toHaveAttribute("data-theme", "midnight");
   await expect(page.getByRole("search")).toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
+  await expect(page.getByLabel("Audio source")).toHaveValue("server_device");
+  await expect(page.getByLabel("Audio source")).not.toContainText("browser");
   await expect(page.getByLabel("USB microphone")).toHaveValue("usb-blue");
   await expect(page.getByLabel("USB microphone").locator("option:checked")).toHaveText("Blue Yeti USB Microphone");
   await expect(page.getByText("NVIDIA RTX 4090 · 6144/24576 MB")).toBeVisible();
@@ -149,7 +151,15 @@ test("shows speaker identity controls instead of legacy ASR voice training", asy
   await expect(speaker.getByLabel("Suggested speaker training prompts")).toContainText("Say one of these");
   await expect(speaker.getByLabel("Suggested speaker training prompts")).toContainText("normal desk setup");
   await expect(speaker.getByLabel("Suggested speaker training prompts")).toContainText("should not label them as me");
+  const recordRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/speaker/enrollments/spenr-123/record")
+  ));
   await speaker.getByRole("button", { name: "Record 8s Sample" }).click();
+  expect(JSON.parse((await recordRequest).postData() ?? "{}")).toMatchObject({
+    device_id: "usb-blue",
+    audio_source: "server_device",
+    fixture_wav: null,
+  });
   await expect(speaker).toContainText("7.2s");
 });
 
@@ -383,85 +393,13 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
   await expect(testPanel.getByLabel("Recorded audio report")).toContainText("report.json");
 });
 
-test("starts browser microphone streaming from the source selector", async ({ page }) => {
-  await page.evaluate(() => {
-    Object.defineProperty(window, "__brainSidecarWsUrls", {
-      configurable: true,
-      writable: true,
-      value: [] as string[],
-    });
-    Object.defineProperty(window, "__brainSidecarTrackStops", {
-      configurable: true,
-      writable: true,
-      value: 0,
-    });
-    class MockWebSocket {
-      static CONNECTING = 0;
-      static OPEN = 1;
-      static CLOSING = 2;
-      static CLOSED = 3;
-
-      binaryType = "blob";
-      readyState = MockWebSocket.CONNECTING;
-      onopen: ((event: Event) => void) | null = null;
-      onerror: ((event: Event) => void) | null = null;
-      onclose: ((event: CloseEvent) => void) | null = null;
-
-      constructor(public url: string) {
-        window.__brainSidecarWsUrls.push(url);
-        setTimeout(() => {
-          this.readyState = MockWebSocket.OPEN;
-          this.onopen?.(new Event("open"));
-        }, 0);
-      }
-
-      send(_data: ArrayBuffer) {}
-
-      close() {
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.(new CloseEvent("close", { wasClean: true }));
-      }
-    }
-    Object.defineProperty(window, "WebSocket", { configurable: true, writable: true, value: MockWebSocket });
-    Object.defineProperty(navigator, "mediaDevices", {
-      configurable: true,
-      writable: true,
-      value: {
-        getUserMedia: async () => ({
-          getTracks: () => [
-            {
-              stop: () => {
-                window.__brainSidecarTrackStops += 1;
-              },
-            },
-          ],
-        }),
-      },
-    });
-    class MockAudioContext {
-      sampleRate = 48000;
-      state = "running";
-      destination = {};
-
-      createMediaStreamSource() {
-        return { connect: () => undefined, disconnect: () => undefined };
-      }
-
-      createScriptProcessor() {
-        return { connect: () => undefined, disconnect: () => undefined, onaudioprocess: null };
-      }
-
-      close() {
-        this.state = "closed";
-        return Promise.resolve();
-      }
-    }
-    Object.defineProperty(window, "AudioContext", { configurable: true, writable: true, value: MockAudioContext });
-  });
-
+test("locks live capture to the local USB microphone", async ({ page }) => {
   await page.getByRole("button", { name: "Tools" }).click();
   const drawer = page.getByLabel("Tools drawer");
-  await drawer.getByLabel("Audio source").selectOption("browser_stream");
+  await expect(drawer.getByLabel("Audio source")).toHaveValue("server_device");
+  await expect(drawer.getByLabel("Audio source").locator("option")).toHaveText(["Server USB microphone"]);
+  await expect(drawer.getByLabel("Browser microphone status")).toHaveCount(0);
+
   const startRequest = page.waitForRequest((request) => (
     request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
   ));
@@ -469,17 +407,10 @@ test("starts browser microphone streaming from the source selector", async ({ pa
   const request = await startRequest;
 
   expect(JSON.parse(request.postData() ?? "{}")).toMatchObject({
-    device_id: null,
+    device_id: "usb-blue",
     fixture_wav: null,
-    audio_source: "browser_stream",
+    audio_source: "server_device",
   });
-  await expect(drawer.getByLabel("Browser microphone status")).toContainText("streaming");
-  await expect.poll(() => page.evaluate(() => window.__brainSidecarWsUrls)).toContain(
-    "ws://127.0.0.1:8765/api/sessions/session-123/audio-stream",
-  );
-
-  await page.getByRole("button", { name: "Stop" }).click();
-  await expect.poll(() => page.evaluate(() => window.__brainSidecarTrackStops)).toBe(1);
 });
 
 test("uses mocked library and recall APIs", async ({ page }) => {

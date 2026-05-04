@@ -37,7 +37,7 @@ def list_audio_devices() -> list[DeviceInfo]:
         if not match:
             continue
         card, card_name, device, device_name = match.groups()
-        ffmpeg_input = f"hw:{card},{device}"
+        ffmpeg_input = f"plughw:{card},{device}"
         device_id = f"alsa:{ffmpeg_input}"
         devices[device_id] = DeviceInfo(
             id=device_id,
@@ -46,25 +46,12 @@ def list_audio_devices() -> list[DeviceInfo]:
             ffmpeg_input=ffmpeg_input,
         )
 
-    for line in _run(["pactl", "list", "short", "sources"]).splitlines():
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        source_name = parts[1]
-        if ".monitor" in source_name:
-            continue
-        device_id = f"pulse:{source_name}"
-        devices.setdefault(
-            device_id,
-            DeviceInfo(
-                id=device_id,
-                label=f"Pulse/PipeWire {source_name}",
-                driver="pulse",
-                ffmpeg_input=source_name,
-            ),
-        )
+    return sorted(devices.values(), key=_device_sort_key)
 
-    return sorted(devices.values(), key=lambda item: item.label.lower())
+
+def _device_sort_key(device: DeviceInfo) -> tuple[int, str]:
+    label = device.label.lower()
+    return (0 if "usb" in label else 1, label)
 
 
 def find_device(device_id: str | None) -> DeviceInfo | None:

@@ -6,6 +6,8 @@ import re
 import threading
 from dataclasses import dataclass
 
+import numpy as np
+
 from brain_sidecar.config import Settings
 from brain_sidecar.core.gpu import cuda_out_of_memory, prepare_asr_gpu
 
@@ -15,6 +17,9 @@ class TranscribedSpan:
     start_s: float
     end_s: float
     text: str
+    avg_logprob: float | None = None
+    compression_ratio: float | None = None
+    no_speech_prob: float | None = None
 
 
 @dataclass(frozen=True)
@@ -97,12 +102,13 @@ class FasterWhisperTranscriber:
         start_offset_s: float,
         initial_prompt: str | None = None,
     ) -> TranscriptionResult:
-        import numpy as np
-
         if self._model is None or self.model_size is None:
             raise RuntimeError("Transcriber model is not loaded.")
 
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        if audio_rms(audio) < self.settings.asr_min_audio_rms:
+            return TranscriptionResult(model=self.model_size, language=None, spans=[])
+
         segments, info = self._model.transcribe(
             audio,
             language="en",
@@ -111,6 +117,9 @@ class FasterWhisperTranscriber:
             condition_on_previous_text=self.settings.asr_condition_on_previous_text,
             beam_size=self.settings.asr_beam_size,
             temperature=0.0,
+            no_speech_threshold=self.settings.asr_no_speech_threshold,
+            log_prob_threshold=self.settings.asr_log_prob_threshold,
+            compression_ratio_threshold=self.settings.asr_compression_ratio_threshold,
             initial_prompt=initial_prompt if initial_prompt is not None else self.settings.asr_initial_prompt,
         )
         spans = [
@@ -118,9 +127,18 @@ class FasterWhisperTranscriber:
                 start_s=start_offset_s + float(segment.start),
                 end_s=start_offset_s + float(segment.end),
                 text=clean_transcript_text(segment.text),
+                avg_logprob=_segment_float(segment, "avg_logprob"),
+                compression_ratio=_segment_float(segment, "compression_ratio"),
+                no_speech_prob=_segment_float(segment, "no_speech_prob"),
             )
             for segment in segments
-            if is_signal_text(segment.text, self.settings.min_segment_chars)
+            if is_signal_segment(
+                segment,
+                min_chars=self.settings.min_segment_chars,
+                no_speech_threshold=self.settings.asr_no_speech_threshold,
+                log_prob_threshold=self.settings.asr_log_prob_threshold,
+                compression_ratio_threshold=self.settings.asr_compression_ratio_threshold,
+            )
         ]
         return TranscriptionResult(
             model=self.model_size,
@@ -138,6 +156,15 @@ def clean_transcript_text(text: str) -> str:
     return " ".join(text.split()).strip()
 
 
+def audio_rms(audio) -> float:
+    if len(audio) == 0:
+        return 0.0
+    magnitudes = np.abs(np.asarray(audio, dtype=np.float32))
+    if magnitudes.size >= 20:
+        magnitudes = np.clip(magnitudes, 0.0, float(np.quantile(magnitudes, 0.95)))
+    return float(np.sqrt(np.mean(magnitudes * magnitudes)))
+
+
 def is_signal_text(text: str, min_chars: int) -> bool:
     cleaned = clean_transcript_text(text)
     if len(cleaned) < min_chars:
@@ -148,3 +175,35 @@ def is_signal_text(text: str, min_chars: int) -> bool:
     if re.fullmatch(r"[\W_]+", cleaned):
         return False
     return True
+
+
+def is_signal_segment(
+    segment,
+    *,
+    min_chars: int,
+    no_speech_threshold: float,
+    log_prob_threshold: float,
+    compression_ratio_threshold: float,
+) -> bool:
+    if not is_signal_text(getattr(segment, "text", ""), min_chars):
+        return False
+    no_speech_prob = _segment_float(segment, "no_speech_prob")
+    if no_speech_prob is not None and no_speech_prob > no_speech_threshold:
+        return False
+    avg_logprob = _segment_float(segment, "avg_logprob")
+    if avg_logprob is not None and avg_logprob < log_prob_threshold:
+        return False
+    compression_ratio = _segment_float(segment, "compression_ratio")
+    if compression_ratio is not None and compression_ratio > compression_ratio_threshold:
+        return False
+    return True
+
+
+def _segment_float(segment, name: str) -> float | None:
+    value = getattr(segment, name, None)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

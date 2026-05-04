@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from brain_sidecar.config import Settings
-from brain_sidecar.core.audio import AudioCapture, BrowserAudioCapture, FFmpegAudioCapture, FixtureWavAudioCapture
+from brain_sidecar.core.audio import AudioCapture, FFmpegAudioCapture, FixtureWavAudioCapture
 from brain_sidecar.core.dedupe import TranscriptDeduplicator
 from brain_sidecar.core.devices import find_device
 from brain_sidecar.core.event_bus import EventBus
@@ -90,7 +90,6 @@ class SessionManager:
         )
         self.web_context = WebContextSynthesizer()
         self._active: dict[str, ActiveSession] = {}
-        self._speaker_captures: dict[str, BrowserAudioCapture] = {}
         self._lock = asyncio.Lock()
 
     async def create_session(self, title: str | None = None) -> dict:
@@ -268,28 +267,6 @@ class SessionManager:
             "note": note,
         }
 
-    def browser_audio_capture(self, session_id: str) -> BrowserAudioCapture:
-        active = self._active.get(session_id)
-        if active is None:
-            raise KeyError(f"Session is not active: {session_id}")
-        if not isinstance(active.capture, BrowserAudioCapture):
-            raise RuntimeError("Session is not using browser microphone audio.")
-        return active.capture
-
-    async def wait_for_browser_speaker_capture(
-        self,
-        enrollment_id: str,
-        *,
-        timeout_s: float = 3.0,
-    ) -> BrowserAudioCapture:
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            capture = self._speaker_captures.get(enrollment_id)
-            if capture is not None:
-                return capture
-            await asyncio.sleep(0.05)
-        raise RuntimeError("Speaker enrollment is not waiting for browser microphone audio.")
-
     async def speaker_identity_status(self) -> dict:
         return self.speaker_identity.status()
 
@@ -309,25 +286,18 @@ class SessionManager:
         fixture_wav: Path | None = None,
         audio_source: str = "server_device",
     ) -> dict:
-        if audio_source == "browser_stream":
-            capture: AudioCapture = BrowserAudioCapture()
-            self._speaker_captures[enrollment_id] = capture
-        else:
-            capture = self._build_capture(
-                device_id=device_id,
-                fixture_wav=fixture_wav,
-                audio_source="fixture" if fixture_wav else "server_device",
-            )
+        capture = self._build_capture(
+            device_id=device_id,
+            fixture_wav=fixture_wav,
+            audio_source=audio_source,
+        )
         try:
-            try:
-                pcm = await asyncio.wait_for(
-                    self._record_enrollment_pcm(capture),
-                    timeout=self.settings.speaker_enrollment_sample_seconds + 12.0,
-                )
-            except asyncio.TimeoutError as exc:
-                raise RuntimeError("Timed out waiting for speaker enrollment audio.") from exc
-        finally:
-            self._speaker_captures.pop(enrollment_id, None)
+            pcm = await asyncio.wait_for(
+                self._record_enrollment_pcm(capture),
+                timeout=self.settings.speaker_enrollment_sample_seconds + 12.0,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("Timed out waiting for speaker enrollment audio.") from exc
         payload = self.speaker_identity.add_enrollment_sample(
             enrollment_id,
             pcm,
@@ -372,8 +342,12 @@ class SessionManager:
 
     def _build_capture(self, *, device_id: str | None, fixture_wav: Path | None, audio_source: str) -> AudioCapture:
         if audio_source == "browser_stream":
-            return BrowserAudioCapture()
+            raise RuntimeError("Browser microphone capture has been removed. Use the server_device USB microphone.")
+        if audio_source not in {"server_device", "fixture"}:
+            raise RuntimeError(f"Unsupported audio source: {audio_source}")
         if fixture_wav is not None or audio_source == "fixture":
+            if not self.settings.test_mode_enabled:
+                raise RuntimeError("Fixture audio is only available when recorded audio test mode is enabled.")
             if fixture_wav is None:
                 raise RuntimeError("Fixture audio source requires fixture_wav.")
             return FixtureWavAudioCapture(

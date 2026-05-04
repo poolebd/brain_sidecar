@@ -81,6 +81,37 @@ def test_enqueue_window_drops_stale_audio_window(event_loop, tmp_path: Path) -> 
     assert queue.get_nowait().pcm == b"new"
 
 
+def test_balanced_default_queue_holds_normal_live_burst(event_loop, tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        host="127.0.0.1",
+        port=8765,
+        asr_primary_model="tiny.en",
+        asr_fallback_model="tiny.en",
+        asr_compute_type="float16",
+        ollama_host="http://127.0.0.1:11434",
+        ollama_chat_model="qwen3.5:9b",
+        ollama_embed_model="embeddinggemma",
+    )
+    manager = SessionManager(settings)
+    queue: asyncio.Queue[AudioWindow] = asyncio.Queue(maxsize=settings.transcription_queue_size)
+    active = ActiveSession(
+        id="ses_test",
+        capture=DummyCapture(),
+        window_queue=queue,
+        postprocess_queue=asyncio.Queue(maxsize=1),
+        tasks=[],
+        deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
+    )
+    manager._active[active.id] = active
+
+    for index in range(settings.transcription_queue_size):
+        event_loop.run_until_complete(manager._enqueue_window(active.id, queue, AudioWindow(bytes([index]), float(index))))
+
+    assert active.dropped_windows == 0
+    assert queue.qsize() == settings.transcription_queue_size
+
+
 def segment(segment_id: str) -> TranscriptSegment:
     return TranscriptSegment(
         id=segment_id,

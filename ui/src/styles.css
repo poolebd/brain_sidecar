@@ -900,6 +900,10 @@ time {
   border-left-color: var(--danger);
 }
 
+.system-log-entry.warning {
+  border-left-color: var(--accent-contrast);
+}
+
 .system-log-entry div {
   align-items: center;
   display: flex;

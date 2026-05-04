@@ -6,10 +6,10 @@ import re
 import time
 from pathlib import Path
 from uuid import uuid4
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -22,6 +22,10 @@ from brain_sidecar.core.test_mode import TestModeService
 
 MAX_INPUT_FILE_BYTES = 1024 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+BROWSER_STREAM_REMOVED = (
+    "Browser microphone capture has been removed. Use server_device for the USB microphone attached to this computer."
+)
+FIXTURE_TEST_MODE_REQUIRED = "Fixture audio is only available when recorded audio test mode is enabled."
 
 
 class CreateSessionRequest(BaseModel):
@@ -31,7 +35,7 @@ class CreateSessionRequest(BaseModel):
 class StartSessionRequest(BaseModel):
     device_id: str | None = None
     fixture_wav: str | None = None
-    audio_source: Literal["server_device", "browser_stream", "fixture"] | None = None
+    audio_source: str | None = None
     save_transcript: bool = True
 
 
@@ -62,7 +66,7 @@ class WebContextSearchRequest(BaseModel):
 class SpeakerSampleRecordRequest(BaseModel):
     device_id: str | None = None
     fixture_wav: str | None = None
-    audio_source: Literal["server_device", "browser_stream", "fixture"] | None = None
+    audio_source: str | None = None
 
 
 class SpeakerFeedbackRequest(BaseModel):
@@ -87,6 +91,19 @@ def _safe_upload_name(filename: str | None) -> str:
     original = Path(filename or "input-file").name
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", original).strip("._")
     return (safe or "input-file")[:160]
+
+
+def _audio_source_for_request(audio_source: str | None, fixture_wav: Path | None, *, test_mode_enabled: bool) -> str:
+    selected = audio_source or ("fixture" if fixture_wav else "server_device")
+    if selected == "browser_stream":
+        raise HTTPException(status_code=400, detail=BROWSER_STREAM_REMOVED)
+    if selected == "fixture" or fixture_wav is not None:
+        if not test_mode_enabled:
+            raise HTTPException(status_code=403, detail=FIXTURE_TEST_MODE_REQUIRED)
+        return "fixture"
+    if selected != "server_device":
+        raise HTTPException(status_code=400, detail=f"Unsupported audio_source: {selected}")
+    return "server_device"
 
 
 def create_app() -> FastAPI:
@@ -138,6 +155,10 @@ def create_app() -> FastAPI:
         status["asr_fallback_model"] = settings.asr_fallback_model
         status["asr_beam_size"] = settings.asr_beam_size
         status["asr_vad_min_silence_ms"] = settings.asr_vad_min_silence_ms
+        status["asr_no_speech_threshold"] = settings.asr_no_speech_threshold
+        status["asr_log_prob_threshold"] = settings.asr_log_prob_threshold
+        status["asr_compression_ratio_threshold"] = settings.asr_compression_ratio_threshold
+        status["asr_min_audio_rms"] = settings.asr_min_audio_rms
         status["asr_min_free_vram_mb"] = settings.asr_min_free_vram_mb
         status["asr_unload_ollama_on_start"] = settings.asr_unload_ollama_on_start
         status["asr_gpu_free_timeout_seconds"] = settings.asr_gpu_free_timeout_seconds
@@ -221,7 +242,11 @@ def create_app() -> FastAPI:
         fixture_wav = Path(request.fixture_wav).expanduser().resolve() if request.fixture_wav else None
         if fixture_wav and not fixture_wav.exists():
             raise HTTPException(status_code=400, detail=f"Fixture WAV does not exist: {fixture_wav}")
-        audio_source = request.audio_source or ("fixture" if fixture_wav else "server_device")
+        audio_source = _audio_source_for_request(
+            request.audio_source,
+            fixture_wav,
+            test_mode_enabled=settings.test_mode_enabled,
+        )
         try:
             await manager.start_session(
                 session_id,
@@ -243,21 +268,7 @@ def create_app() -> FastAPI:
     @app.websocket("/api/sessions/{session_id}/audio-stream")
     async def browser_audio_stream(session_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
-        try:
-            capture = manager.browser_audio_capture(session_id)
-        except (KeyError, RuntimeError) as exc:
-            await websocket.close(code=1008, reason=str(exc))
-            return
-
-        try:
-            while True:
-                message = await websocket.receive()
-                if "bytes" in message and message["bytes"]:
-                    await capture.feed(message["bytes"])
-                elif message.get("type") == "websocket.disconnect":
-                    break
-        except WebSocketDisconnect:
-            return
+        await websocket.close(code=1008, reason=BROWSER_STREAM_REMOVED)
 
     @app.post("/api/sessions/{session_id}/stop")
     async def stop_session(session_id: str) -> dict:
@@ -318,7 +329,11 @@ def create_app() -> FastAPI:
         fixture_wav = Path(request.fixture_wav).expanduser().resolve() if request.fixture_wav else None
         if fixture_wav and not fixture_wav.exists():
             raise HTTPException(status_code=400, detail=f"Fixture WAV does not exist: {fixture_wav}")
-        audio_source = request.audio_source or ("fixture" if fixture_wav else "server_device")
+        audio_source = _audio_source_for_request(
+            request.audio_source,
+            fixture_wav,
+            test_mode_enabled=settings.test_mode_enabled,
+        )
         try:
             return await manager.record_speaker_enrollment_sample(
                 enrollment_id,
@@ -334,21 +349,7 @@ def create_app() -> FastAPI:
     @app.websocket("/api/speaker/enrollments/{enrollment_id}/audio-stream")
     async def browser_speaker_audio_stream(enrollment_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
-        try:
-            capture = await manager.wait_for_browser_speaker_capture(enrollment_id)
-        except RuntimeError as exc:
-            await websocket.close(code=1008, reason=str(exc))
-            return
-
-        try:
-            while True:
-                message = await websocket.receive()
-                if "bytes" in message and message["bytes"]:
-                    await capture.feed(message["bytes"])
-                elif message.get("type") == "websocket.disconnect":
-                    break
-        except WebSocketDisconnect:
-            return
+        await websocket.close(code=1008, reason=BROWSER_STREAM_REMOVED)
 
     @app.post("/api/speaker/enrollments/{enrollment_id}/finalize")
     async def finalize_speaker_enrollment(enrollment_id: str) -> dict:

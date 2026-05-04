@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+_DEFAULT_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
@@ -14,6 +16,24 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_dotenv(path: Path | None = None) -> None:
+    path = path or _DEFAULT_ENV_PATH
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        if not name or name.startswith("#"):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        os.environ.setdefault(name, value)
 
 
 @dataclass(frozen=True)
@@ -28,19 +48,23 @@ class Settings:
     ollama_chat_model: str
     ollama_embed_model: str
     audio_sample_rate: int = 16_000
-    audio_chunk_ms: int = 500
-    transcription_window_seconds: float = 5.0
-    transcription_overlap_seconds: float = 0.75
-    transcription_queue_size: int = 2
+    audio_chunk_ms: int = 250
+    transcription_window_seconds: float = 3.4
+    transcription_overlap_seconds: float = 0.8
+    transcription_queue_size: int = 8
     postprocess_queue_size: int = 8
     notes_every_segments: int = 3
     min_segment_chars: int = 8
     dedupe_recent_segments: int = 18
     dedupe_similarity_threshold: float = 0.88
     asr_beam_size: int = 5
-    asr_vad_min_silence_ms: int = 500
+    asr_vad_min_silence_ms: int = 300
     asr_condition_on_previous_text: bool = False
     asr_initial_prompt: str | None = None
+    asr_no_speech_threshold: float = 0.6
+    asr_log_prob_threshold: float = -1.0
+    asr_compression_ratio_threshold: float = 2.4
+    asr_min_audio_rms: float = 0.006
     asr_min_free_vram_mb: int = 3500
     asr_unload_ollama_on_start: bool = True
     asr_gpu_free_timeout_seconds: float = 10.0
@@ -59,13 +83,14 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    _load_dotenv()
     cwd_runtime = Path.cwd() / "runtime"
     transcription_window_seconds = max(
         1.0,
-        float(_env("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "5.0")),
+        float(_env("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")),
     )
     transcription_overlap_seconds = min(
-        max(0.0, float(_env("BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS", "0.75"))),
+        max(0.0, float(_env("BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS", "0.8"))),
         max(0.0, transcription_window_seconds - 0.1),
     )
     return Settings(
@@ -78,19 +103,23 @@ def load_settings() -> Settings:
         ollama_host=_env("BRAIN_SIDECAR_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/"),
         ollama_chat_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", "phi3:mini"),
         ollama_embed_model=_env("BRAIN_SIDECAR_OLLAMA_EMBED_MODEL", "embeddinggemma"),
-        audio_chunk_ms=max(50, int(_env("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "500"))),
+        audio_chunk_ms=max(50, int(_env("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250"))),
         transcription_window_seconds=transcription_window_seconds,
         transcription_overlap_seconds=transcription_overlap_seconds,
-        transcription_queue_size=max(1, int(_env("BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE", "2"))),
+        transcription_queue_size=max(1, int(_env("BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE", "8"))),
         postprocess_queue_size=max(1, int(_env("BRAIN_SIDECAR_POSTPROCESS_QUEUE_SIZE", "8"))),
         notes_every_segments=max(1, int(_env("BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS", "3"))),
         min_segment_chars=max(1, int(_env("BRAIN_SIDECAR_MIN_SEGMENT_CHARS", "8"))),
         dedupe_recent_segments=max(1, int(_env("BRAIN_SIDECAR_DEDUPE_RECENT_SEGMENTS", "18"))),
         dedupe_similarity_threshold=float(_env("BRAIN_SIDECAR_DEDUPE_SIMILARITY_THRESHOLD", "0.88")),
         asr_beam_size=int(_env("BRAIN_SIDECAR_ASR_BEAM_SIZE", "5")),
-        asr_vad_min_silence_ms=int(_env("BRAIN_SIDECAR_ASR_VAD_MIN_SILENCE_MS", "500")),
+        asr_vad_min_silence_ms=int(_env("BRAIN_SIDECAR_ASR_VAD_MIN_SILENCE_MS", "300")),
         asr_condition_on_previous_text=_env_bool("BRAIN_SIDECAR_ASR_CONDITION_ON_PREVIOUS_TEXT", False),
         asr_initial_prompt=os.environ.get("BRAIN_SIDECAR_ASR_INITIAL_PROMPT"),
+        asr_no_speech_threshold=float(_env("BRAIN_SIDECAR_ASR_NO_SPEECH_THRESHOLD", "0.6")),
+        asr_log_prob_threshold=float(_env("BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD", "-1.0")),
+        asr_compression_ratio_threshold=float(_env("BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD", "2.4")),
+        asr_min_audio_rms=max(0.0, float(_env("BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS", "0.006"))),
         asr_min_free_vram_mb=max(0, int(_env("BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB", "3500"))),
         asr_unload_ollama_on_start=_env_bool("BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START", True),
         asr_gpu_free_timeout_seconds=max(

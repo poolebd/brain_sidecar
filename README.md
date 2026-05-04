@@ -79,15 +79,19 @@ the UI shows the dropped-window count so the sidecar stays real-time.
 Useful knobs:
 
 - `BRAIN_SIDECAR_ASR_BEAM_SIZE`: higher can improve transcript quality, lower is faster.
-- `BRAIN_SIDECAR_ASR_VAD_MIN_SILENCE_MS`: lower splits speech faster, higher creates steadier segments.
-- `BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS`: audio window before ASR emits a transcript, default `5.0`; use `3.4` for faster live feedback with phrase-level context.
-- `BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS`: overlap between ASR windows, default `0.75`; use `0.8` with the faster window.
-- `BRAIN_SIDECAR_AUDIO_CHUNK_MS`: capture chunk size, default `500`.
+- `BRAIN_SIDECAR_ASR_VAD_MIN_SILENCE_MS`: lower splits speech faster, higher creates steadier segments, default `300`.
+- `BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS`: audio window before ASR emits a transcript, default `3.4`.
+- `BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS`: overlap between ASR windows, default `0.8`.
+- `BRAIN_SIDECAR_AUDIO_CHUNK_MS`: capture chunk size, default `250`.
+- `BRAIN_SIDECAR_ASR_NO_SPEECH_THRESHOLD`: reject segments Faster-Whisper marks as likely silence, default `0.6`.
+- `BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD`: reject low-confidence ASR segments, default `-1.0`.
+- `BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD`: reject repetitive/compressed ASR spans, default `2.4`.
+- `BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS`: skip near-silent audio windows before ASR, default `0.006`.
 - `BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB`: free VRAM target before loading Faster-Whisper, default `3500`.
 - `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before ASR load when VRAM is tight, default `true`.
 - `BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS`: wait budget after unloading Ollama, default `10`.
 - `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`: Ollama `keep_alive` sent by app chat/embed calls, default `10m` so the smaller chat model can stay warm beside ASR.
-- `BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE`: number of pending audio windows before stale windows are dropped.
+- `BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE`: number of pending audio windows before stale windows are dropped, default `8`.
 - `BRAIN_SIDECAR_DEDUPE_SIMILARITY_THRESHOLD`: suppresses repeated text from overlapping windows.
 - `BRAIN_SIDECAR_ASR_INITIAL_PROMPT`: optional vocabulary/context hint for names, projects, or jargon.
 - `BRAIN_SIDECAR_VOICE_PROFILE_REQUIRED_PHRASES`: accepted enrollment phrases before profile hints activate.
@@ -154,7 +158,8 @@ fixture format:
 ```
 
 The converted clips land in `runtime/test-audio/`, which is intentionally
-ignored by Git. Use one as a fixture source by passing `fixture_wav` to
+ignored by Git. Fixture playback is test-only; set
+`BRAIN_SIDECAR_TEST_MODE_ENABLED=1` before passing `fixture_wav` to
 `POST /api/sessions/{id}/start`.
 
 To prove the ASR runtime can bind to CUDA without downloading the larger v1

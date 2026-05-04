@@ -58,6 +58,7 @@ export default defineConfig({
         BRAIN_SIDECAR_ASR_FALLBACK_MODEL: process.env.BRAIN_SIDECAR_ASR_FALLBACK_MODEL ?? "small.en",
         BRAIN_SIDECAR_ASR_BEAM_SIZE: process.env.BRAIN_SIDECAR_ASR_BEAM_SIZE ?? "5",
         BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS: process.env.BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS ?? "3",
+        BRAIN_SIDECAR_TEST_MODE_ENABLED: process.env.BRAIN_SIDECAR_TEST_MODE_ENABLED ?? "1",
       },
     },
     {

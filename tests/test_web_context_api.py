@@ -62,7 +62,7 @@ def test_manual_web_context_search_returns_ephemeral_note(monkeypatch, tmp_path:
 def test_manual_web_context_search_disabled_is_nonfatal(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("BRAIN_SIDECAR_WEB_CONTEXT_ENABLED", "false")
-    monkeypatch.delenv("BRAIN_SIDECAR_BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.setenv("BRAIN_SIDECAR_BRAVE_SEARCH_API_KEY", "")
     client = TestClient(create_app())
 
     response = client.post("/api/web-context/search", json={"query": "latest React release"})

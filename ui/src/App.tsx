@@ -12,7 +12,7 @@ import {
 } from "./presentation";
 
 type ThemeName = "neutral" | "midnight" | "canopy" | "ember";
-type AudioSource = "server_device" | "browser_stream" | "fixture";
+type AudioSource = "server_device" | "fixture";
 type SessionRetention = "temporary" | "saved";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase();
@@ -276,7 +276,7 @@ type SystemLog = {
   id: string;
   seq: number;
   at: number;
-  level: "status" | "error";
+  level: "status" | "warning" | "error";
   title: string;
   message: string;
   metadata?: Record<string, unknown>;
@@ -316,7 +316,6 @@ export function App() {
     return storedRetention === "saved" ? "saved" : "temporary";
   });
   const [activeSessionRetention, setActiveSessionRetention] = useState<SessionRetention | null>(null);
-  const [remoteMicStatus, setRemoteMicStatus] = useState("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState("idle");
   const [gpu, setGpu] = useState<GpuHealth>({});
@@ -360,11 +359,6 @@ export function App() {
   const [unseenItems, setUnseenItems] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const speakerEventSourceRef = useRef<EventSource | null>(null);
-  const browserStreamRef = useRef<MediaStream | null>(null);
-  const browserSocketRef = useRef<WebSocket | null>(null);
-  const browserAudioContextRef = useRef<AudioContext | null>(null);
-  const browserAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const browserAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const testStartedAtRef = useRef<string | null>(null);
   const testSessionIdRef = useRef<string | null>(null);
   const eventSeqRef = useRef(0);
@@ -396,7 +390,6 @@ export function App() {
     return () => {
       eventSourceRef.current?.close();
       speakerEventSourceRef.current?.close();
-      stopBrowserMicStream();
     };
   }, []);
 
@@ -507,9 +500,7 @@ export function App() {
   const activeRetention = activeSessionRetention ?? sessionRetention;
   const captureModeLabel = audioSource === "fixture"
     ? "Recording playback"
-    : audioSource === "browser_stream"
-      ? "Browser mic"
-      : "USB mic";
+    : "USB mic";
   const sessionRetentionStatus = sessionRetention === "saved" ? "Saved transcript" : "Not saved";
   const sessionRetentionDetail = sessionRetention === "saved"
     ? "Transcript text and notes will be available for future recall. Raw audio is not saved."
@@ -657,6 +648,14 @@ export function App() {
           level: "status",
           title: "Loading ASR",
           message: `Faster-Whisper is loading on CUDA. Target free VRAM: ${payload.asr_min_free_vram_mb ?? "unknown"} MB.`,
+          metadata: payload,
+        });
+      }
+      if (nextStatus === "catching_up") {
+        appendSystemLog({
+          level: "warning",
+          title: "Capture falling behind",
+          message: `${payload.dropped_windows ?? "Some"} audio windows dropped while ASR caught up.`,
           metadata: payload,
         });
       }
@@ -836,9 +835,6 @@ export function App() {
     const selectedSource: AudioSource = options.fixtureWav ? "fixture" : audioSource;
     const fixtureWav = options.fixtureWav
       ?? (selectedSource === "fixture" && fixturePath.trim() ? fixturePath.trim() : null);
-    if (selectedSource === "browser_stream") {
-      return startBrowserMic(id, options.testRun);
-    }
     const retentionForStart = sessionRetention;
     setActiveSessionRetention(retentionForStart);
     setStatus("starting");
@@ -884,207 +880,10 @@ export function App() {
     return true;
   }
 
-  async function startBrowserMic(id: string, testRun?: TestModePrepared): Promise<boolean> {
-    const retentionForStart = sessionRetention;
-    if (!window.isSecureContext) {
-      setStatus("idle");
-      pushError("Browser microphone capture requires HTTPS or localhost.");
-      return false;
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setStatus("idle");
-      pushError("This browser does not expose microphone capture.");
-      return false;
-    }
-
-    setActiveSessionRetention(retentionForStart);
-    setStatus("starting");
-    setRemoteMicStatus("requesting");
-    appendSystemLog({
-      level: "status",
-      title: "Starting remote browser microphone",
-      message: `This browser will stream microphone audio to the local ASR pipeline. ${
-        retentionForStart === "saved" ? "Transcript text will be saved." : "Transcript text will stay live only."
-      }`,
-    });
-
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
-    } catch (error) {
-      setRemoteMicStatus("blocked");
-      setStatus("idle");
-      setActiveSessionRetention(null);
-      pushError(error instanceof Error ? error.message : "Microphone permission was not granted.");
-      return false;
-    }
-
-    const response = await fetch(`${API_BASE}/api/sessions/${id}/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        device_id: null,
-        fixture_wav: null,
-        audio_source: "browser_stream",
-        save_transcript: retentionForStart === "saved",
-      }),
-    });
-    if (!response.ok) {
-      const payload = await response.json();
-      stopMediaStream(stream);
-      setStatus("error");
-      setRemoteMicStatus("error");
-      setActiveSessionRetention(null);
-      if (testRun) {
-        setTestBusy("");
-      }
-      pushError(payload.detail ?? "Start failed");
-      return false;
-    }
-
-    try {
-      await openBrowserAudioStream(id, stream);
-    } catch (error) {
-      await fetch(`${API_BASE}/api/sessions/${id}/stop`, { method: "POST" });
-      stopMediaStream(stream);
-      setStatus("error");
-      setRemoteMicStatus("error");
-      setActiveSessionRetention(null);
-      if (testRun) {
-        setTestBusy("");
-      }
-      pushError(error instanceof Error ? error.message : "Browser microphone stream failed.");
-      return false;
-    }
-
-    if (testRun) {
-      testStartedAtRef.current = new Date().toISOString();
-      testSessionIdRef.current = id;
-      setTestBusy("playing");
-    }
-    setStatus((current) => current === "error" ? current : "listening");
-    setRemoteMicStatus("streaming");
-    return true;
-  }
-
-  async function openBrowserAudioStream(id: string, stream: MediaStream): Promise<void> {
-    await stopBrowserMicStream();
-    const socket = new WebSocket(webSocketUrl(`/api/sessions/${id}/audio-stream`));
-    socket.binaryType = "arraybuffer";
-    browserSocketRef.current = socket;
-
-    await new Promise<void>((resolve, reject) => {
-      socket.onopen = () => resolve();
-      socket.onerror = () => reject(new Error("Could not open browser audio stream."));
-    });
-
-    const AudioContextClass = browserAudioContextClass();
-    if (!AudioContextClass) {
-      throw new Error("This browser does not support WebAudio microphone streaming.");
-    }
-    const context = new AudioContextClass();
-    const source = context.createMediaStreamSource(stream);
-    const processor = context.createScriptProcessor(4096, 1, 1);
-    processor.onaudioprocess = (event) => {
-      event.outputBuffer.getChannelData(0).fill(0);
-      if (socket.readyState !== WebSocket.OPEN) {
-        return;
-      }
-      const input = event.inputBuffer.getChannelData(0);
-      const samples = resampleTo16k(input, context.sampleRate);
-      if (samples.length > 0) {
-        socket.send(floatToPcm16(samples));
-      }
-    };
-    source.connect(processor);
-    processor.connect(context.destination);
-    browserStreamRef.current = stream;
-    browserAudioContextRef.current = context;
-    browserAudioSourceRef.current = source;
-    browserAudioProcessorRef.current = processor;
-  }
-
-  async function openTemporaryBrowserAudioStream(path: string, stream: MediaStream): Promise<() => Promise<void>> {
-    const socket = new WebSocket(webSocketUrl(path));
-    socket.binaryType = "arraybuffer";
-
-    await new Promise<void>((resolve, reject) => {
-      socket.onopen = () => resolve();
-      socket.onerror = () => reject(new Error("Could not open browser audio stream."));
-      socket.onclose = (event) => {
-        if (!event.wasClean && socket.readyState !== WebSocket.OPEN) {
-          reject(new Error(event.reason || "Browser audio stream was rejected."));
-        }
-      };
-    });
-
-    const AudioContextClass = browserAudioContextClass();
-    if (!AudioContextClass) {
-      socket.close();
-      throw new Error("This browser does not support WebAudio microphone streaming.");
-    }
-    const context = new AudioContextClass();
-    const source = context.createMediaStreamSource(stream);
-    const processor = context.createScriptProcessor(4096, 1, 1);
-    processor.onaudioprocess = (event) => {
-      event.outputBuffer.getChannelData(0).fill(0);
-      if (socket.readyState !== WebSocket.OPEN) {
-        return;
-      }
-      const input = event.inputBuffer.getChannelData(0);
-      const samples = resampleTo16k(input, context.sampleRate);
-      if (samples.length > 0) {
-        socket.send(floatToPcm16(samples));
-      }
-    };
-    source.connect(processor);
-    processor.connect(context.destination);
-    return async () => {
-      processor.disconnect();
-      source.disconnect();
-      if (context.state !== "closed") {
-        await context.close().catch(() => undefined);
-      }
-      if (socket.readyState <= WebSocket.OPEN) {
-        socket.close();
-      }
-      stopMediaStream(stream);
-    };
-  }
-
-  async function stopBrowserMicStream() {
-    browserAudioProcessorRef.current?.disconnect();
-    browserAudioSourceRef.current?.disconnect();
-    browserAudioProcessorRef.current = null;
-    browserAudioSourceRef.current = null;
-    const context = browserAudioContextRef.current;
-    browserAudioContextRef.current = null;
-    if (context && context.state !== "closed") {
-      await context.close().catch(() => undefined);
-    }
-    if (browserSocketRef.current && browserSocketRef.current.readyState <= WebSocket.OPEN) {
-      browserSocketRef.current.close();
-    }
-    browserSocketRef.current = null;
-    if (browserStreamRef.current) {
-      stopMediaStream(browserStreamRef.current);
-    }
-    browserStreamRef.current = null;
-    setRemoteMicStatus("idle");
-  }
-
   async function stop() {
     if (!sessionId) return;
     const stoppedSessionId = sessionId;
     const stoppedRetention = activeSessionRetention ?? sessionRetention;
-    await stopBrowserMicStream();
     await fetch(`${API_BASE}/api/sessions/${sessionId}/stop`, { method: "POST" });
     setStatus("stopped");
     appendSystemLog({
@@ -1360,10 +1159,6 @@ export function App() {
 
   async function recordSpeakerSample() {
     if (!speakerEnrollment) return;
-    if (audioSource === "browser_stream") {
-      await recordSpeakerSampleFromBrowser();
-      return;
-    }
     setSpeakerBusy("recording");
     const startedAt = Date.now();
     setSpeakerRecordingStartedAt(startedAt);
@@ -1396,77 +1191,6 @@ export function App() {
     } finally {
       setSpeakerBusy("");
       setSpeakerRecordingStartedAt(null);
-    }
-  }
-
-  async function recordSpeakerSampleFromBrowser() {
-    if (!speakerEnrollment) return;
-    if (!window.isSecureContext) {
-      pushError("Browser microphone capture requires HTTPS or localhost.");
-      return;
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      pushError("This browser does not expose microphone capture.");
-      return;
-    }
-
-    setSpeakerBusy("recording");
-    setSpeakerRecordingStartedAt(Date.now());
-    setSpeakerRecordingNow(Date.now());
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
-    } catch (error) {
-      setSpeakerBusy("");
-      setSpeakerRecordingStartedAt(null);
-      pushError(error instanceof Error ? error.message : "Microphone permission was not granted.");
-      return;
-    }
-
-    const recordUrl = `${API_BASE}/api/speaker/enrollments/${speakerEnrollment.id}/record`;
-    const responsePromise = fetch(recordUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ device_id: null, fixture_wav: null, audio_source: "browser_stream" }),
-    });
-
-    let cleanup: (() => Promise<void>) | null = null;
-    try {
-      cleanup = await openTemporaryBrowserAudioStream(
-        `/api/speaker/enrollments/${speakerEnrollment.id}/audio-stream`,
-        stream,
-      );
-      const response = await responsePromise;
-      const payload = await response.json();
-      if (!response.ok) {
-        pushError(payload.detail ?? "Speaker sample recording failed");
-        return;
-      }
-      mergeSpeakerSample(payload.sample);
-      setSpeakerStatus(payload.profile);
-      appendSystemLog({
-        level: "status",
-        title: "Speaker sample embedded",
-        message: `${payload.sample.usable_speech_seconds?.toFixed?.(1) ?? "0"}s usable speech added to ${speakerEnrollmentLabel}.`,
-        metadata: payload,
-      });
-    } catch (error) {
-      pushError(error instanceof Error ? error.message : "Speaker sample recording failed");
-    } finally {
-      setSpeakerBusy("");
-      setSpeakerRecordingStartedAt(null);
-      if (cleanup) {
-        await cleanup();
-      } else {
-        stopMediaStream(stream);
-      }
     }
   }
 
@@ -1744,7 +1468,6 @@ export function App() {
                 onChange={(event) => setAudioSource(event.target.value as AudioSource)}
               >
                 <option value="server_device">Server USB microphone</option>
-                <option value="browser_stream">This browser microphone</option>
                 {ENABLE_FIXTURE_AUDIO && <option value="fixture">Fixture WAV</option>}
               </select>
             </label>
@@ -1790,11 +1513,6 @@ export function App() {
                 ))}
               </select>
             </label>
-            {audioSource === "browser_stream" && (
-              <div className="compact-tool" aria-label="Browser microphone status">
-                <p className="tool-note">Browser mic: {remoteMicStatus}. Use the HTTPS Caddy URL on the LAN PC.</p>
-              </div>
-            )}
             <div className="button-row">
               <button className="secondary" onClick={refreshDevices}>Refresh</button>
               <button className="primary" onClick={() => start()} disabled={captureStartDisabled}>
@@ -2726,64 +2444,11 @@ function defaultAudioSource(): AudioSource {
   if (ENABLE_FIXTURE_AUDIO && DEFAULT_FIXTURE_AUDIO) {
     return "fixture";
   }
-  if (typeof window !== "undefined" && !isLocalBrowserHost(window.location.hostname)) {
-    return "browser_stream";
-  }
   return "server_device";
 }
 
 function isLocalBrowserHost(host: string): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
-}
-
-function webSocketUrl(path: string): string {
-  const base = API_BASE
-    ? new URL(API_BASE, window.location.href)
-    : new URL(window.location.origin);
-  base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
-  return `${base.origin}${path}`;
-}
-
-function browserAudioContextClass(): typeof AudioContext | undefined {
-  return window.AudioContext
-    ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-}
-
-function stopMediaStream(stream: MediaStream) {
-  stream.getTracks().forEach((track) => track.stop());
-}
-
-function resampleTo16k(input: Float32Array, inputRate: number): Float32Array {
-  const outputRate = 16_000;
-  if (inputRate === outputRate) {
-    return input;
-  }
-  const ratio = inputRate / outputRate;
-  const outputLength = Math.floor(input.length / ratio);
-  const output = new Float32Array(outputLength);
-  let inputOffset = 0;
-  for (let outputOffset = 0; outputOffset < outputLength; outputOffset += 1) {
-    const nextInputOffset = Math.min(input.length, Math.round((outputOffset + 1) * ratio));
-    let sum = 0;
-    let count = 0;
-    for (let index = inputOffset; index < nextInputOffset; index += 1) {
-      sum += input[index] ?? 0;
-      count += 1;
-    }
-    output[outputOffset] = count > 0 ? sum / count : 0;
-    inputOffset = nextInputOffset;
-  }
-  return output;
-}
-
-function floatToPcm16(samples: Float32Array): ArrayBuffer {
-  const buffer = new ArrayBuffer(samples.length * 2);
-  const view = new DataView(buffer);
-  for (let index = 0; index < samples.length; index += 1) {
-    const value = Math.max(-1, Math.min(1, samples[index] ?? 0));
-    view.setInt16(index * 2, value < 0 ? value * 0x8000 : value * 0x7fff, true);
-  }
-  return buffer;
 }
 
 function humanFileSize(bytes: number): string {
