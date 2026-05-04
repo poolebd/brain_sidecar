@@ -119,6 +119,7 @@ def test_final_transcript_event_uses_authoritative_contract(event_loop, tmp_path
     assert event.payload["transcript_retention"] == "saved"
     assert event.payload["raw_audio_retained"] is False
     assert manager.storage.recent_segments(session.id)[0].text == "We should ask about rollback risk"
+    assert manager.storage.recent_segments(session.id)[0].speaker_role == "unknown"
 
 
 def test_note_updates_also_publish_normalized_sidecar_cards(event_loop, tmp_path: Path) -> None:

@@ -42,6 +42,19 @@ test("filters low score cards unless pinned, explicit, or high priority", () => 
   expect(cards.map((item) => item.id)).toEqual(expect.arrayContaining(["pinned", "explicit", "priority"]));
 });
 
+test("keeps pinned cards visible after expiry", () => {
+  const cards = buildSidecarDisplayCards([
+    card("expired", { expiresAt: now - 1_000, summary: "Expired unpinned context about a rollout decision." }),
+    card("pinned-expired", {
+      expiresAt: now - 1_000,
+      pinned: true,
+      summary: "Pinned expired context about a rollback owner remains useful.",
+    }),
+  ], [], { maxCards: Number.POSITIVE_INFINITY, now });
+
+  expect(cards.map((item) => item.id)).toEqual(["pinned-expired"]);
+});
+
 test("suppresses transcript echoes, duplicates, and raw transcript segments", () => {
   const recent = transcript("recent", "We need to follow up with the platform team tomorrow about deployment readiness.", {
     at: now - 60_000,

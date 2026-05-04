@@ -26,6 +26,14 @@ class WebContextCandidate:
 
 
 @dataclass(frozen=True)
+class WebContextDecision:
+    candidate: WebContextCandidate | None
+    skip_reason: str | None = None
+    sanitized_query: str = ""
+    freshness: str | None = None
+
+
+@dataclass(frozen=True)
 class WebSearchResult:
     title: str
     url: str
@@ -86,24 +94,57 @@ class WebTriggerDetector:
         self.max_query_chars = max_query_chars
 
     def detect(self, recent_segments: list[TranscriptSegment]) -> WebContextCandidate | None:
+        return self.decision_for_segments(recent_segments).candidate
+
+    def decision_for_segments(self, recent_segments: list[TranscriptSegment]) -> WebContextDecision:
         if not recent_segments:
-            return None
+            return WebContextDecision(candidate=None, skip_reason="no_recent_transcript")
 
         window = " ".join(segment.text.strip() for segment in recent_segments[-8:] if segment.text.strip())
+        if self._looks_private(window):
+            return WebContextDecision(candidate=None, skip_reason="query_looked_private_or_internal")
         question = self._latest_question(window)
-        if not question or not self._is_public_current_tech_question(question):
-            return None
+        if not question:
+            return WebContextDecision(candidate=None, skip_reason="query_lacked_public_current_technical_signals")
+        if not self._is_public_current_tech_question(question):
+            return WebContextDecision(candidate=None, skip_reason="query_lacked_public_current_technical_signals")
 
         query = self.build_query(question)
         if len(query.split()) < 3:
-            return None
+            return WebContextDecision(
+                candidate=None,
+                skip_reason="query_empty_after_sanitization",
+                sanitized_query=query,
+                freshness=self.freshness_for(question),
+            )
 
-        return WebContextCandidate(
+        candidate = WebContextCandidate(
             query=query,
             normalized_query=self.normalize_query(query),
             freshness=self.freshness_for(question),
             source_segment_ids=[segment.id for segment in recent_segments[-8:]],
         )
+        return WebContextDecision(candidate=candidate, sanitized_query=query, freshness=candidate.freshness)
+
+    def decision_for_manual_query(self, text: str) -> WebContextDecision:
+        if self._looks_private(text):
+            return WebContextDecision(candidate=None, skip_reason="query_looked_private_or_internal")
+        query = self.build_query(text)
+        freshness = self.freshness_for(text)
+        if len(query.split()) < 2:
+            return WebContextDecision(
+                candidate=None,
+                skip_reason="query_empty_after_sanitization",
+                sanitized_query=query,
+                freshness=freshness,
+            )
+        candidate = WebContextCandidate(
+            query=query,
+            normalized_query=self.normalize_query(query),
+            freshness=freshness,
+            source_segment_ids=[],
+        )
+        return WebContextDecision(candidate=candidate, sanitized_query=query, freshness=freshness)
 
     def build_query(self, text: str) -> str:
         question = self._latest_question(text) or text
@@ -148,6 +189,13 @@ class WebTriggerDetector:
             return False
         return bool(self._CURRENT_RE.search(question) and self._TECH_RE.search(question))
 
+    def _looks_private(self, text: str) -> bool:
+        return bool(
+            self._PRIVATE_TAIL_RE.search(text)
+            or self._PERSONAL_MEMORY_RE.search(text)
+            or re.search(r"\bwhat\s+did\s+(we|i)\b", text, re.IGNORECASE)
+        )
+
     def _cap_query(self, query: str) -> str:
         if len(query) <= self.max_query_chars:
             return query
@@ -168,8 +216,10 @@ class BraveSearchClient:
         self.timeout_s = timeout_s
         self.max_results = max(1, min(10, max_results))
         self._opener = opener or urllib.request.urlopen
+        self.last_error_reason: str | None = None
 
     async def search(self, query: str, *, freshness: str | None = None) -> list[WebSearchResult]:
+        self.last_error_reason = None
         if not self.api_key or not query.strip():
             return []
         return await asyncio.to_thread(self._search_sync, query.strip(), freshness)
@@ -195,13 +245,14 @@ class BraveSearchClient:
         try:
             with self._opener(request, timeout=self.timeout_s) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-        except (
-            json.JSONDecodeError,
-            TimeoutError,
-            socket.timeout,
-            urllib.error.HTTPError,
-            urllib.error.URLError,
-        ):
+        except (TimeoutError, socket.timeout):
+            self.last_error_reason = "request_timeout"
+            return []
+        except (urllib.error.HTTPError, urllib.error.URLError):
+            self.last_error_reason = "request_failed"
+            return []
+        except json.JSONDecodeError:
+            self.last_error_reason = "bad_response"
             return []
 
         web_results = payload.get("web", {}).get("results", [])
@@ -249,6 +300,13 @@ class WebContextSynthesizer:
             "ephemeral": True,
             "source_type": "brave_web",
             "sources": [result.source_dict() for result in limited],
+            "citations": [result.url for result in limited],
+            "sanitized_query": candidate.query,
+            "freshness": candidate.freshness,
+            "why_now": "This was a sanitized public/current web lookup; raw transcript was not submitted.",
+            "confidence": 0.78,
+            "priority": "normal",
+            "card_key": f"web:{candidate.normalized_query}",
         }
 
 

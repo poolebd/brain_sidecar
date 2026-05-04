@@ -4,6 +4,7 @@ import {
   buildSidecarDisplayCards,
   getTranscriptDisplayLabel,
   groupWorkCards,
+  normalizeDisplayText,
   type SidecarDisplayCard,
   type SidecarPriority,
   type TranscriptEvent,
@@ -268,6 +269,17 @@ type ManualWebResponse = {
   enabled: boolean;
   configured: boolean;
   note: NoteCard | null;
+  skip_reason?: string | null;
+  cards?: Record<string, unknown>[];
+};
+
+type ManualSidecarResponse = {
+  query: string;
+  sanitized_web_query?: string | null;
+  web_skip_reason?: string | null;
+  cards: Record<string, unknown>[];
+  sections: Record<string, Record<string, unknown>[]>;
+  raw_audio_retained: boolean;
 };
 
 type InputFileUploadResponse = {
@@ -439,6 +451,10 @@ export function App() {
       { maxCards: 5 },
     ),
     [dismissedCardKeys, sidecarCards, transcriptEvents],
+  );
+  const manualSourceCards = useMemo(
+    () => sidecarCards.filter((card) => card.explicitlyRequested && !dismissedCardKeys.has(card.cardKey ?? card.id)).slice(0, 12),
+    [dismissedCardKeys, sidecarCards],
   );
   const visibleContextCards = showAllContext
     ? usefulContextCards
@@ -820,10 +836,19 @@ export function App() {
     if (dismissedCardKeys.has(key) && !card.pinned) {
       return;
     }
-    setSidecarCards((current) => [
-      card,
-      ...current.filter((candidate) => (candidate.cardKey ?? candidate.id) !== key),
-    ].slice(0, 160));
+    setSidecarCards((current) => {
+      const existing = current.find((candidate) => (candidate.cardKey ?? candidate.id) === key);
+      const pinned = Boolean(existing?.pinned || card.pinned);
+      const nextCard = { ...card, pinned };
+      const withoutSame = current.filter((candidate) => {
+        const candidateKey = candidate.cardKey ?? candidate.id;
+        if (candidateKey === key) {
+          return false;
+        }
+        return !areCardsEquivalent(candidate, nextCard);
+      });
+      return [nextCard, ...withoutSame].slice(0, 160);
+    });
   }
 
   function togglePinnedCard(card: SidecarDisplayCard) {
@@ -1126,74 +1151,40 @@ export function App() {
     setManualQuery("");
     appendTranscriptEvent(typedTranscriptEvent(query));
 
-    const [recallResult, workResult, webResult] = await Promise.all([
-      fetchJson<{ hits?: RecallHit[] }>(`${API_BASE}/api/recall/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, limit: 8 }),
-      }),
-      fetchJson<{ cards?: WorkMemoryCard[] }>(`${API_BASE}/api/work-memory/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, limit: 5 }),
-      }),
-      fetchJson<ManualWebResponse>(`${API_BASE}/api/web-context/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, session_id: sessionId }),
-      }),
-    ]);
-
+    const result = await fetchJson<ManualSidecarResponse>(`${API_BASE}/api/sidecar/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, session_id: sessionId }),
+    });
     setManualQueryBusy(false);
-    if (recallResult.ok) {
-      const hits = recallResult.payload.hits ?? [];
-      setRecall(hits);
-      hits.forEach((hit) => appendSidecarCard(displayCardForRecall(hit, { origin: "manual" })));
-    } else {
+    if (!result.ok) {
       appendSystemLog({
         level: "error",
-        title: "Recall search failed",
-        message: String((recallResult.payload as { detail?: string }).detail ?? "Recall search failed."),
-        metadata: recallResult.payload as unknown as Record<string, unknown>,
+        title: "Sidecar query failed",
+        message: String((result.payload as { detail?: string }).detail ?? "Sidecar query failed."),
+        metadata: result.payload as unknown as Record<string, unknown>,
       });
+      return;
     }
-
-    if (workResult.ok) {
-      const cards = workResult.payload.cards ?? [];
-      setWorkMemoryMatches(cards);
-      cards.forEach((card) => appendSidecarCard(displayCardForWorkCard(card, { origin: "manual" })));
-    } else {
-      appendSystemLog({
-        level: "error",
-        title: "Work memory search failed",
-        message: String((workResult.payload as { detail?: string }).detail ?? "Work memory search failed."),
-        metadata: workResult.payload as unknown as Record<string, unknown>,
+    const payload = result.payload;
+    for (const rawCard of payload.cards ?? []) {
+      const card = displayCardForSidecarPayload(rawCard, {
+        id: `manual-${Date.now()}`,
+        type: "sidecar_card",
+        session_id: sessionId,
+        at: Date.now() / 1000,
+        payload: rawCard,
       });
-    }
-
-    if (webResult.ok) {
-      const webPayload = webResult.payload;
-      if (webPayload.note) {
-        const note = noteFromPayload(webPayload.note);
-        if (note) {
-          appendSidecarCard(displayCardForNote(note, { origin: "manual" }));
-        }
-      } else {
-        appendSystemLog({
-          level: "status",
-          title: webPayload.configured ? "No web context returned" : "Web context unavailable",
-          message: webPayload.enabled
-            ? "Brave returned no compact context for this query."
-            : "Web context is disabled for this run.",
-          metadata: webPayload as unknown as Record<string, unknown>,
-        });
+      if (card) {
+        appendSidecarCard({ ...card, explicitlyRequested: true });
       }
-    } else {
+    }
+    if (payload.web_skip_reason) {
       appendSystemLog({
         level: "status",
-        title: "Web context unavailable",
-        message: "The web lookup did not complete.",
-        metadata: webResult.payload as unknown as Record<string, unknown>,
+        title: "Web context skipped",
+        message: payload.web_skip_reason.replace(/_/g, " "),
+        metadata: payload as unknown as Record<string, unknown>,
       });
     }
   }
@@ -1504,6 +1495,8 @@ export function App() {
               {manualQueryBusy ? "Searching..." : "Search"}
             </button>
           </form>
+
+          <ManualSourceSections cards={manualSourceCards} />
 
           <section className="latest-card" aria-label="Latest heard" aria-live="polite">
             <p className="label">Latest heard</p>
@@ -2149,6 +2142,31 @@ function ContributionLane({
   );
 }
 
+function ManualSourceSections({ cards }: { cards: SidecarDisplayCard[] }) {
+  if (cards.length === 0) {
+    return null;
+  }
+  const sections = [
+    { title: "Prior transcript", cards: cards.filter((card) => String(card.debugMetadata?.sourceType) === "saved_transcript" || card.category === "memory") },
+    { title: "PAS / past work", cards: cards.filter((card) => card.category === "work_memory" || String(card.debugMetadata?.sourceType) === "work_memory") },
+    { title: "Current public web", cards: cards.filter((card) => card.category === "web" || String(card.debugMetadata?.sourceType) === "brave_web") },
+    { title: "Suggested meeting contribution", cards: cards.filter((card) => card.category === "contribution") },
+  ].filter((section) => section.cards.length > 0);
+  if (sections.length === 0) {
+    return null;
+  }
+  return (
+    <section className="manual-source-sections" aria-label="Manual query source sections">
+      {sections.map((section) => (
+        <div key={section.title}>
+          <strong>{section.title}</strong>
+          <span>{section.cards.length}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function ContextCard({
   card,
   compact = false,
@@ -2174,7 +2192,7 @@ function ContextCard({
   const suggestion = card.suggestedSay ?? card.suggestedAsk;
   return (
     <article
-      className={`context-card field-bubble ${compact ? "compact" : ""} ${card.provisional ? "provisional" : ""} ${card.category === "work" || card.category === "work_memory" ? "memory" : card.category}`}
+      className={`context-card field-bubble ${compact ? "compact" : ""} ${card.provisional ? "provisional" : ""} ${confidenceClass(card)} ${card.category === "work" || card.category === "work_memory" ? "memory" : card.category}`}
       aria-label={`${categoryLabel(card.category)} context card`}
     >
       <div className="context-card-head">
@@ -2286,6 +2304,7 @@ function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope
     title: readableTitle(title, categoryLabel(category)),
     summary: body,
     whyRelevant: stringOrUndefined(payload.why_now),
+    source: sourceLabel(sourceType),
     at,
     score: numberOrUndefined(payload.confidence),
     confidence: numberOrUndefined(payload.confidence),
@@ -2299,6 +2318,7 @@ function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope
     ephemeral: Boolean(payload.ephemeral),
     expiresAt: payloadTimeMs(payload.expires_at),
     provisional: Boolean(payload.provisional),
+    explicitlyRequested: Boolean(payload.explicitly_requested) || String(cardKey ?? "").startsWith("manual:"),
     debugMetadata: {
       sourceType,
       sourceId: payload.id,
@@ -2306,6 +2326,8 @@ function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope
       confidence: payload.confidence,
       cardKey,
       sourceSegmentIds,
+      sanitizedQuery: payload.sanitized_query,
+      freshness: payload.freshness,
       rawAudioRetained: payload.raw_audio_retained,
     },
   };
@@ -2430,6 +2452,24 @@ function displayCardForWorkCard(card: WorkMemoryCard, options: BackendItemOption
   };
 }
 
+function areCardsEquivalent(left: SidecarDisplayCard, right: SidecarDisplayCard): boolean {
+  const leftKey = left.cardKey ?? "";
+  const rightKey = right.cardKey ?? "";
+  if (leftKey && rightKey && leftKey === rightKey) {
+    return true;
+  }
+  const leftArtifact = String(left.debugMetadata?.sourceId ?? "");
+  const rightArtifact = String(right.debugMetadata?.sourceId ?? "");
+  const leftSource = String(left.debugMetadata?.sourceType ?? "");
+  const rightSource = String(right.debugMetadata?.sourceType ?? "");
+  if (leftArtifact && rightArtifact && leftArtifact === rightArtifact && leftSource === rightSource) {
+    return true;
+  }
+  const leftText = normalizeDisplayText(`${left.title} ${left.summary}`);
+  const rightText = normalizeDisplayText(`${right.title} ${right.summary}`);
+  return Boolean(leftText && rightText && leftText === rightText);
+}
+
 function categoryLabel(category: SidecarDisplayCard["category"]): string {
   if (category === "web") return "Web";
   if (category === "work" || category === "work_memory") return "Work memory";
@@ -2442,6 +2482,20 @@ function categoryLabel(category: SidecarDisplayCard["category"]): string {
   if (category === "status") return "Status";
   if (category === "memory") return "Memory";
   return "Note";
+}
+
+function confidenceClass(card: SidecarDisplayCard): string {
+  const confidence = card.confidence ?? card.score;
+  if (confidence === undefined) {
+    return "";
+  }
+  if (confidence >= 0.82) {
+    return "high-confidence";
+  }
+  if (confidence < 0.58) {
+    return "low-confidence";
+  }
+  return "";
 }
 
 function debugEntries(card: SidecarDisplayCard): [string, unknown][] {

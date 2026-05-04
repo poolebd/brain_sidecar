@@ -90,6 +90,8 @@ def test_work_memory_reindex_builds_project_cards_without_live_model_calls(
     assert cards
     assert cards[0].title.startswith("Online Generator Monitoring")
     assert "failure" in cards[0].text.lower()
+    assert cards[0].suggested_say
+    assert cards[0].card_key.startswith("work:")
 
 
 def test_work_memory_api_searches_preindexed_cards(monkeypatch, tmp_path: Path) -> None:
@@ -125,3 +127,64 @@ def test_work_memory_api_searches_preindexed_cards(monkeypatch, tmp_path: Path) 
     payload = response.json()
     assert payload["cards"][0]["title"] == "PG&E Gas Mains Replacement Cost Model"
     assert "reminiscent" in payload["cards"][0]["text"]
+    assert payload["cards"][0]["suggested_say"]
+
+
+def test_manual_work_memory_does_not_emit_unmatched_baseline_cards(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "runtime")
+    storage.connect()
+    project_id = storage.upsert_work_memory_project(
+        key="apollo_rollout",
+        title="Apollo Rollout",
+        organization="BP history",
+        date_range="2025",
+        role="Lead",
+        domain="Software",
+        summary="Current status notes for rollback validation and owner mapping.",
+        lessons=["Make rollback owner explicit before release."],
+        triggers=["Apollo", "rollback", "validation"],
+        source_group="pas_history",
+        confidence=0.9,
+    )
+    storage.add_work_memory_evidence(
+        project_id=project_id,
+        source_id=None,
+        source_path="/tmp/apollo.md",
+        snippet="Rollback owner evidence.",
+        artifact_type="text_supported",
+        weight=1.0,
+    )
+    service = WorkMemoryService(storage)
+
+    assert service.search("current public status of Python free threading", manual=True) == []
+    assert service.search("Apollo rollback owner", manual=True)
+
+
+def test_work_memory_uses_configured_roots_and_pas_root(tmp_path: Path) -> None:
+    from brain_sidecar.config import Settings
+
+    job_root = tmp_path / "job"
+    past_root = tmp_path / "past"
+    pas_root = tmp_path / "pas"
+    for root in [job_root, past_root, pas_root]:
+        root.mkdir()
+    storage = Storage(tmp_path / "runtime")
+    storage.connect()
+    settings = Settings(
+        data_dir=tmp_path / "runtime",
+        host="127.0.0.1",
+        port=8765,
+        asr_primary_model="tiny.en",
+        asr_fallback_model="tiny.en",
+        asr_compute_type="float16",
+        ollama_host="http://127.0.0.1:11434",
+        ollama_chat_model="qwen3.5:9b",
+        ollama_embed_model="embeddinggemma",
+        work_memory_job_history_root=job_root,
+        work_memory_past_work_root=past_root,
+        work_memory_pas_root=pas_root,
+    )
+
+    service = WorkMemoryService(storage, settings=settings)
+
+    assert service.default_roots() == [job_root, past_root, pas_root]

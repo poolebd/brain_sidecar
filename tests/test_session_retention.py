@@ -68,6 +68,8 @@ def test_listen_only_session_keeps_transcript_out_of_storage(event_loop, tmp_pat
     assert active.recent_segments[0].text == "Temporary launch notes"
     assert manager.storage.recent_segments(session.id) == []
     assert list(manager.storage.embedding_records()) == []
+    row = manager.storage.conn.execute("select count(*) as count from diarization_segments").fetchone()
+    assert row["count"] == 0
 
 
 def test_record_transcript_session_persists_transcript_text(event_loop, tmp_path: Path) -> None:
@@ -80,6 +82,7 @@ def test_record_transcript_session_persists_transcript_text(event_loop, tmp_path
     event_loop.run_until_complete(manager._transcribe_window(session.id, AudioWindow(b"\0" * 32000, 0.0)))
 
     assert manager.storage.recent_segments(session.id)[0].text == "Temporary launch notes"
+    assert "speaker_role" in manager.storage.recent_segments(session.id)[0].to_dict()
 
 
 def active_session(session_id: str, *, save_transcript: bool) -> ActiveSession:

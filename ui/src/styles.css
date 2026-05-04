@@ -516,6 +516,36 @@ time {
   min-height: 2.35rem;
 }
 
+.manual-source-sections {
+  align-items: center;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+}
+
+.manual-source-sections div {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface) 76%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  gap: 0.45rem;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+}
+
+.manual-source-sections strong {
+  font-size: 0.78rem;
+  line-height: 1.2;
+}
+
+.manual-source-sections span {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
 .transcript-scroll,
 .context-card-list {
   align-content: start;
@@ -821,6 +851,15 @@ time {
 
 .context-card.provisional {
   opacity: 0.76;
+}
+
+.context-card.high-confidence {
+  border-left-width: 4px;
+}
+
+.context-card.low-confidence {
+  background: color-mix(in srgb, var(--surface-2) 82%, var(--bg));
+  border-style: dashed;
 }
 
 .context-card h3 {

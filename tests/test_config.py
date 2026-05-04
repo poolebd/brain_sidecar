@@ -27,9 +27,12 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
     assert settings.transcription_overlap_seconds == 0.8
     assert settings.transcription_queue_size == 8
     assert settings.asr_vad_min_silence_ms == 300
-    assert settings.partial_transcripts_enabled is True
+    assert settings.partial_transcripts_enabled is False
     assert settings.partial_window_seconds == 2.0
     assert settings.partial_min_interval_seconds == 2.0
+    assert settings.recall_min_score == 0.58
+    assert settings.recall_max_live_hits == 4
+    assert settings.recall_prefer_summaries is True
 
 
 def test_load_settings_reads_repo_dotenv_without_overriding_exports(monkeypatch, tmp_path) -> None:
@@ -95,3 +98,22 @@ def test_partial_transcript_env_overrides_are_guarded(monkeypatch, tmp_path) -> 
     assert settings.partial_transcripts_enabled is False
     assert settings.partial_window_seconds == 3.4
     assert settings.partial_min_interval_seconds == 0.5
+
+
+def test_recall_and_work_memory_env_overrides(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_RECALL_MIN_SCORE", "0.7")
+    monkeypatch.setenv("BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS", "2")
+    monkeypatch.setenv("BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES", "false")
+    monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT", str(tmp_path / "job"))
+    monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT", str(tmp_path / "past"))
+    monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT", str(tmp_path / "pas"))
+
+    settings = load_settings()
+
+    assert settings.recall_min_score == 0.7
+    assert settings.recall_max_live_hits == 2
+    assert settings.recall_prefer_summaries is False
+    assert settings.work_memory_job_history_root == tmp_path / "job"
+    assert settings.work_memory_past_work_root == tmp_path / "past"
+    assert settings.work_memory_pas_root == tmp_path / "pas"

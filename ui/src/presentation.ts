@@ -98,7 +98,7 @@ export function buildSidecarDisplayCards(
     .join(" ");
 
   const filtered = candidates
-    .filter((card) => !card.expiresAt || card.expiresAt > now)
+    .filter((card) => card.pinned || !card.expiresAt || card.expiresAt > now)
     .filter((card) => isDisplayWorthy(card, recentTranscript, minScore))
     .sort(compareSidecarCards);
 

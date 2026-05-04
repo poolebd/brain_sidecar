@@ -517,6 +517,10 @@ test("uses mocked library and recall APIs", async ({ page }) => {
   await page.getByRole("button", { name: "Close" }).click();
   await page.getByPlaceholder("Ask Sidecar anything").fill("apollo rollout");
   await page.getByRole("button", { name: "Search" }).click();
+  await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Prior transcript");
+  await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("PAS / past work");
+  await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Current public web");
+  await page.getByRole("button", { name: /Show more/ }).click();
   await expect(page.locator("#recall").getByText("Prior planning note about the Apollo rollout.")).toBeVisible();
   await expect(page.locator("#recall").getByText("Online Generator Monitoring - T.A. Smith", { exact: true })).toBeVisible();
   await expect(page.locator("#recall").getByText("Web context: apollo rollout")).toBeVisible();

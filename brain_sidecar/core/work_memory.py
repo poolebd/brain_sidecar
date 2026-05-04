@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
+from brain_sidecar.config import Settings
 from brain_sidecar.core.models import SearchHit, new_id
 from brain_sidecar.core.recall import normalize_text, read_document_text
 from brain_sidecar.core.storage import Storage
@@ -58,14 +59,19 @@ GENERIC_TERMS = {
     "and",
     "assessment",
     "closeout",
+    "current",
     "group",
+    "latest",
     "management",
     "phase",
     "planning",
     "project",
+    "public",
     "replacement",
     "smith",
+    "status",
     "study",
+    "today",
     "the",
     "upgrade",
 }
@@ -131,6 +137,9 @@ class WorkMemoryRecallCard:
     reason: str
     lesson: str
     citations: list[str]
+    suggested_say: str = ""
+    source_group: str = "work_history"
+    card_key: str = ""
 
     @property
     def text(self) -> str:
@@ -152,6 +161,9 @@ class WorkMemoryRecallCard:
             "reason": self.reason,
             "lesson": self.lesson,
             "citations": self.citations,
+            "suggested_say": self.suggested_say,
+            "source_group": self.source_group,
+            "card_key": self.card_key,
             "text": self.text,
         }
 
@@ -169,14 +181,20 @@ class WorkMemoryRecallCard:
                 "reason": self.reason,
                 "lesson": self.lesson,
                 "citations": self.citations,
+                "suggested_say": self.suggested_say,
+                "suggested_contribution": self.suggested_say,
+                "source_group": self.source_group,
+                "card_key": self.card_key,
+                "why_now": self.reason,
             },
         )
 
 
 class WorkMemoryService:
-    def __init__(self, storage: Storage, recall_index: Any | None = None) -> None:
+    def __init__(self, storage: Storage, recall_index: Any | None = None, settings: Settings | None = None) -> None:
         self.storage = storage
         self.recall_index = recall_index
+        self.settings = settings
 
     def status(self) -> dict[str, Any]:
         summary = self.storage.work_memory_summary()
@@ -188,7 +206,30 @@ class WorkMemoryService:
         return summary
 
     def default_roots(self) -> list[Path]:
-        return [root for root in [JOB_HISTORY_ROOT, PAST_WORK_ROOT] if root.exists()]
+        roots = [
+            self.job_history_root,
+            self.past_work_root,
+            self.pas_root,
+        ]
+        return [root for root in roots if root is not None and root.exists()]
+
+    @property
+    def job_history_root(self) -> Path:
+        return getattr(self.settings, "work_memory_job_history_root", JOB_HISTORY_ROOT)
+
+    @property
+    def past_work_root(self) -> Path:
+        return getattr(self.settings, "work_memory_past_work_root", PAST_WORK_ROOT)
+
+    @property
+    def pas_root(self) -> Path | None:
+        return getattr(self.settings, "work_memory_pas_root", None)
+
+    @property
+    def pmp_summary(self) -> Path:
+        if self.job_history_root == JOB_HISTORY_ROOT:
+            return PMP_SUMMARY
+        return self.job_history_root / "_portfolio" / "Projects" / "PMP_Experience_Summary.csv"
 
     async def reindex(self, roots: list[Path] | None = None, *, embed: bool = True) -> WorkMemoryIndexReport:
         roots = [path.expanduser().resolve() for path in (roots or self.default_roots()) if path.exists()]
@@ -262,7 +303,7 @@ class WorkMemoryService:
             skipped=skipped[:80],
         )
 
-    def search(self, query: str, limit: int = 5) -> list[WorkMemoryRecallCard]:
+    def search(self, query: str, limit: int = 5, *, manual: bool = False) -> list[WorkMemoryRecallCard]:
         clean = normalize_lookup(query)
         if not clean:
             return []
@@ -284,14 +325,18 @@ class WorkMemoryService:
                     ]
                 )
             )
-            matched_terms = [term for term in query_terms if term in combined]
+            matched_terms = [term for term in query_terms if term in combined and term not in GENERIC_TERMS]
             alias_hits = [trigger for trigger in project["triggers"] if normalize_lookup(trigger) in clean]
-            if not alias_hits and len(set(matched_terms)) < 2:
+            required_terms = 1 if manual else 2
+            if not alias_hits and len(set(matched_terms)) < required_terms:
                 continue
-            score = score_match(matched_terms, alias_hits, project["confidence"])
+            metadata_only_ratio = metadata_only_evidence_ratio(evidence)
+            score = score_match(matched_terms, alias_hits, project["confidence"], metadata_only_ratio=metadata_only_ratio)
             lesson = project["lessons"][0] if project["lessons"] else project["summary"]
             reason_terms = dedupe_strings(alias_hits + matched_terms)[:7]
             reason = "shared signals around " + ", ".join(reason_terms) if reason_terms else "a similar work pattern"
+            source_group = project.get("source_group") or "work_history"
+            suggested_say = suggested_contribution(project, lesson)
             cards.append(
                 WorkMemoryRecallCard(
                     project_id=project["id"],
@@ -303,6 +348,9 @@ class WorkMemoryService:
                     reason=reason,
                     lesson=lesson,
                     citations=[item["source_path"] for item in evidence[:3]],
+                    suggested_say=suggested_say,
+                    source_group=source_group,
+                    card_key=f"work:{project['id']}",
                 )
             )
         return sorted(cards, key=lambda card: card.score, reverse=True)[:limit]
@@ -322,12 +370,13 @@ class WorkMemoryService:
         sources_by_path: dict[str, dict[str, Any]],
         skipped: list[str],
     ) -> None:
-        if not PMP_SUMMARY.exists():
-            skipped.append(f"{PMP_SUMMARY}: missing")
+        pmp_summary = self.pmp_summary
+        if not pmp_summary.exists():
+            skipped.append(f"{pmp_summary}: missing")
             return
-        sources_by_path[str(PMP_SUMMARY)] = describe_source(PMP_SUMMARY)
+        sources_by_path[str(pmp_summary)] = describe_source(pmp_summary)
         try:
-            with PMP_SUMMARY.open("r", encoding="utf-8-sig", errors="ignore", newline="") as handle:
+            with pmp_summary.open("r", encoding="utf-8-sig", errors="ignore", newline="") as handle:
                 for row in csv.DictReader(handle):
                     title = clean_title(row.get("Project Title", ""))
                     if not title:
@@ -336,7 +385,7 @@ class WorkMemoryService:
                     add_or_merge_project(projects, project)
                     projects[project.key].evidence.append(
                         EvidenceDraft(
-                            source_path=str(PMP_SUMMARY),
+                            source_path=str(pmp_summary),
                             snippet=(
                                 f"Canonical timeline row: {project.title}; {project.organization}; "
                                 f"{project.date_range}; role {project.role}."
@@ -346,7 +395,7 @@ class WorkMemoryService:
                         )
                     )
         except Exception as exc:
-            skipped.append(f"{PMP_SUMMARY}: {exc}")
+            skipped.append(f"{pmp_summary}: {exc}")
 
     def _seed_star_projects(
         self,
@@ -354,7 +403,7 @@ class WorkMemoryService:
         sources_by_path: dict[str, dict[str, Any]],
         skipped: list[str],
     ) -> None:
-        for path, seed in star_seed_paths().items():
+        for path, seed in star_seed_paths(self.job_history_root).items():
             if not path.exists():
                 continue
             sources_by_path[str(path)] = describe_source(path)
@@ -388,7 +437,7 @@ class WorkMemoryService:
         sources_by_path: dict[str, dict[str, Any]],
         skipped: list[str],
     ) -> None:
-        path = JOB_HISTORY_ROOT / "Standard Interview" / "OPC Notes" / "TA Smith Electrical Overview.txt"
+        path = self.job_history_root / "Standard Interview" / "OPC Notes" / "TA Smith Electrical Overview.txt"
         if not path.exists():
             return
         sources_by_path[str(path)] = describe_source(path)
@@ -412,7 +461,7 @@ class WorkMemoryService:
                 project.triggers.extend(["500 kV", "230 kV", "13.8 kV", "4.16 kV", "480 V", "125 V DC"])
 
     def _seed_guardrails(self, sources_by_path: dict[str, dict[str, Any]]) -> None:
-        offer_root = JOB_HISTORY_ROOT / "S&L Offer"
+        offer_root = self.job_history_root / "S&L Offer"
         if not offer_root.exists():
             return
         for path in iter_candidate_files(offer_root):
@@ -578,8 +627,8 @@ def draft_from_pmp_row(row: dict[str, str]) -> ProjectDraft:
     )
 
 
-def star_seed_paths() -> dict[Path, ProjectDraft]:
-    star_root = JOB_HISTORY_ROOT / "Standard Interview" / "STAR PPT" / "ppts"
+def star_seed_paths(job_history_root: Path = JOB_HISTORY_ROOT) -> dict[Path, ProjectDraft]:
+    star_root = job_history_root / "Standard Interview" / "STAR PPT" / "ppts"
     seeds = {
         star_root / "stars_500kvbreaker.txt": seed_project(
             "500kV Breaker Replacement - T.A. Smith",
@@ -896,10 +945,32 @@ def project_card_text(project: ProjectDraft) -> str:
     )
 
 
-def score_match(matched_terms: list[str], alias_hits: list[str], confidence: float) -> float:
+def score_match(
+    matched_terms: list[str],
+    alias_hits: list[str],
+    confidence: float,
+    *,
+    metadata_only_ratio: float = 0.0,
+) -> float:
     score = 0.28 + min(0.38, len(set(matched_terms)) * 0.045) + min(0.24, len(alias_hits) * 0.12)
     score *= 0.82 + min(0.18, confidence * 0.18)
+    score *= 1.0 - min(0.28, max(0.0, metadata_only_ratio) * 0.28)
     return round(min(0.98, max(0.05, score)), 4)
+
+
+def metadata_only_evidence_ratio(evidence: list[dict[str, Any]]) -> float:
+    if not evidence:
+        return 0.0
+    metadata_count = sum(1 for item in evidence if item.get("artifact_type") in {"metadata_only", "guardrail"})
+    return metadata_count / max(1, len(evidence))
+
+
+def suggested_contribution(project: dict[str, Any], lesson: str) -> str:
+    title = project.get("title") or "that prior work"
+    if lesson:
+        return f"I saw a similar pattern on {title}: {lesson}"
+    summary = project.get("summary") or "the useful move was making the operating constraint explicit."
+    return f"I can connect this to {title}: {summary}"
 
 
 def significant_terms(text: str) -> list[str]:

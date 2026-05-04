@@ -9,7 +9,7 @@ from uuid import uuid4
 from typing import Annotated, Any
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -26,6 +26,12 @@ BROWSER_STREAM_REMOVED = (
     "Browser microphone capture has been removed. Use server_device for the USB microphone attached to this computer."
 )
 FIXTURE_TEST_MODE_REQUIRED = "Fixture audio is only available when recorded audio test mode is enabled."
+SSE_HEARTBEAT = ": heartbeat\n\n"
+
+
+def encode_sse_event(event) -> str:
+    data = json.dumps(event.to_dict(), ensure_ascii=False)
+    return f"id: {event.id}\nevent: {event.type}\ndata: {data}\n\n"
 
 
 class CreateSessionRequest(BaseModel):
@@ -59,6 +65,11 @@ class WorkMemorySearchRequest(BaseModel):
 
 
 class WebContextSearchRequest(BaseModel):
+    query: Annotated[str, Field(min_length=1)]
+    session_id: str | None = None
+
+
+class SidecarQueryRequest(BaseModel):
     query: Annotated[str, Field(min_length=1)]
     session_id: str | None = None
 
@@ -162,6 +173,8 @@ def create_app() -> FastAPI:
         status["partial_transcripts_enabled"] = settings.partial_transcripts_enabled
         status["partial_window_seconds"] = settings.partial_window_seconds
         status["partial_min_interval_seconds"] = settings.partial_min_interval_seconds
+        status["ollama_chat_timeout_seconds"] = settings.ollama_chat_timeout_seconds
+        status["ollama_embed_timeout_seconds"] = settings.ollama_embed_timeout_seconds
         status["asr_min_free_vram_mb"] = settings.asr_min_free_vram_mb
         status["asr_unload_ollama_on_start"] = settings.asr_unload_ollama_on_start
         status["asr_gpu_free_timeout_seconds"] = settings.asr_gpu_free_timeout_seconds
@@ -178,6 +191,12 @@ def create_app() -> FastAPI:
         status["ollama_keep_alive"] = settings.ollama_keep_alive
         status["web_context_enabled"] = settings.web_context_enabled
         status["web_context_configured"] = bool(settings.brave_search_api_key.strip())
+        status["recall_min_score"] = settings.recall_min_score
+        status["recall_max_live_hits"] = settings.recall_max_live_hits
+        status["recall_prefer_summaries"] = settings.recall_prefer_summaries
+        status["work_memory_job_history_root"] = str(settings.work_memory_job_history_root)
+        status["work_memory_past_work_root"] = str(settings.work_memory_past_work_root)
+        status["work_memory_pas_root"] = str(settings.work_memory_pas_root) if settings.work_memory_pas_root else None
         status["test_mode_enabled"] = settings.test_mode_enabled
         status["test_audio_run_dir"] = str(settings.test_audio_run_dir)
         return status
@@ -236,6 +255,13 @@ def create_app() -> FastAPI:
     async def search_web_context(request: WebContextSearchRequest) -> dict:
         return await manager.search_web_context(request.query, session_id=request.session_id)
 
+    @app.post("/api/sidecar/query")
+    async def sidecar_query(request: SidecarQueryRequest) -> dict:
+        try:
+            return await manager.ask_sidecar(request.query, session_id=request.session_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/sessions")
     async def create_session(request: CreateSessionRequest) -> dict:
         return await manager.create_session(request.title)
@@ -278,12 +304,19 @@ def create_app() -> FastAPI:
         await manager.stop_session(session_id)
         return {"status": "stopped", "session_id": session_id, "raw_audio_retained": False}
 
-    @app.get("/api/sessions/{session_id}/events")
-    async def session_events(session_id: str) -> StreamingResponse:
+    async def _event_stream(session_id: str | None, last_event_id: str | None):
         async def stream():
-            async for event in manager.bus.subscribe(session_id):
-                data = json.dumps(event.to_dict(), ensure_ascii=False)
-                yield f"id: {event.id}\nevent: {event.type}\ndata: {data}\n\n"
+            queue = await manager.bus.subscribe_queue(session_id, replay_after_id=last_event_id)
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        yield SSE_HEARTBEAT
+                        continue
+                    yield encode_sse_event(event)
+            finally:
+                await manager.bus.unsubscribe_queue(queue, session_id)
 
         return StreamingResponse(
             stream(),
@@ -294,23 +327,17 @@ def create_app() -> FastAPI:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @app.get("/api/sessions/{session_id}/events")
+    async def session_events(
+        session_id: str,
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ) -> StreamingResponse:
+        return await _event_stream(session_id, last_event_id)
 
     @app.get("/api/events")
-    async def events() -> StreamingResponse:
-        async def stream():
-            async for event in manager.bus.subscribe(None):
-                data = json.dumps(event.to_dict(), ensure_ascii=False)
-                yield f"id: {event.id}\nevent: {event.type}\ndata: {data}\n\n"
-
-        return StreamingResponse(
-            stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+    async def events(last_event_id: str | None = Header(default=None, alias="Last-Event-ID")) -> StreamingResponse:
+        return await _event_stream(None, last_event_id)
 
     @app.get("/api/speaker/status")
     async def speaker_status() -> dict:

@@ -25,6 +25,8 @@ def test_trigger_detector_ignores_personal_work_memory_question() -> None:
     detector = WebTriggerDetector()
 
     assert detector.detect([segment("seg_1", "What did we do on the T.A. Smith project?")]) is None
+    decision = detector.decision_for_segments([segment("seg_1", "What did we do on the T.A. Smith project?")])
+    assert decision.skip_reason == "query_looked_private_or_internal"
 
 
 def test_query_builder_redacts_private_phrasing_and_caps_length() -> None:
@@ -39,6 +41,18 @@ def test_query_builder_redacts_private_phrasing_and_caps_length() -> None:
     assert "confidential" not in query.lower()
     assert "acme" not in query.lower()
     assert len(query) <= 80
+
+
+def test_manual_query_decision_sanitizes_without_raw_private_terms() -> None:
+    detector = WebTriggerDetector()
+    private = detector.decision_for_manual_query(
+        "latest React release for our confidential client ACME internal deployment"
+    )
+    assert private.skip_reason == "query_looked_private_or_internal"
+
+    public = detector.decision_for_manual_query("latest React release")
+    assert public.candidate is not None
+    assert public.candidate.query == "latest React release"
 
 
 def test_brave_client_parses_web_results(event_loop) -> None:
@@ -76,12 +90,14 @@ def test_brave_client_parses_web_results(event_loop) -> None:
 def test_brave_client_handles_timeout_and_rate_limit_as_empty(event_loop) -> None:
     timeout_client = BraveSearchClient("secret", opener=lambda _request, timeout: (_ for _ in ()).throw(TimeoutError()))
     assert event_loop.run_until_complete(timeout_client.search("latest python release")) == []
+    assert timeout_client.last_error_reason == "request_timeout"
 
     def rate_limit(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
 
     rate_limited_client = BraveSearchClient("secret", opener=rate_limit)
     assert event_loop.run_until_complete(rate_limited_client.search("latest python release")) == []
+    assert rate_limited_client.last_error_reason == "request_failed"
 
 
 class FakeResponse:

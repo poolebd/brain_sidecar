@@ -98,8 +98,50 @@ def test_enqueue_window_replaces_stale_preview_without_counting_drop(event_loop,
     event_loop.run_until_complete(manager._enqueue_window(active.id, queue, AudioWindow(b"final", 1.0)))
 
     assert active.dropped_windows == 0
+    assert active.partial_windows_dropped_for_final == 1
     assert queue.qsize() == 1
     assert queue.get_nowait().pcm == b"final"
+
+
+def test_partial_enqueue_skips_when_transcriber_busy(event_loop, tmp_path: Path) -> None:
+    manager = SessionManager(make_settings(tmp_path))
+    queue: asyncio.Queue[AudioWindow] = asyncio.Queue(maxsize=2)
+    active = ActiveSession(
+        id="ses_test",
+        capture=DummyCapture(),
+        window_queue=queue,
+        postprocess_queue=asyncio.Queue(maxsize=1),
+        tasks=[],
+        deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
+    )
+    active.transcriber_busy = True
+    manager._active[active.id] = active
+
+    event_loop.run_until_complete(manager._maybe_enqueue_partial_window(active.id, queue, AudioWindow(b"preview", 0.0, preview=True)))
+
+    assert queue.qsize() == 0
+    assert active.partial_windows_skipped_busy == 1
+
+
+def test_partial_enqueue_tracks_queue_skip_and_success(event_loop, tmp_path: Path) -> None:
+    manager = SessionManager(make_settings(tmp_path))
+    queue: asyncio.Queue[AudioWindow] = asyncio.Queue(maxsize=2)
+    active = ActiveSession(
+        id="ses_test",
+        capture=DummyCapture(),
+        window_queue=queue,
+        postprocess_queue=asyncio.Queue(maxsize=1),
+        tasks=[],
+        deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
+    )
+    manager._active[active.id] = active
+
+    event_loop.run_until_complete(manager._maybe_enqueue_partial_window(active.id, queue, AudioWindow(b"preview", 0.0, preview=True)))
+    active.last_partial_enqueued_at = 0.0
+    event_loop.run_until_complete(manager._maybe_enqueue_partial_window(active.id, queue, AudioWindow(b"preview-2", 1.0, preview=True)))
+
+    assert active.partial_windows_enqueued == 1
+    assert active.partial_windows_skipped_queue == 1
 
 
 def test_balanced_default_queue_holds_normal_live_burst(event_loop, tmp_path: Path) -> None:

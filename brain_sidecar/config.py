@@ -65,9 +65,12 @@ class Settings:
     asr_log_prob_threshold: float = -1.0
     asr_compression_ratio_threshold: float = 2.4
     asr_min_audio_rms: float = 0.006
-    partial_transcripts_enabled: bool = True
+    partial_transcripts_enabled: bool = False
     partial_window_seconds: float = 2.0
     partial_min_interval_seconds: float = 2.0
+    ollama_chat_timeout_seconds: float = 20.0
+    ollama_embed_timeout_seconds: float = 12.0
+    work_memory_search_timeout_seconds: float = 1.5
     asr_min_free_vram_mb: int = 3500
     asr_unload_ollama_on_start: bool = True
     asr_gpu_free_timeout_seconds: float = 10.0
@@ -81,6 +84,12 @@ class Settings:
     web_context_min_interval_seconds: float = 90.0
     web_context_timeout_seconds: float = 3.0
     web_context_max_results: int = 3
+    recall_min_score: float = 0.58
+    recall_max_live_hits: int = 4
+    recall_prefer_summaries: bool = True
+    work_memory_job_history_root: Path = Path("/home/bp/Nextcloud2/Job Hunting")
+    work_memory_past_work_root: Path = Path("/home/bp/Nextcloud2/_library/_shoalstone/past work")
+    work_memory_pas_root: Path | None = None
     test_mode_enabled: bool = False
     test_audio_run_dir: Path = Path("runtime/test-mode-runs")
 
@@ -123,7 +132,7 @@ def load_settings() -> Settings:
         asr_log_prob_threshold=float(_env("BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD", "-1.0")),
         asr_compression_ratio_threshold=float(_env("BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD", "2.4")),
         asr_min_audio_rms=max(0.0, float(_env("BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS", "0.006"))),
-        partial_transcripts_enabled=_env_bool("BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED", True),
+        partial_transcripts_enabled=_env_bool("BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED", False),
         partial_window_seconds=min(
             transcription_window_seconds,
             max(0.5, float(_env("BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS", "2.0"))),
@@ -137,6 +146,18 @@ def load_settings() -> Settings:
         asr_gpu_free_timeout_seconds=max(
             0.0,
             float(_env("BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS", "10")),
+        ),
+        ollama_chat_timeout_seconds=max(
+            0.5,
+            float(_env("BRAIN_SIDECAR_OLLAMA_CHAT_TIMEOUT_SECONDS", "20")),
+        ),
+        ollama_embed_timeout_seconds=max(
+            0.5,
+            float(_env("BRAIN_SIDECAR_OLLAMA_EMBED_TIMEOUT_SECONDS", "12")),
+        ),
+        work_memory_search_timeout_seconds=max(
+            0.1,
+            float(_env("BRAIN_SIDECAR_WORK_MEMORY_SEARCH_TIMEOUT_SECONDS", "1.5")),
         ),
         speaker_enrollment_sample_seconds=max(
             2.0,
@@ -157,6 +178,23 @@ def load_settings() -> Settings:
             float(_env("BRAIN_SIDECAR_WEB_CONTEXT_TIMEOUT_SECONDS", "3.0")),
         ),
         web_context_max_results=max(1, int(_env("BRAIN_SIDECAR_WEB_CONTEXT_MAX_RESULTS", "3"))),
+        recall_min_score=max(0.0, min(1.0, float(_env("BRAIN_SIDECAR_RECALL_MIN_SCORE", "0.58")))),
+        recall_max_live_hits=max(0, int(_env("BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS", "4"))),
+        recall_prefer_summaries=_env_bool("BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES", True),
+        work_memory_job_history_root=Path(
+            _env("BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT", "/home/bp/Nextcloud2/Job Hunting")
+        ).expanduser(),
+        work_memory_past_work_root=Path(
+            _env(
+                "BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT",
+                "/home/bp/Nextcloud2/_library/_shoalstone/past work",
+            )
+        ).expanduser(),
+        work_memory_pas_root=(
+            Path(os.environ["BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT"]).expanduser()
+            if os.environ.get("BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT")
+            else None
+        ),
         test_mode_enabled=_env_bool("BRAIN_SIDECAR_TEST_MODE_ENABLED", False),
         test_audio_run_dir=Path(
             _env("BRAIN_SIDECAR_TEST_AUDIO_RUN_DIR", str(cwd_runtime / "test-mode-runs"))

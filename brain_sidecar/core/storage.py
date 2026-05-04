@@ -21,6 +21,8 @@ class Storage:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("pragma journal_mode=WAL")
+        self._conn.execute("pragma busy_timeout=5000")
         self.init_schema()
 
     @property
@@ -51,6 +53,10 @@ class Storage:
                   created_at real not null
                 );
                 create index if not exists idx_transcript_session on transcript_segments(session_id, created_at);
+                create table if not exists schema_migrations (
+                  name text primary key,
+                  applied_at real not null
+                );
                 create table if not exists note_cards (
                   id text primary key,
                   session_id text not null,
@@ -265,11 +271,41 @@ class Storage:
                   created_at real not null
                 );
                 create index if not exists idx_work_memory_recall_session on work_memory_recall_events(session_id, created_at);
+                create table if not exists session_memory_summaries (
+                  session_id text primary key,
+                  title text not null,
+                  summary text not null,
+                  topics_json text not null,
+                  decisions_json text not null,
+                  actions_json text not null,
+                  unresolved_questions_json text not null,
+                  entities_json text not null,
+                  lessons_json text not null,
+                  source_segment_ids_json text not null,
+                  created_at real not null,
+                  updated_at real not null
+                );
                 """
             )
             self._ensure_column("voice_corrections", "quarantined", "integer not null default 0")
             self._ensure_column("voice_corrections", "quarantine_reason", "text")
+            self._apply_migrations()
             self.conn.commit()
+
+    def _apply_migrations(self) -> None:
+        self._ensure_column("transcript_segments", "speaker_role", "text")
+        self._ensure_column("transcript_segments", "speaker_label", "text")
+        self._ensure_column("transcript_segments", "speaker_confidence", "real")
+        self._ensure_column("transcript_segments", "speaker_match_reason", "text")
+        self._ensure_column("transcript_segments", "speaker_low_confidence", "integer")
+        self._record_migration("20260504_transcript_speaker_fields")
+        self._record_migration("20260504_session_memory_summaries")
+
+    def _record_migration(self, name: str) -> None:
+        self.conn.execute(
+            "insert or ignore into schema_migrations(name, applied_at) values (?, ?)",
+            (name, time.time()),
+        )
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         columns = {
@@ -989,8 +1025,12 @@ class Storage:
             self.conn.execute(
                 """
                 insert or ignore into transcript_segments
-                (id, session_id, start_s, end_s, text, is_final, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
+                (
+                  id, session_id, start_s, end_s, text, is_final, created_at,
+                  speaker_role, speaker_label, speaker_confidence,
+                  speaker_match_reason, speaker_low_confidence
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     segment.id,
@@ -1000,6 +1040,11 @@ class Storage:
                     segment.text,
                     1 if segment.is_final else 0,
                     segment.created_at,
+                    segment.speaker_role,
+                    segment.speaker_label,
+                    segment.speaker_confidence,
+                    segment.speaker_match_reason,
+                    None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
                 ),
             )
             self.conn.commit()
@@ -1023,6 +1068,15 @@ class Storage:
                 text=row["text"],
                 is_final=bool(row["is_final"]),
                 created_at=row["created_at"],
+                speaker_role=row["speaker_role"],
+                speaker_label=row["speaker_label"],
+                speaker_confidence=row["speaker_confidence"],
+                speaker_match_reason=row["speaker_match_reason"],
+                speaker_low_confidence=(
+                    bool(row["speaker_low_confidence"])
+                    if row["speaker_low_confidence"] is not None
+                    else None
+                ),
             )
             for row in reversed(rows)
         ]
@@ -1124,7 +1178,82 @@ class Storage:
                 "text": row["text"],
                 "metadata": json.loads(row["metadata"]),
                 "vector": json.loads(row["vector_json"]),
+                "updated_at": row["updated_at"],
             }
+
+    def embedding_marker(self) -> tuple[int, float]:
+        row = self.conn.execute(
+            "select count(*) as count, coalesce(max(updated_at), 0) as updated_at from embedding_records"
+        ).fetchone()
+        return int(row["count"]), float(row["updated_at"])
+
+    def upsert_session_memory_summary(
+        self,
+        *,
+        session_id: str,
+        title: str,
+        summary: str,
+        topics: list[str],
+        decisions: list[str],
+        actions: list[str],
+        unresolved_questions: list[str],
+        entities: list[str],
+        lessons: list[str],
+        source_segment_ids: list[str],
+    ) -> None:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                insert into session_memory_summaries(
+                  session_id, title, summary, topics_json, decisions_json, actions_json,
+                  unresolved_questions_json, entities_json, lessons_json,
+                  source_segment_ids_json, created_at, updated_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(session_id) do update set
+                  title = excluded.title,
+                  summary = excluded.summary,
+                  topics_json = excluded.topics_json,
+                  decisions_json = excluded.decisions_json,
+                  actions_json = excluded.actions_json,
+                  unresolved_questions_json = excluded.unresolved_questions_json,
+                  entities_json = excluded.entities_json,
+                  lessons_json = excluded.lessons_json,
+                  source_segment_ids_json = excluded.source_segment_ids_json,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    session_id,
+                    title,
+                    summary,
+                    json.dumps(topics),
+                    json.dumps(decisions),
+                    json.dumps(actions),
+                    json.dumps(unresolved_questions),
+                    json.dumps(entities),
+                    json.dumps(lessons),
+                    json.dumps(source_segment_ids),
+                    now,
+                    now,
+                ),
+            )
+            self.conn.commit()
+
+    def session_memory_summaries(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            select *
+            from session_memory_summaries
+            order by updated_at desc
+            """
+        ).fetchall()
+        return [self._session_memory_summary_row_to_dict(row) for row in rows]
+
+    def sqlite_runtime_settings(self) -> dict[str, Any]:
+        journal_mode = self.conn.execute("pragma journal_mode").fetchone()[0]
+        busy_timeout = self.conn.execute("pragma busy_timeout").fetchone()[0]
+        return {"journal_mode": journal_mode, "busy_timeout": int(busy_timeout)}
 
     def clear_work_memory(self) -> None:
         with self._lock:
@@ -1373,6 +1502,22 @@ class Storage:
             "content_hash": row["content_hash"],
             "metadata": json.loads(row["metadata"]),
             "disabled": bool(row["disabled"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def _session_memory_summary_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "session_id": row["session_id"],
+            "title": row["title"],
+            "summary": row["summary"],
+            "topics": json.loads(row["topics_json"]),
+            "decisions": json.loads(row["decisions_json"]),
+            "actions": json.loads(row["actions_json"]),
+            "unresolved_questions": json.loads(row["unresolved_questions_json"]),
+            "entities": json.loads(row["entities_json"]),
+            "lessons": json.loads(row["lessons_json"]),
+            "source_segment_ids": json.loads(row["source_segment_ids_json"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }

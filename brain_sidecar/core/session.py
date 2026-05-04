@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from brain_sidecar.config import Settings
@@ -35,6 +35,12 @@ from brain_sidecar.core.web_context import (
     WebContextCandidate,
     WebContextSynthesizer,
     WebTriggerDetector,
+)
+from brain_sidecar.core.sidecar_cards import (
+    create_sidecar_card,
+    note_payload_to_sidecar_card,
+    recall_payload_to_sidecar_card,
+    status_sidecar_card,
 )
 from brain_sidecar.core.work_memory import WorkMemoryService
 
@@ -73,6 +79,13 @@ class ActiveSession:
     web_context_last_at: float = 0.0
     last_partial_enqueued_at: float = 0.0
     last_partial_text: str = ""
+    transcriber_busy: bool = False
+    preview_in_flight: bool = False
+    partial_windows_enqueued: int = 0
+    partial_windows_skipped_busy: int = 0
+    partial_windows_skipped_queue: int = 0
+    partial_windows_dropped_for_final: int = 0
+    partial_asr_duration_ms: float | None = None
 
 
 class SessionManager:
@@ -82,8 +95,8 @@ class SessionManager:
         self.storage = Storage(settings.data_dir)
         self.storage.connect()
         self.ollama = OllamaClient(settings)
-        self.recall = RecallIndex(self.storage, self.ollama)
-        self.work_memory = WorkMemoryService(self.storage, self.recall)
+        self.recall = RecallIndex(self.storage, self.ollama, settings)
+        self.work_memory = WorkMemoryService(self.storage, self.recall, settings)
         self.notes = NoteSynthesizer(self.ollama)
         self.speaker_identity = SpeakerIdentityService(self.storage, settings)
         self.transcriber = FasterWhisperTranscriber(settings)
@@ -188,8 +201,10 @@ class SessionManager:
         session_id: str,
         status: str,
         gpu_status: GpuStatus | None = None,
+        extra: dict | None = None,
     ) -> None:
         gpu_status = gpu_status or read_gpu_status()
+        active = self._active.get(session_id)
         await self.bus.publish(
             SidecarEvent(
                 type=EVENT_AUDIO_STATUS,
@@ -201,6 +216,8 @@ class SessionManager:
                     "gpu_pressure": gpu_status.gpu_pressure,
                     "ollama_gpu_models": gpu_status.ollama_gpu_models,
                     "asr_min_free_vram_mb": self.settings.asr_min_free_vram_mb,
+                    **(self._pipeline_metrics(active) if active is not None else {}),
+                    **(extra or {}),
                 },
             )
         )
@@ -235,37 +252,55 @@ class SessionManager:
                     "raw_audio_retained": False,
                     "save_transcript": active.save_transcript,
                     "dropped_windows": active.dropped_windows,
+                    **self._pipeline_metrics(active),
                 },
             )
         )
+        if active.save_transcript and active.recent_segments:
+            await self._safe_store_session_memory_summary(session_id, active.recent_segments)
 
     async def add_library_root(self, path: Path) -> dict:
         root_id = await asyncio.to_thread(self.storage.add_library_root, path.expanduser().resolve())
         return {"id": root_id, "path": str(path.expanduser().resolve())}
 
     async def search_web_context(self, query: str, *, session_id: str | None = None) -> dict:
-        cleaned_query = self.web_trigger_detector.build_query(query)
+        decision = self.web_trigger_detector.decision_for_manual_query(query)
+        cleaned_query = decision.sanitized_query
         enabled = self.settings.web_context_enabled
         configured = bool(self.settings.brave_search_api_key.strip())
-        if not enabled or not configured or not cleaned_query:
+        skip_reason = decision.skip_reason
+        if not enabled:
+            skip_reason = "web_disabled"
+        elif not configured:
+            skip_reason = "brave_key_missing"
+        elif decision.candidate is None:
+            skip_reason = skip_reason or "query_empty_after_sanitization"
+        if skip_reason:
             return {
                 "query": cleaned_query,
                 "enabled": enabled,
                 "configured": configured,
                 "note": None,
+                "skip_reason": skip_reason,
+                "cards": [],
             }
 
-        candidate = WebContextCandidate(
-            query=cleaned_query,
-            normalized_query=self.web_trigger_detector.normalize_query(cleaned_query),
-            freshness=self.web_trigger_detector.freshness_for(query),
-            source_segment_ids=[],
-        )
+        candidate = decision.candidate
+        assert candidate is not None
         try:
             results = await self.web_search.search(candidate.query, freshness=candidate.freshness)
         except Exception:
             results = []
+        if not results:
+            skip_reason = "no_results"
         note = self.web_context.synthesize(session_id or "", candidate, results)
+        card = (
+            note_payload_to_sidecar_card(session_id or "", note, save_transcript=False).to_dict()
+            if note is not None
+            else None
+        )
+        if not results:
+            skip_reason = getattr(self.web_search, "last_error_reason", None) or skip_reason
         if note is not None:
             note["session_id"] = session_id
         return {
@@ -273,6 +308,88 @@ class SessionManager:
             "enabled": enabled,
             "configured": configured,
             "note": note,
+            "skip_reason": skip_reason,
+            "cards": [card] if card else [],
+        }
+
+    async def ask_sidecar(self, query: str, *, session_id: str | None = None) -> dict:
+        cards: list[SidecarCard] = []
+        sections: dict[str, list[dict]] = {
+            "prior_transcript": [],
+            "pas_past_work": [],
+            "current_public_web": [],
+            "suggested_meeting_contribution": [],
+        }
+        recall_hits = await self.recall.search(query, limit=8, manual=True)
+        for hit in recall_hits:
+            payload = hit.to_dict()
+            payload["explicitly_requested"] = True
+            card = recall_payload_to_sidecar_card(session_id or "", payload)
+            card = replace(card, priority="high", card_key=f"manual:{card.card_key}")
+            cards.append(card)
+            sections["prior_transcript"].append(card.to_dict())
+        work_cards = await asyncio.wait_for(
+            asyncio.to_thread(self.work_memory.search, query, 5, manual=True),
+            timeout=self.settings.work_memory_search_timeout_seconds,
+        )
+        for work_card in work_cards:
+            payload = work_card.to_search_hit().to_dict()
+            payload["explicitly_requested"] = True
+            card = recall_payload_to_sidecar_card(session_id or "", payload)
+            card = replace(card, priority="high", card_key=f"manual:{card.card_key}")
+            cards.append(card)
+            sections["pas_past_work"].append(card.to_dict())
+        web_payload = await self.search_web_context(query, session_id=session_id)
+        for raw_card in web_payload.get("cards", []):
+            if isinstance(raw_card, dict):
+                card = create_sidecar_card(
+                    session_id=session_id or "",
+                    category=raw_card.get("category", "web"),
+                    title=raw_card.get("title", "Current public web"),
+                    body=raw_card.get("body", ""),
+                    suggested_say=raw_card.get("suggested_say"),
+                    suggested_ask=raw_card.get("suggested_ask"),
+                    why_now=raw_card.get("why_now", "Returned for the typed query."),
+                    priority="high",
+                    confidence=raw_card.get("confidence", 0.72),
+                    source_segment_ids=raw_card.get("source_segment_ids") or [],
+                    source_type=raw_card.get("source_type", "brave_web"),
+                    sources=raw_card.get("sources") or [],
+                    citations=raw_card.get("citations") or [],
+                    card_key=f"manual:{raw_card.get('card_key') or raw_card.get('id')}",
+                    ephemeral=True,
+                    explicitly_requested=True,
+                )
+                cards.append(card)
+                sections["current_public_web"].append(card.to_dict())
+        if cards:
+            top = cards[0]
+            contribution = create_sidecar_card(
+                session_id=session_id or "",
+                category="contribution",
+                title="Suggested meeting contribution",
+                body="Use the highest-confidence source above to add a grounded point without overclaiming.",
+                suggested_say=top.suggested_say or f"I found relevant context in {top.title}; it may be worth checking against the current plan.",
+                why_now="BP explicitly asked Sidecar to combine local, work-memory, and public context.",
+                priority="high",
+                confidence=min(0.82, max(0.55, top.confidence)),
+                source_segment_ids=top.source_segment_ids,
+                source_type=top.source_type,
+                sources=top.sources,
+                citations=top.citations,
+                card_key=f"manual:contribution:{new_id('query')}",
+                ephemeral=True,
+                explicitly_requested=True,
+            )
+            cards.append(contribution)
+            sections["suggested_meeting_contribution"].append(contribution.to_dict())
+        return {
+            "query": query,
+            "sanitized_web_query": web_payload.get("query"),
+            "web_skip_reason": web_payload.get("skip_reason"),
+            "cards": [card.to_dict() for card in cards],
+            "sections": sections,
+            "raw_audio_retained": False,
         }
 
     async def speaker_identity_status(self) -> dict:
@@ -454,6 +571,20 @@ class SessionManager:
         active = self._active.get(session_id)
         if active is None:
             return
+        if not window.preview:
+            retained: list[AudioWindow] = []
+            while True:
+                try:
+                    queued = queue.get_nowait()
+                    queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+                if queued.preview:
+                    active.partial_windows_dropped_for_final += 1
+                else:
+                    retained.append(queued)
+            for retained_window in retained:
+                await queue.put(retained_window)
         if queue.full():
             try:
                 stale = queue.get_nowait()
@@ -468,9 +599,12 @@ class SessionManager:
                                 "status": "catching_up",
                                 "dropped_windows": active.dropped_windows,
                                 "queue_depth": queue.qsize(),
+                                **self._pipeline_metrics(active),
                             },
                         )
                     )
+                else:
+                    active.partial_windows_dropped_for_final += 1
             except asyncio.QueueEmpty:
                 pass
         await queue.put(window)
@@ -487,12 +621,18 @@ class SessionManager:
         now = time.monotonic()
         if now - active.last_partial_enqueued_at < self.settings.partial_min_interval_seconds:
             return
+        if active.transcriber_busy or active.preview_in_flight:
+            active.partial_windows_skipped_busy += 1
+            return
         if queue.qsize() > 0 or queue.full():
+            active.partial_windows_skipped_queue += 1
             return
         try:
             queue.put_nowait(window)
             active.last_partial_enqueued_at = now
+            active.partial_windows_enqueued += 1
         except asyncio.QueueFull:
+            active.partial_windows_skipped_queue += 1
             return
 
     async def _run_transcription_loop(
@@ -505,6 +645,11 @@ class SessionManager:
             window = await window_queue.get()
             try:
                 if window.preview:
+                    active = self._active.get(session_id)
+                    if active is not None and window_queue.qsize() > 0:
+                        active.partial_windows_dropped_for_final += 1
+                        await self._publish_audio_status(session_id, "preview_dropped_for_final")
+                        continue
                     await self._transcribe_partial_window(session_id, window)
                     continue
                 batch = await self._transcribe_window(session_id, window)
@@ -518,12 +663,19 @@ class SessionManager:
         if active is None:
             return
         started_at = time.monotonic()
-        result = await self.transcriber.transcribe_pcm16(
-            window.pcm,
-            window.start_offset_s,
-            initial_prompt=self.settings.asr_initial_prompt,
-        )
+        active.transcriber_busy = True
+        active.preview_in_flight = True
+        try:
+            result = await self.transcriber.transcribe_pcm16(
+                window.pcm,
+                window.start_offset_s,
+                initial_prompt=self.settings.asr_initial_prompt,
+            )
+        finally:
+            active.transcriber_busy = False
+            active.preview_in_flight = False
         asr_duration_ms = round((time.monotonic() - started_at) * 1000, 1)
+        active.partial_asr_duration_ms = asr_duration_ms
         for span in result.spans:
             text_key = " ".join(span.text.lower().split())
             if not text_key or text_key == active.last_partial_text:
@@ -543,6 +695,7 @@ class SessionManager:
                 window,
                 persist=False,
             )
+            segment = _segment_with_speaker_payload(segment, speaker_payload)
             await self.bus.publish(
                 SidecarEvent(
                     type=EVENT_TRANSCRIPT_PARTIAL,
@@ -563,11 +716,15 @@ class SessionManager:
         if active is None:
             return SegmentBatch(segments=[])
         started_at = time.monotonic()
-        result = await self.transcriber.transcribe_pcm16(
-            window.pcm,
-            window.start_offset_s,
-            initial_prompt=self.settings.asr_initial_prompt,
-        )
+        active.transcriber_busy = True
+        try:
+            result = await self.transcriber.transcribe_pcm16(
+                window.pcm,
+                window.start_offset_s,
+                initial_prompt=self.settings.asr_initial_prompt,
+            )
+        finally:
+            active.transcriber_busy = False
         asr_duration_ms = round((time.monotonic() - started_at) * 1000, 1)
 
         segments: list[TranscriptSegment] = []
@@ -582,16 +739,17 @@ class SessionManager:
                 end_s=span.end_s,
                 text=span.text,
             )
-            active.recent_segments.append(segment)
-            active.recent_segments = active.recent_segments[-48:]
-            if active.save_transcript:
-                self.storage.add_transcript_segment(segment)
             speaker_payload = self._speaker_payload_for_span(
                 active,
                 segment,
                 window,
                 persist=active.save_transcript,
             )
+            segment = _segment_with_speaker_payload(segment, speaker_payload)
+            active.recent_segments.append(segment)
+            active.recent_segments = active.recent_segments[-48:]
+            if active.save_transcript:
+                self.storage.add_transcript_segment(segment)
             active.last_partial_text = ""
             segments.append(segment)
             active.final_segment_count += 1
@@ -631,11 +789,24 @@ class SessionManager:
             "queue_depth": active.window_queue.qsize(),
             "dropped_windows": active.dropped_windows,
             "asr_duration_ms": asr_duration_ms,
+            **self._pipeline_metrics(active),
             "speaker_identity_active": self.speaker_identity.status()["ready"],
             "save_transcript": active.save_transcript,
             "transcript_retention": "saved" if active.save_transcript else "temporary",
             "raw_audio_retained": False,
             **speaker_payload,
+        }
+
+    def _pipeline_metrics(self, active: ActiveSession) -> dict:
+        return {
+            "queue_depth": active.window_queue.qsize(),
+            "dropped_windows": active.dropped_windows,
+            "partial_windows_enqueued": active.partial_windows_enqueued,
+            "partial_windows_skipped_busy": active.partial_windows_skipped_busy,
+            "partial_windows_skipped_queue": active.partial_windows_skipped_queue,
+            "partial_windows_dropped_for_final": active.partial_windows_dropped_for_final,
+            "partial_asr_duration_ms": active.partial_asr_duration_ms,
+            "event_drops": self.bus.drop_count(active.id),
         }
 
     def _speaker_payload_for_span(
@@ -712,7 +883,7 @@ class SessionManager:
                 {"session_id": segment.session_id, "start_s": segment.start_s, "end_s": segment.end_s},
             )
         except Exception as exc:
-            return
+            await self._publish_error(segment.session_id, f"Embedding skipped: {exc}", fatal=False)
 
     async def _refresh_notes(self, session_id: str) -> None:
         active = self._active.get(session_id)
@@ -728,7 +899,14 @@ class SessionManager:
         recall_hits = []
         if not self.settings.disable_live_embeddings:
             try:
-                recall_hits = await self.recall.search(query, limit=5)
+                try:
+                    recall_hits = await self.recall.search(
+                        query,
+                        limit=self.settings.recall_max_live_hits,
+                        recent_text=query,
+                    )
+                except TypeError:
+                    recall_hits = await self.recall.search(query, limit=self.settings.recall_max_live_hits)
                 for hit in recall_hits:
                     payload = hit.to_dict()
                     payload["source_segment_ids"] = source_segment_ids
@@ -736,11 +914,15 @@ class SessionManager:
                         SidecarEvent(type=EVENT_RECALL_HIT, session_id=session_id, payload=payload)
                     )
                     await self._publish_sidecar_card(self._sidecar_card_from_recall_payload(session_id, payload))
-            except Exception:
+            except Exception as exc:
+                await self._publish_error(session_id, f"Recall search skipped: {exc}", fatal=False)
                 recall_hits = []
 
         try:
-            work_cards = self.work_memory.search(query, limit=3)
+            work_cards = await asyncio.wait_for(
+                asyncio.to_thread(self.work_memory.search, query, 3),
+                timeout=self.settings.work_memory_search_timeout_seconds,
+            )
             for card in work_cards:
                 if save_transcript:
                     self.work_memory.record_recall_event(session_id, card, query)
@@ -752,8 +934,8 @@ class SessionManager:
                     SidecarEvent(type=EVENT_RECALL_HIT, session_id=session_id, payload=payload)
                 )
                 await self._publish_sidecar_card(self._sidecar_card_from_recall_payload(session_id, payload))
-        except Exception:
-            pass
+        except Exception as exc:
+            await self._publish_error(session_id, f"Work memory recall skipped: {exc}", fatal=False)
 
         try:
             result = await self.notes.synthesize(session_id, recent_segments, recall_hits)
@@ -761,14 +943,27 @@ class SessionManager:
             await self._publish_error(session_id, f"Note synthesis failed: {exc}")
             return
 
+        preferred_cards_by_key = {
+            card.card_key or f"{card.category}:{card.title}": card
+            for card in getattr(result, "sidecar_cards", [])
+        }
         for note in result.notes:
             if save_transcript:
                 self.storage.add_note(note)
             payload = note.to_dict()
             await self.bus.publish(SidecarEvent(type=EVENT_NOTE_UPDATE, session_id=session_id, payload=payload))
-            await self._publish_sidecar_card(
-                self._sidecar_card_from_note_payload(session_id, payload, save_transcript=save_transcript)
-            )
+        if preferred_cards_by_key:
+            for card in preferred_cards_by_key.values():
+                await self._publish_sidecar_card(card)
+        else:
+            for note in result.notes:
+                await self._publish_sidecar_card(
+                    self._sidecar_card_from_note_payload(
+                        session_id,
+                        note.to_dict(),
+                        save_transcript=save_transcript,
+                    )
+                )
 
     async def _publish_sidecar_card(self, card: SidecarCard) -> None:
         await self.bus.publish(
@@ -782,79 +977,10 @@ class SessionManager:
         *,
         save_transcript: bool,
     ) -> SidecarCard:
-        kind = _safe_label(payload.get("kind"), default="note")
-        source_type = _safe_label(payload.get("source_type"), default="transcript")
-        category = _note_category(kind, source_type)
-        title = _clip_text(str(payload.get("title") or "Sidecar note"), 140)
-        body = _clip_text(str(payload.get("body") or ""), 900)
-        source_segment_ids = _string_list(payload.get("source_segment_ids"), limit=24)
-        sources = _source_list(payload.get("sources"))
-        ephemeral = bool(payload.get("ephemeral")) or not save_transcript
-        priority = _priority_for_category(category)
-        confidence = _clamp_float(payload.get("confidence"), default=0.78 if category == "web" else 0.72)
-        why_now = str(payload.get("why_now") or _note_why_now(category, source_type, save_transcript)).strip()
-        card_key = str(payload.get("card_key") or "").strip() or _card_key(
-            "note",
-            category,
-            source_type,
-            title,
-            source_segment_ids,
-        )
-        return SidecarCard(
-            id=str(payload.get("id") or new_id("card")),
-            session_id=session_id,
-            category=category,
-            title=title,
-            body=body,
-            suggested_say=_optional_text(payload.get("suggested_say"), 260),
-            suggested_ask=_optional_text(payload.get("suggested_ask"), 260),
-            why_now=_clip_text(why_now, 260),
-            priority=priority,
-            confidence=confidence,
-            source_segment_ids=source_segment_ids,
-            source_type="brave_web" if source_type == "brave_web" else "transcript",
-            sources=sources,
-            citations=_string_list(payload.get("citations"), limit=8),
-            ephemeral=ephemeral,
-            expires_at=time.time() + 900 if ephemeral else None,
-            card_key=card_key,
-            created_at=float(payload.get("created_at") or time.time()),
-            raw_audio_retained=False,
-        )
+        return note_payload_to_sidecar_card(session_id, payload, save_transcript=save_transcript)
 
     def _sidecar_card_from_recall_payload(self, session_id: str, payload: dict) -> SidecarCard:
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-        source_type = str(payload.get("source_type") or "saved_transcript")
-        category = "work_memory" if source_type == "work_memory_project" else "memory"
-        title = str(metadata.get("title") or _source_title(source_type)).strip()
-        body = str(payload.get("text") or "").strip()
-        score = _clamp_float(payload.get("score"), default=0.65)
-        source_segment_ids = _string_list(payload.get("source_segment_ids"), limit=24)
-        reason = str(metadata.get("reason") or metadata.get("retrieval_reason") or "").strip()
-        if not reason:
-            reason = "Retrieved because it overlaps with the recent transcript."
-        citations = _string_list(metadata.get("citations"), limit=8)
-        source_id = str(payload.get("source_id") or "")
-        return SidecarCard(
-            id=new_id("card"),
-            session_id=session_id,
-            category=category,
-            title=_clip_text(title, 140),
-            body=_clip_text(body, 900),
-            suggested_say=_optional_text(metadata.get("suggested_contribution"), 260),
-            suggested_ask=_optional_text(metadata.get("suggested_ask"), 260),
-            why_now=_clip_text(reason, 260),
-            priority="high" if score >= 0.9 else "normal",
-            confidence=score,
-            source_segment_ids=source_segment_ids,
-            source_type=_card_source_type(source_type),
-            sources=_source_list(metadata.get("sources")),
-            citations=citations,
-            ephemeral=True,
-            expires_at=time.time() + 900,
-            card_key=f"recall:{source_type}:{source_id}",
-            raw_audio_retained=False,
-        )
+        return recall_payload_to_sidecar_card(session_id, payload)
 
     def _web_context_configured(self) -> bool:
         return self.settings.web_context_enabled and bool(self.settings.brave_search_api_key.strip())
@@ -865,7 +991,8 @@ class SessionManager:
         active = self._active.get(session_id)
         if active is None or active.web_context_queue is None:
             return
-        candidate = self.web_trigger_detector.detect(recent_segments)
+        decision = self.web_trigger_detector.decision_for_segments(recent_segments)
+        candidate = decision.candidate
         if candidate is None:
             return
         if (
@@ -906,13 +1033,23 @@ class SessionManager:
                     active.web_context_last_at
                     and now - active.web_context_last_at < self.settings.web_context_min_interval_seconds
                 ):
+                    await self._publish_sidecar_card(
+                        status_sidecar_card(
+                            session_id=session_id,
+                            title="Web lookup skipped",
+                            body="Current-web search is cooling down to avoid noisy repeated lookups.",
+                            why_now="A live web candidate appeared before the configured cooldown elapsed.",
+                            card_key=f"web-skip:cooldown:{candidate.normalized_query}",
+                        )
+                    )
                     continue
 
                 active.web_context_seen_queries.add(candidate.normalized_query)
                 active.web_context_last_at = now
                 try:
                     results = await self.web_search.search(candidate.query, freshness=candidate.freshness)
-                except Exception:
+                except Exception as exc:
+                    await self._publish_error(session_id, f"Web context search skipped: {exc}", fatal=False)
                     results = []
                 payload = self.web_context.synthesize(session_id, candidate, results)
                 if payload is not None:
@@ -920,10 +1057,20 @@ class SessionManager:
                     await self._publish_sidecar_card(
                         self._sidecar_card_from_note_payload(session_id, payload, save_transcript=False)
                     )
+                else:
+                    await self._publish_sidecar_card(
+                        status_sidecar_card(
+                            session_id=session_id,
+                            title="No web results",
+                            body="The sanitized public web lookup did not return compact sources.",
+                            why_now="The meeting asked for current public context, but Brave returned no usable results.",
+                            card_key=f"web-skip:no-results:{candidate.normalized_query}",
+                        )
+                    )
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                pass
+            except Exception as exc:
+                await self._publish_error(session_id, f"Web context worker skipped a candidate: {exc}", fatal=False)
             finally:
                 web_context_queue.task_done()
 
@@ -950,6 +1097,95 @@ class SessionManager:
                 payload=profile,
             )
         )
+
+    async def _safe_store_session_memory_summary(
+        self,
+        session_id: str,
+        segments: list[TranscriptSegment],
+    ) -> None:
+        try:
+            summary = _build_session_memory_summary(session_id, segments)
+            await asyncio.to_thread(self.storage.upsert_session_memory_summary, **summary)
+            await self.recall.add_text(
+                "session_summary",
+                session_id,
+                summary["summary"],
+                {
+                    "session_id": session_id,
+                    "title": summary["title"],
+                    "source_segment_ids": summary["source_segment_ids"],
+                    "summary": True,
+                },
+            )
+        except Exception as exc:
+            await self._publish_error(session_id, f"Session memory summary skipped: {exc}", fatal=False)
+
+
+def _segment_with_speaker_payload(segment: TranscriptSegment, payload: dict) -> TranscriptSegment:
+    return replace(
+        segment,
+        speaker_role=payload.get("speaker_role") or segment.speaker_role,
+        speaker_label=payload.get("speaker_label") or segment.speaker_label,
+        speaker_confidence=payload.get("speaker_confidence") if payload.get("speaker_confidence") is not None else segment.speaker_confidence,
+        speaker_match_reason=payload.get("speaker_match_reason") or segment.speaker_match_reason,
+        speaker_low_confidence=(
+            bool(payload.get("speaker_low_confidence"))
+            if payload.get("speaker_low_confidence") is not None
+            else segment.speaker_low_confidence
+        ),
+    )
+
+
+def _build_session_memory_summary(session_id: str, segments: list[TranscriptSegment]) -> dict:
+    text = " ".join(segment.text.strip() for segment in segments if segment.text.strip())
+    clipped = _clip_text(text, 1200)
+    topics = _keyword_list(text, limit=8)
+    source_segment_ids = [segment.id for segment in segments[-24:]]
+    return {
+        "session_id": session_id,
+        "title": f"Session summary {time.strftime('%Y-%m-%d %H:%M')}",
+        "summary": clipped or "Saved session with no clear transcript text.",
+        "topics": topics,
+        "decisions": _sentence_matches(text, ["decided", "decision", "settled", "approved"]),
+        "actions": _sentence_matches(text, ["follow up", "i'll", "i will", "action", "owner"]),
+        "unresolved_questions": _sentence_matches(text, ["?", "open question", "unclear", "need to know"]),
+        "entities": topics[:6],
+        "lessons": _sentence_matches(text, ["risk", "learned", "lesson", "watch", "dependency"]),
+        "source_segment_ids": source_segment_ids,
+    }
+
+
+def _keyword_list(text: str, *, limit: int) -> list[str]:
+    terms = [
+        term
+        for term in _safe_label(text, default="").replace("_", " ").split()
+        if len(term) >= 4 and term not in {"that", "this", "with", "from", "will", "need", "have"}
+    ]
+    seen: list[str] = []
+    for term in terms:
+        if term not in seen:
+            seen.append(term)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def _sentence_matches(text: str, needles: list[str], *, limit: int = 5) -> list[str]:
+    sentences = [sentence.strip() for sentence in re_split_sentences(text) if sentence.strip()]
+    matches: list[str] = []
+    for sentence in sentences:
+        lower = sentence.lower()
+        if any(needle in lower for needle in needles):
+            matches.append(_clip_text(sentence, 220))
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+def re_split_sentences(text: str) -> list[str]:
+    import re
+
+    return re.split(r"(?<=[?.!])\s+", text)
 
 
 def _clip_text(value: str, limit: int) -> str:
