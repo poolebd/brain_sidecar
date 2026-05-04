@@ -92,6 +92,9 @@ Useful knobs:
 - `BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS`: wait budget after unloading Ollama, default `10`.
 - `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`: Ollama `keep_alive` sent by app chat/embed calls, default `10m` so the smaller chat model can stay warm beside ASR.
 - `BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE`: number of pending audio windows before stale windows are dropped, default `8`.
+- `BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED`: publish guarded provisional transcript previews, default `true`.
+- `BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS`: preview ASR window length, capped to the final ASR window, default `2.0`.
+- `BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS`: minimum spacing between preview ASR jobs, default `2.0`.
 - `BRAIN_SIDECAR_DEDUPE_SIMILARITY_THRESHOLD`: suppresses repeated text from overlapping windows.
 - `BRAIN_SIDECAR_ASR_INITIAL_PROMPT`: optional vocabulary/context hint for names, projects, or jargon.
 - `BRAIN_SIDECAR_VOICE_PROFILE_REQUIRED_PHRASES`: accepted enrollment phrases before profile hints activate.
@@ -105,6 +108,46 @@ Useful knobs:
 Web context uses Brave Web Search only. It sends a compact sanitized query, never
 raw transcript windows, and publishes results as live-only Topic Notes. These
 notes are not stored in SQLite, embedded, or added to recall indexes.
+
+## Live Meeting Workflow
+
+Use **Listen** for temporary, listen-only meetings and **Record** only when the
+transcript should become future recall material. The main view is organized for
+a quick meeting glance:
+
+- Live Transcript shows final transcript lines and gray provisional partials.
+- Contribution Lane shows the best current "say this," "ask this," risk,
+  follow-up, memory, work-memory, and web cards.
+- Work Notes keeps the broader action/decision/question/context buckets.
+- Tools keeps operational status, GPU details, indexing, and speaker identity
+  controls away from the transcript.
+
+Capture is USB-only in the product path. `server_device` records from the USB
+microphone attached to this computer, `fixture` is available only in explicit
+test mode, and browser microphone streaming is rejected.
+
+## Event Contract
+
+SSE session streams emit compatibility events plus the normalized sidecar card
+contract:
+
+- `transcript_partial`: provisional ASR preview. It has the same core payload as
+  final transcript events, sets `is_final: false`, is never persisted, and is
+  replaced/reconciled by overlapping final lines in the UI.
+- `transcript_final`: authoritative transcript segment. It is persisted only
+  when the active session is in saved/recording mode.
+- `note_update` and `recall_hit`: existing compatibility events consumed by the
+  UI and external clients.
+- `sidecar_card`: normalized meeting-assistant card with category, title, body,
+  optional suggested say/ask text, `why_now`, priority, confidence,
+  `source_segment_ids`, `source_type`, sources/citations, `card_key`,
+  ephemeral/expiry metadata, and `raw_audio_retained: false`.
+- `audio_status` and `gpu_status`: operational state such as queue depth,
+  dropped windows, ASR settings, and GPU pressure.
+
+Raw audio is never written to disk. Temporary/listen-only sessions do not store
+transcript text, note cards, embeddings, work-memory recall events, or web
+context. Web cards remain sanitized, Brave-backed, live-only, and ephemeral.
 
 ## Work Memory
 

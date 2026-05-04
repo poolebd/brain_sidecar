@@ -81,6 +81,27 @@ def test_enqueue_window_drops_stale_audio_window(event_loop, tmp_path: Path) -> 
     assert queue.get_nowait().pcm == b"new"
 
 
+def test_enqueue_window_replaces_stale_preview_without_counting_drop(event_loop, tmp_path: Path) -> None:
+    manager = SessionManager(make_settings(tmp_path))
+    queue: asyncio.Queue[AudioWindow] = asyncio.Queue(maxsize=1)
+    active = ActiveSession(
+        id="ses_test",
+        capture=DummyCapture(),
+        window_queue=queue,
+        postprocess_queue=asyncio.Queue(maxsize=1),
+        tasks=[],
+        deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
+    )
+    manager._active[active.id] = active
+
+    event_loop.run_until_complete(queue.put(AudioWindow(b"preview", 0.0, preview=True)))
+    event_loop.run_until_complete(manager._enqueue_window(active.id, queue, AudioWindow(b"final", 1.0)))
+
+    assert active.dropped_windows == 0
+    assert queue.qsize() == 1
+    assert queue.get_nowait().pcm == b"final"
+
+
 def test_balanced_default_queue_holds_normal_live_burst(event_loop, tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path,

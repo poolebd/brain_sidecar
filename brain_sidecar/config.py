@@ -65,6 +65,9 @@ class Settings:
     asr_log_prob_threshold: float = -1.0
     asr_compression_ratio_threshold: float = 2.4
     asr_min_audio_rms: float = 0.006
+    partial_transcripts_enabled: bool = True
+    partial_window_seconds: float = 2.0
+    partial_min_interval_seconds: float = 2.0
     asr_min_free_vram_mb: int = 3500
     asr_unload_ollama_on_start: bool = True
     asr_gpu_free_timeout_seconds: float = 10.0
@@ -120,6 +123,15 @@ def load_settings() -> Settings:
         asr_log_prob_threshold=float(_env("BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD", "-1.0")),
         asr_compression_ratio_threshold=float(_env("BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD", "2.4")),
         asr_min_audio_rms=max(0.0, float(_env("BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS", "0.006"))),
+        partial_transcripts_enabled=_env_bool("BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED", True),
+        partial_window_seconds=min(
+            transcription_window_seconds,
+            max(0.5, float(_env("BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS", "2.0"))),
+        ),
+        partial_min_interval_seconds=max(
+            0.5,
+            float(_env("BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS", "2.0")),
+        ),
         asr_min_free_vram_mb=max(0, int(_env("BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB", "3500"))),
         asr_unload_ollama_on_start=_env_bool("BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START", True),
         asr_gpu_free_timeout_seconds=max(

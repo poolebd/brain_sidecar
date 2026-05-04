@@ -72,7 +72,8 @@ type TranscriptLine = {
 
 type NoteSource = {
   title: string;
-  url: string;
+  url?: string;
+  path?: string;
 };
 
 type NoteCard = {
@@ -178,6 +179,9 @@ type GpuHealth = {
   ollama_keep_alive?: string;
   asr_beam_size?: number;
   transcription_queue_size?: number;
+  partial_transcripts_enabled?: boolean;
+  partial_window_seconds?: number;
+  partial_min_interval_seconds?: number;
   speaker_enrollment_sample_seconds?: number;
   speaker_identity_label?: string;
   speaker_retain_raw_enrollment_audio?: boolean;
@@ -345,6 +349,7 @@ export function App() {
   const [speakerRecordingNow, setSpeakerRecordingNow] = useState(Date.now());
   const [transcriptEvents, setTranscriptEvents] = useState<TranscriptEvent[]>([]);
   const [sidecarCards, setSidecarCards] = useState<SidecarDisplayCard[]>([]);
+  const [dismissedCardKeys, setDismissedCardKeys] = useState<Set<string>>(() => new Set());
   const [expandedContextCards, setExpandedContextCards] = useState<Set<string>>(() => new Set());
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>([]);
   const [showAllContext, setShowAllContext] = useState(false);
@@ -420,8 +425,20 @@ export function App() {
     return Math.min(100, Math.round((gpu.memory_used_mb / gpu.memory_total_mb) * 100));
   }, [gpu.memory_total_mb, gpu.memory_used_mb]);
   const usefulContextCards = useMemo(
-    () => buildSidecarDisplayCards(sidecarCards, transcriptEvents, { maxCards: Number.POSITIVE_INFINITY }),
-    [sidecarCards, transcriptEvents],
+    () => buildSidecarDisplayCards(
+      sidecarCards.filter((card) => !dismissedCardKeys.has(card.cardKey ?? card.id)),
+      transcriptEvents,
+      { maxCards: Number.POSITIVE_INFINITY },
+    ),
+    [dismissedCardKeys, sidecarCards, transcriptEvents],
+  );
+  const contributionCards = useMemo(
+    () => buildSidecarDisplayCards(
+      sidecarCards.filter((card) => !dismissedCardKeys.has(card.cardKey ?? card.id)),
+      transcriptEvents,
+      { maxCards: 5 },
+    ),
+    [dismissedCardKeys, sidecarCards, transcriptEvents],
   );
   const visibleContextCards = showAllContext
     ? usefulContextCards
@@ -585,6 +602,7 @@ export function App() {
     setPipeline({ queueDepth: 0, droppedWindows: 0 });
     setTranscriptEvents([]);
     setSidecarCards([]);
+    setDismissedCardKeys(new Set());
     setExpandedContextCards(new Set());
     setSystemLogs([]);
     setShowAllContext(false);
@@ -601,9 +619,11 @@ export function App() {
     source.onmessage = handleEventMessage;
     for (const type of [
       "audio_status",
+      "transcript_partial",
       "transcript_final",
       "note_update",
       "recall_hit",
+      "sidecar_card",
       "gpu_status",
       "error",
     ]) {
@@ -663,10 +683,19 @@ export function App() {
     if (envelope.type === "gpu_status") {
       setGpu((current) => ({ ...current, ...payload }));
     }
+    if (envelope.type === "transcript_partial") {
+      setPipeline((current) => ({
+        ...current,
+        queueDepth: Number(payload.queue_depth ?? current.queueDepth),
+        droppedWindows: Number(payload.dropped_windows ?? current.droppedWindows),
+      }));
+      appendTranscriptEvent(transcriptEventFromPayload(payload, envelope));
+    }
     if (envelope.type === "transcript_final") {
       setPipeline((current) => ({
         ...current,
         queueDepth: Number(payload.queue_depth ?? current.queueDepth),
+        droppedWindows: Number(payload.dropped_windows ?? current.droppedWindows),
       }));
       const line = {
         id: String(payload.id),
@@ -678,6 +707,12 @@ export function App() {
       };
       setTranscript((current) => [...current, line]);
       appendTranscriptEvent(transcriptEventFromPayload(payload, envelope));
+    }
+    if (envelope.type === "sidecar_card") {
+      const card = displayCardForSidecarPayload(payload, envelope);
+      if (card) {
+        appendSidecarCard(card);
+      }
     }
     if (envelope.type === "note_update") {
       const note = noteFromPayload(payload);
@@ -768,14 +803,63 @@ export function App() {
   }
 
   function appendTranscriptEvent(event: TranscriptEvent) {
-    setTranscriptEvents((current) => [...current, event].slice(-240));
+    setTranscriptEvents((current) => {
+      const withoutSameId = current.filter((candidate) => candidate.id !== event.id);
+      const reconciled = event.isFinal
+        ? withoutSameId.filter((candidate) => candidate.isFinal || !transcriptEventsOverlap(candidate, event))
+        : withoutSameId;
+      return [...reconciled, event].slice(-240);
+    });
     if (!followLiveRef.current) {
       setUnseenItems((current) => current + 1);
     }
   }
 
   function appendSidecarCard(card: SidecarDisplayCard) {
-    setSidecarCards((current) => [card, ...current.filter((candidate) => candidate.id !== card.id)].slice(0, 160));
+    const key = card.cardKey ?? card.id;
+    if (dismissedCardKeys.has(key) && !card.pinned) {
+      return;
+    }
+    setSidecarCards((current) => [
+      card,
+      ...current.filter((candidate) => (candidate.cardKey ?? candidate.id) !== key),
+    ].slice(0, 160));
+  }
+
+  function togglePinnedCard(card: SidecarDisplayCard) {
+    const key = card.cardKey ?? card.id;
+    setSidecarCards((current) => current.map((candidate) => (
+      (candidate.cardKey ?? candidate.id) === key
+        ? { ...candidate, pinned: !candidate.pinned }
+        : candidate
+    )));
+  }
+
+  function dismissCard(card: SidecarDisplayCard) {
+    const key = card.cardKey ?? card.id;
+    setDismissedCardKeys((current) => new Set(current).add(key));
+    setSidecarCards((current) => current.filter((candidate) => (candidate.cardKey ?? candidate.id) !== key));
+  }
+
+  async function copyCardSuggestion(card: SidecarDisplayCard) {
+    const text = card.suggestedSay ?? card.suggestedAsk;
+    if (!text) {
+      return;
+    }
+    try {
+      await navigator.clipboard?.writeText(text);
+      appendSystemLog({
+        level: "status",
+        title: "Copied suggestion",
+        message: text,
+      });
+    } catch {
+      appendSystemLog({
+        level: "warning",
+        title: "Copy unavailable",
+        message: text,
+      });
+    }
   }
 
   function appendSystemLog(item: SystemLogInput) {
@@ -1386,6 +1470,16 @@ export function App() {
             <TranscriptPane events={transcriptEvents} />
           </div>
 
+          <ContributionLane
+            cards={contributionCards}
+            expandedCards={expandedContextCards}
+            showDebugMetadata={showDebugMetadata}
+            onToggle={toggleExpandedContextCard}
+            onPin={togglePinnedCard}
+            onDismiss={dismissCard}
+            onCopy={copyCardSuggestion}
+          />
+
           {!followLive && (
             <button className="jump-live" onClick={() => scrollFieldToLive("smooth")}>
               Jump to live{unseenItems > 0 ? ` (${unseenItems})` : ""}
@@ -1438,6 +1532,9 @@ export function App() {
             expandedCards={expandedContextCards}
             showDebugMetadata={showDebugMetadata}
             onToggle={toggleExpandedContextCard}
+            onPin={togglePinnedCard}
+            onDismiss={dismissCard}
+            onCopy={copyCardSuggestion}
           />
           {usefulContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT && (
             <button className="secondary show-more-context" onClick={() => setShowAllContext((value) => !value)}>
@@ -1947,6 +2044,9 @@ function WorkNotesPane({
   expandedCards,
   showDebugMetadata,
   onToggle,
+  onPin,
+  onDismiss,
+  onCopy,
 }: {
   groups: Record<WorkCardBucket, SidecarDisplayCard[]>;
   usefulCount: number;
@@ -1957,6 +2057,9 @@ function WorkNotesPane({
   expandedCards: Set<string>;
   showDebugMetadata: boolean;
   onToggle: (id: string) => void;
+  onPin: (card: SidecarDisplayCard) => void;
+  onDismiss: (card: SidecarDisplayCard) => void;
+  onCopy: (card: SidecarDisplayCard) => void;
 }) {
   const cardCount = WORK_NOTE_SECTIONS.reduce((count, section) => count + groups[section.bucket].length, 0);
   if (loading && cardCount === 0) {
@@ -1986,6 +2089,9 @@ function WorkNotesPane({
                 expanded={expandedCards.has(card.id)}
                 showDebugMetadata={showDebugMetadata}
                 onToggle={() => onToggle(card.id)}
+                onPin={() => onPin(card)}
+                onDismiss={() => onDismiss(card)}
+                onCopy={() => onCopy(card)}
               />
             ))
           )}
@@ -1995,31 +2101,104 @@ function WorkNotesPane({
   );
 }
 
+function ContributionLane({
+  cards,
+  expandedCards,
+  showDebugMetadata,
+  onToggle,
+  onPin,
+  onDismiss,
+  onCopy,
+}: {
+  cards: SidecarDisplayCard[];
+  expandedCards: Set<string>;
+  showDebugMetadata: boolean;
+  onToggle: (id: string) => void;
+  onPin: (card: SidecarDisplayCard) => void;
+  onDismiss: (card: SidecarDisplayCard) => void;
+  onCopy: (card: SidecarDisplayCard) => void;
+}) {
+  if (cards.length === 0) {
+    return null;
+  }
+  return (
+    <section className="contribution-lane" aria-label="Contribution Lane">
+      <div className="contribution-lane-head">
+        <div>
+          <p className="label">Contribution Lane</p>
+          <h2>Say, ask, watch</h2>
+        </div>
+        <span>{cards.length}</span>
+      </div>
+      <div className="contribution-card-row">
+        {cards.map((card) => (
+          <ContextCard
+            key={`lane-${card.id}`}
+            card={card}
+            compact
+            expanded={expandedCards.has(card.id)}
+            showDebugMetadata={showDebugMetadata}
+            onToggle={() => onToggle(card.id)}
+            onPin={() => onPin(card)}
+            onDismiss={() => onDismiss(card)}
+            onCopy={() => onCopy(card)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ContextCard({
   card,
+  compact = false,
   expanded,
   showDebugMetadata,
   onToggle,
+  onPin,
+  onDismiss,
+  onCopy,
 }: {
   card: SidecarDisplayCard;
+  compact?: boolean;
   expanded: boolean;
   showDebugMetadata: boolean;
   onToggle: () => void;
+  onPin: () => void;
+  onDismiss: () => void;
+  onCopy: () => void;
 }) {
   const hasNormalDetails = Boolean((card.sources && card.sources.length > 0) || (card.citations && card.citations.length > 0));
   const hasDebugDetails = showDebugMetadata && Boolean(card.rawText || card.debugMetadata);
   const hasDetails = hasNormalDetails || hasDebugDetails;
+  const suggestion = card.suggestedSay ?? card.suggestedAsk;
   return (
-    <article className={`context-card field-bubble ${card.category === "work" ? "memory" : card.category}`} aria-label={`${categoryLabel(card.category)} context card`}>
+    <article
+      className={`context-card field-bubble ${compact ? "compact" : ""} ${card.provisional ? "provisional" : ""} ${card.category === "work" || card.category === "work_memory" ? "memory" : card.category}`}
+      aria-label={`${categoryLabel(card.category)} context card`}
+    >
       <div className="context-card-head">
         <span>{categoryLabel(card.category)}</span>
-        <time>{formatClock(card.at)}</time>
+        <div className="card-actions">
+          <time>{formatClock(card.at)}</time>
+          <button type="button" className="icon-button" aria-label={card.pinned ? "Unpin card" : "Pin card"} onClick={onPin}>
+            {card.pinned ? "Pinned" : "Pin"}
+          </button>
+          <button type="button" className="icon-button" aria-label="Dismiss card" onClick={onDismiss}>Dismiss</button>
+        </div>
       </div>
       <h3>{card.title}</h3>
       {card.source || card.date ? (
         <p className="context-card-source">{[card.source, card.date].filter(Boolean).join(" / ")}</p>
       ) : null}
       <p>{card.summary}</p>
+      {suggestion && (
+        <div className="suggestion-row">
+          <strong>{card.suggestedAsk ? "Ask this" : "Say this"}</strong>
+          <span>{suggestion}</span>
+          <button type="button" className="link-button" onClick={onCopy}>Copy</button>
+        </div>
+      )}
       {card.whyRelevant && <p className="context-card-why">{card.whyRelevant}</p>}
       {hasDetails && (
         <>
@@ -2031,9 +2210,13 @@ function ContextCard({
               {card.sources && card.sources.length > 0 && (
                 <div className="note-sources" aria-label={`Sources for ${card.title}`}>
                   {card.sources.map((source) => (
-                    <a key={source.url} href={source.url} target="_blank" rel="noreferrer">
-                      {source.title}
-                    </a>
+                    source.url ? (
+                      <a key={source.url} href={source.url} target="_blank" rel="noreferrer">
+                        {source.title}
+                      </a>
+                    ) : (
+                      <small key={source.path ?? source.title}>{source.title}</small>
+                    )
                   ))}
                 </div>
               )}
@@ -2083,6 +2266,51 @@ function workCardFromHit(hit: RecallHit): WorkMemoryCard {
   };
 }
 
+function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope: EventEnvelope): SidecarDisplayCard | null {
+  const title = String(payload.title ?? "").trim();
+  const body = String(payload.body ?? "").trim();
+  if (!title || !body) {
+    return null;
+  }
+  const category = sidecarCategoryFromPayload(payload.category);
+  const at = payloadTimeMs(payload.created_at ?? envelope.at) ?? Date.now();
+  const sourceSegmentIds = parseStringList(payload.source_segment_ids);
+  const sourceType = String(payload.source_type ?? "transcript");
+  const cardKey = payload.card_key ? String(payload.card_key) : undefined;
+  const suggestionSay = stringOrUndefined(payload.suggested_say);
+  const suggestionAsk = stringOrUndefined(payload.suggested_ask);
+  return {
+    id: `sidecar-${String(payload.id)}`,
+    cardKey,
+    category,
+    title: readableTitle(title, categoryLabel(category)),
+    summary: body,
+    whyRelevant: stringOrUndefined(payload.why_now),
+    at,
+    score: numberOrUndefined(payload.confidence),
+    confidence: numberOrUndefined(payload.confidence),
+    rawText: body,
+    sourceSegmentIds,
+    suggestedSay: suggestionSay,
+    suggestedAsk: suggestionAsk,
+    priority: priorityFromValue(payload.priority),
+    sources: parseNoteSources(payload.sources),
+    citations: parseStringList(payload.citations),
+    ephemeral: Boolean(payload.ephemeral),
+    expiresAt: payloadTimeMs(payload.expires_at),
+    provisional: Boolean(payload.provisional),
+    debugMetadata: {
+      sourceType,
+      sourceId: payload.id,
+      backendLabel: payload.category,
+      confidence: payload.confidence,
+      cardKey,
+      sourceSegmentIds,
+      rawAudioRetained: payload.raw_audio_retained,
+    },
+  };
+}
+
 function transcriptEventFromPayload(payload: Record<string, unknown>, envelope: EventEnvelope): TranscriptEvent {
   const source = transcriptSourceFromPayload(payload.source);
   const at = payloadTimeMs(payload.created_at ?? envelope.at) ?? Date.now();
@@ -2115,10 +2343,13 @@ function typedTranscriptEvent(text: string): TranscriptEvent {
 
 function displayCardForNote(note: NoteCard, options: BackendItemOptions = {}): SidecarDisplayCard {
   const sourceSegmentIds = options.sourceSegmentIds ?? note.source_segment_ids;
-  const category = note.ephemeral || note.source_type === "brave_web" ? "web" : "note";
+  const category = note.ephemeral || note.source_type === "brave_web"
+    ? "web"
+    : sidecarCategoryFromPayload(["action", "decision", "question", "risk", "clarification", "contribution"].includes(note.kind) ? note.kind : "note");
   const at = payloadTimeMs(note.created_at) ?? Date.now();
   return {
     id: `note-${note.id}-${options.origin ?? "live"}`,
+    cardKey: `note:${category}:${note.title.toLowerCase().trim()}`,
     category,
     title: readableTitle(note.title, category === "web" ? "Web context" : "Note"),
     summary: note.body,
@@ -2145,6 +2376,7 @@ function displayCardForRecall(hit: RecallHit, options: BackendItemOptions = {}):
   const at = Date.now();
   return {
     id: `recall-${sourceType}-${hit.source_id}-${at}`,
+    cardKey: `recall:${sourceType}:${hit.source_id}`,
     category: "memory",
     title,
     summary: hit.text,
@@ -2173,7 +2405,8 @@ function displayCardForWorkCard(card: WorkMemoryCard, options: BackendItemOption
   const at = Date.now();
   return {
     id: `work-${card.project_id}-${at}`,
-    category: "work",
+    cardKey: `work:${card.project_id}`,
+    category: "work_memory",
     title: readableTitle(card.title, "Prior work"),
     summary: card.lesson || card.text,
     whyRelevant: card.reason ? `Similar pattern: ${card.reason}` : "Relevant prior work pattern.",
@@ -2199,7 +2432,14 @@ function displayCardForWorkCard(card: WorkMemoryCard, options: BackendItemOption
 
 function categoryLabel(category: SidecarDisplayCard["category"]): string {
   if (category === "web") return "Web";
-  if (category === "work") return "Work memory";
+  if (category === "work" || category === "work_memory") return "Work memory";
+  if (category === "action") return "Follow-up";
+  if (category === "decision") return "Decision";
+  if (category === "question") return "Ask this";
+  if (category === "risk") return "Watch risk";
+  if (category === "clarification") return "Clarify";
+  if (category === "contribution") return "Say this";
+  if (category === "status") return "Status";
   if (category === "memory") return "Memory";
   return "Note";
 }
@@ -2210,8 +2450,10 @@ function debugEntries(card: SidecarDisplayCard): [string, unknown][] {
     ["source type", metadata.sourceType],
     ["source ID", metadata.sourceId],
     ["score", metadata.score ?? card.score],
+    ["confidence", metadata.confidence ?? card.confidence],
     ["retrieval reason", metadata.retrievalReason],
     ["backend label", metadata.backendLabel],
+    ["card key", metadata.cardKey ?? card.cardKey],
     ["source segments", metadata.sourceSegmentIds],
   ];
   return entries.filter(([, value]) => value !== undefined && value !== null && value !== "");
@@ -2285,9 +2527,47 @@ function priorityFromValue(value: unknown): SidecarPriority {
   return "normal";
 }
 
+function sidecarCategoryFromPayload(value: unknown): SidecarDisplayCard["category"] {
+  const category = String(value ?? "note").toLowerCase();
+  if (
+    [
+      "action",
+      "decision",
+      "question",
+      "risk",
+      "clarification",
+      "contribution",
+      "memory",
+      "work",
+      "work_memory",
+      "web",
+      "status",
+      "note",
+    ].includes(category)
+  ) {
+    return category as SidecarDisplayCard["category"];
+  }
+  return "note";
+}
+
 function numberOrUndefined(value: unknown): number | undefined {
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  const text = String(value ?? "").trim();
+  return text ? text : undefined;
+}
+
+function transcriptEventsOverlap(left: TranscriptEvent, right: TranscriptEvent): boolean {
+  if (left.source !== "microphone" || right.source !== "microphone") {
+    return false;
+  }
+  if (left.startedAt === undefined || left.endedAt === undefined || right.startedAt === undefined || right.endedAt === undefined) {
+    return false;
+  }
+  return Math.max(left.startedAt, right.startedAt) <= Math.min(left.endedAt, right.endedAt);
 }
 
 function payloadTimeMs(value: unknown): number | undefined {
@@ -2356,17 +2636,18 @@ function parseNoteSources(value: unknown): NoteSource[] {
     return [];
   }
   return value
-    .map((item) => {
+    .map((item): NoteSource | null => {
       if (!item || typeof item !== "object") {
         return null;
       }
       const record = item as Record<string, unknown>;
       const title = String(record.title ?? "").trim();
       const url = String(record.url ?? "").trim();
-      if (!title || !url) {
+      const path = String(record.path ?? "").trim();
+      if (!title || (!url && !path)) {
         return null;
       }
-      return { title, url };
+      return { title, url: url || undefined, path: path || undefined };
     })
     .filter((item): item is NoteSource => item !== null)
     .slice(0, 3);

@@ -159,6 +159,9 @@ def create_app() -> FastAPI:
         status["asr_log_prob_threshold"] = settings.asr_log_prob_threshold
         status["asr_compression_ratio_threshold"] = settings.asr_compression_ratio_threshold
         status["asr_min_audio_rms"] = settings.asr_min_audio_rms
+        status["partial_transcripts_enabled"] = settings.partial_transcripts_enabled
+        status["partial_window_seconds"] = settings.partial_window_seconds
+        status["partial_min_interval_seconds"] = settings.partial_min_interval_seconds
         status["asr_min_free_vram_mb"] = settings.asr_min_free_vram_mb
         status["asr_unload_ollama_on_start"] = settings.asr_unload_ollama_on_start
         status["asr_gpu_free_timeout_seconds"] = settings.asr_gpu_free_timeout_seconds

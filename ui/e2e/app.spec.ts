@@ -50,6 +50,21 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
     payload: { status: "listening", queue_depth: 3, dropped_windows: 1 },
   });
   await emitSessionEvent(page, {
+    type: "transcript_partial",
+    payload: {
+      id: "line-1-preview",
+      text: "We need to follow up with the platform team",
+      start_s: 1.2,
+      end_s: 3.0,
+      is_final: false,
+      asr_model: "whisper-large-v3",
+      queue_depth: 1,
+      transcript_retention: "temporary",
+      raw_audio_retained: false,
+    },
+  });
+  await expect(page.getByLabel("Mic transcript item").filter({ hasText: "platform team" })).toContainText("Interim");
+  await emitSessionEvent(page, {
     type: "transcript_final",
     payload: {
       id: "line-1",
@@ -58,6 +73,8 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
       end_s: 4.8,
       asr_model: "whisper-large-v3",
       queue_depth: 2,
+      transcript_retention: "temporary",
+      raw_audio_retained: false,
     },
   });
 	  await emitSessionEvent(page, {
@@ -81,19 +98,41 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
 	      source_segment_ids: ["line-1"],
 	    },
 	  });
+  await emitSessionEvent(page, {
+    type: "sidecar_card",
+    payload: {
+      id: "card-1",
+      session_id: "session-123",
+      category: "contribution",
+      title: "Name the release owner",
+      body: "The release thread needs one owner before the deployment readiness check.",
+      suggested_say: "It sounds like we should name one release owner before the readiness check.",
+      why_now: "Recent speech mentioned platform follow-up and deployment readiness.",
+      priority: "high",
+      confidence: 0.92,
+      source_segment_ids: ["line-1"],
+      source_type: "transcript",
+      card_key: "contribution:release-owner",
+      ephemeral: true,
+      raw_audio_retained: false,
+    },
+  });
 
   await expect(page.getByLabel("Runtime status")).toContainText("listening");
   await expect(page.getByLabel("Transcript metric")).toContainText("1");
   await expect(page.getByLabel("Latest heard")).toContainText("platform team tomorrow");
+  await expect(page.locator("#transcript")).not.toContainText("Interim");
   const transcriptItem = page.getByLabel("Mic transcript item").filter({ hasText: "platform team tomorrow" });
   await expect(transcriptItem).toBeVisible();
   await expect(transcriptItem).not.toContainText("You");
-  await expect(page.getByRole("heading", { name: "Platform follow-up" })).toBeVisible();
+  await expect(page.locator("#recall").getByRole("heading", { name: "Platform follow-up" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Actions work notes" })).toContainText("Platform follow-up");
   await expect(page.getByRole("region", { name: "Decisions work notes" })).toContainText("No decisions yet.");
   await expect(page.getByRole("region", { name: "Questions work notes" })).toContainText("No open questions yet.");
   await expect(page.getByRole("region", { name: "Relevant Context work notes" })).toContainText("previous meeting");
-  await expect(page.getByText("A previous meeting mentioned deployment readiness risks.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Contribution Lane" })).toContainText("Name the release owner");
+  await expect(page.getByRole("region", { name: "Contribution Lane" })).toContainText("It sounds like we should name one release owner");
+  await expect(page.locator("#recall").getByText("A previous meeting mentioned deployment readiness risks.")).toBeVisible();
   await expect(page.getByLabel("Queue metric")).toContainText("2");
   await expect(page.locator("#transcript")).not.toContainText("whisper-large-v3");
   await expect(page.locator("#recall")).not.toContainText("score 0.91");
@@ -182,6 +221,54 @@ test("renders high-confidence BP speaker labels from transcript events", async (
   const transcriptItem = page.getByLabel("BP transcript item").filter({ hasText: "my part of the meeting" });
   await expect(transcriptItem).toBeVisible();
   await expect(transcriptItem).not.toContainText("You");
+});
+
+test("supports contribution card copy, pin, and dismiss controls", async ({ page }) => {
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          (window as unknown as { __copiedSuggestion?: string }).__copiedSuggestion = text;
+        },
+      },
+    });
+  });
+  await page.getByRole("button", { name: "Start Listening" }).click();
+  await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
+
+  await emitSessionEvent(page, {
+    type: "sidecar_card",
+    payload: {
+      id: "card-copy",
+      session_id: "session-123",
+      category: "question",
+      title: "Clarify rollback timing",
+      body: "The rollback timing is still ambiguous.",
+      suggested_ask: "What is the rollback cutoff if validation fails?",
+      why_now: "The current thread mentions readiness but not the fallback cutoff.",
+      priority: "high",
+      confidence: 0.91,
+      source_segment_ids: [],
+      source_type: "transcript",
+      card_key: "question:rollback-cutoff",
+      ephemeral: true,
+      raw_audio_retained: false,
+    },
+  });
+
+  const lane = page.getByRole("region", { name: "Contribution Lane" });
+  const card = lane.getByLabel("Ask this context card").filter({ hasText: "Clarify rollback timing" });
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "Copy" }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedSuggestion?: string }).__copiedSuggestion)).toBe(
+    "What is the rollback cutoff if validation fails?",
+  );
+
+  await card.getByRole("button", { name: "Pin card" }).click();
+  await expect(card.getByRole("button", { name: "Unpin card" })).toBeVisible();
+  await card.getByRole("button", { name: "Dismiss card" }).click();
+  await expect(lane).toHaveCount(0);
 });
 
 test("shows GPU cleanup and ASR loading progress in capture controls", async ({ page }) => {
@@ -430,9 +517,9 @@ test("uses mocked library and recall APIs", async ({ page }) => {
   await page.getByRole("button", { name: "Close" }).click();
   await page.getByPlaceholder("Ask Sidecar anything").fill("apollo rollout");
   await page.getByRole("button", { name: "Search" }).click();
-  await expect(page.getByText("Prior planning note about the Apollo rollout.")).toBeVisible();
-  await expect(page.getByText("Online Generator Monitoring - T.A. Smith", { exact: true })).toBeVisible();
-  await expect(page.getByText("Web context: apollo rollout")).toBeVisible();
+  await expect(page.locator("#recall").getByText("Prior planning note about the Apollo rollout.")).toBeVisible();
+  await expect(page.locator("#recall").getByText("Online Generator Monitoring - T.A. Smith", { exact: true })).toBeVisible();
+  await expect(page.locator("#recall").getByText("Web context: apollo rollout")).toBeVisible();
   await expect(page.locator("#recall")).toContainText("failure modes");
   await expect(page.getByLabel("You transcript item")).toContainText("apollo rollout");
   await expect(page.locator("#recall")).toContainText("Prior planning note about the Apollo rollout.");

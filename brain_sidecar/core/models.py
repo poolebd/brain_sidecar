@@ -79,3 +79,51 @@ class SearchHit:
             "score": self.score,
             "metadata": self.metadata,
         }
+
+
+@dataclass(frozen=True)
+class SidecarCard:
+    id: str
+    session_id: str
+    category: str
+    title: str
+    body: str
+    why_now: str
+    priority: str
+    confidence: float
+    source_segment_ids: list[str]
+    source_type: str
+    sources: list[dict[str, str]] = field(default_factory=list)
+    citations: list[str] = field(default_factory=list)
+    suggested_say: str | None = None
+    suggested_ask: str | None = None
+    ephemeral: bool = True
+    expires_at: float | None = None
+    supersedes_id: str | None = None
+    card_key: str | None = None
+    created_at: float = field(default_factory=time.time)
+    raw_audio_retained: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "category": self.category,
+            "title": self.title,
+            "body": self.body,
+            "suggested_say": self.suggested_say,
+            "suggested_ask": self.suggested_ask,
+            "why_now": self.why_now,
+            "priority": self.priority,
+            "confidence": self.confidence,
+            "source_segment_ids": self.source_segment_ids,
+            "source_type": self.source_type,
+            "sources": self.sources,
+            "citations": self.citations,
+            "ephemeral": self.ephemeral,
+            "expires_at": self.expires_at,
+            "supersedes_id": self.supersedes_id,
+            "card_key": self.card_key,
+            "created_at": self.created_at,
+            "raw_audio_retained": self.raw_audio_retained,
+        }

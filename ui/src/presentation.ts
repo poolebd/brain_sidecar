@@ -14,7 +14,19 @@ export type TranscriptEvent = {
   isFinal: boolean;
 };
 
-export type SidecarCategory = "note" | "memory" | "work" | "web";
+export type SidecarCategory =
+  | "action"
+  | "decision"
+  | "question"
+  | "risk"
+  | "clarification"
+  | "contribution"
+  | "memory"
+  | "work"
+  | "work_memory"
+  | "web"
+  | "status"
+  | "note";
 export type SidecarPriority = "low" | "normal" | "high";
 
 export type SidecarDisplayCard = {
@@ -28,11 +40,18 @@ export type SidecarDisplayCard = {
   rawText?: string;
   at: number;
   score?: number;
+  confidence?: number;
   sourceSegmentIds?: string[];
+  cardKey?: string;
+  suggestedSay?: string;
+  suggestedAsk?: string;
+  ephemeral?: boolean;
+  expiresAt?: number;
   pinned?: boolean;
+  provisional?: boolean;
   explicitlyRequested?: boolean;
   priority?: SidecarPriority;
-  sources?: { title: string; url: string }[];
+  sources?: { title: string; url?: string; path?: string }[];
   citations?: string[];
   debugMetadata?: Record<string, unknown>;
 };
@@ -79,6 +98,7 @@ export function buildSidecarDisplayCards(
     .join(" ");
 
   const filtered = candidates
+    .filter((card) => !card.expiresAt || card.expiresAt > now)
     .filter((card) => isDisplayWorthy(card, recentTranscript, minScore))
     .sort(compareSidecarCards);
 
@@ -144,13 +164,13 @@ function isDisplayWorthy(card: SidecarDisplayCard, recentTranscript: string, min
 
 function workBucketForCard(card: SidecarDisplayCard): WorkCardBucket {
   const backendLabel = normalizeDisplayText(String(card.debugMetadata?.backendLabel ?? ""));
-  if (backendLabel === "action") {
+  if (card.category === "action" || backendLabel === "action") {
     return "actions";
   }
-  if (backendLabel === "decision") {
+  if (card.category === "decision" || backendLabel === "decision") {
     return "decisions";
   }
-  if (backendLabel === "question") {
+  if (["question", "clarification"].includes(card.category) || backendLabel === "question") {
     return "questions";
   }
   return "context";
@@ -191,9 +211,11 @@ function cardRank(card: SidecarDisplayCard): number {
     ? 42
     : card.category === "web"
       ? 36
-      : card.category === "work"
+      : card.category === "work" || card.category === "work_memory"
         ? 32
-        : 20;
+        : ["action", "decision", "risk", "clarification", "contribution"].includes(card.category)
+          ? 44
+          : 20;
   const relevance = typeof card.score === "number" && Number.isFinite(card.score)
     ? card.score * 100
     : 70;
@@ -201,6 +223,9 @@ function cardRank(card: SidecarDisplayCard): number {
 }
 
 function areDuplicateCards(left: SidecarDisplayCard, right: SidecarDisplayCard): boolean {
+  if (left.cardKey && right.cardKey && left.cardKey === right.cardKey) {
+    return true;
+  }
   const leftKey = normalizeDisplayText(`${left.title} ${left.summary}`);
   const rightKey = normalizeDisplayText(`${right.title} ${right.summary}`);
   if (!leftKey || !rightKey) {
