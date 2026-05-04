@@ -36,24 +36,47 @@ type MockSpeakerStatus = {
   recent_segments: unknown[];
 };
 
-type MockApiOptions = {
-  testModeEnabled?: boolean;
-};
-
 const API_ORIGIN = "http://127.0.0.1:8765";
 
-export const mockDevices = [
+type MockDevice = {
+  id: string;
+  label: string;
+  driver: string;
+  ffmpeg_input: string;
+  hardware_id: string;
+  preferred: boolean;
+};
+
+type MockDeviceResponse = {
+  devices: MockDevice[];
+  preferred_device_configured?: boolean;
+  preferred_device_available?: boolean;
+  preferred_device_id?: string | null;
+  preferred_device_match?: string | null;
+  preferred_device_label?: string | null;
+};
+
+type MockApiOptions = {
+  testModeEnabled?: boolean;
+  devicesResponse?: MockDeviceResponse;
+};
+
+export const mockDevices: MockDevice[] = [
   {
     id: "usb-blue",
     label: "Blue Yeti USB Microphone",
     driver: "alsa",
     ffmpeg_input: "plughw:1,0",
+    hardware_id: "1111:2222",
+    preferred: true,
   },
   {
     id: "desk-array",
     label: "Desk Array Microphone",
     driver: "alsa",
     ffmpeg_input: "plughw:2,0",
+    hardware_id: "3333:4444",
+    preferred: false,
   },
 ];
 
@@ -123,6 +146,12 @@ export async function installMockEventSource(page: Page) {
 
 export async function mockApi(page: Page, options: MockApiOptions = {}) {
   const testModeEnabled = options.testModeEnabled ?? false;
+  const devicesResponse: MockDeviceResponse = options.devicesResponse ?? {
+    devices: mockDevices,
+    preferred_device_configured: true,
+    preferred_device_available: true,
+    preferred_device_label: mockDevices[0].label,
+  };
   let speakerStatus: MockSpeakerStatus = {
     profile: {
       id: "self_bp",
@@ -168,7 +197,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     }
 
     if (method === "GET" && path === "/api/devices") {
-      await json(route, { devices: mockDevices });
+      await json(route, devicesResponse);
       return;
     }
 
@@ -214,6 +243,30 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
 
     if (method === "GET" && path === "/api/speaker/status") {
       await json(route, speakerStatus);
+      return;
+    }
+
+    if (method === "POST" && path === "/api/microphone/test") {
+      await json(route, {
+        device: mockDevices[0],
+        audio_source: "server_device",
+        quality: {
+          duration_seconds: 3,
+          usable_speech_seconds: 2.6,
+          speech_fraction: 0.87,
+          rms: 0.041,
+          peak: 0.42,
+          clipping_fraction: 0,
+          quality_score: 0.86,
+          issues: [],
+        },
+        recommendation: {
+          status: "good",
+          title: "Mic check looks good",
+          detail: "Use this setup for speaker samples: one voice, normal meeting distance, steady speech.",
+        },
+        raw_audio_retained: false,
+      });
       return;
     }
 

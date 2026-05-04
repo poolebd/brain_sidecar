@@ -80,6 +80,13 @@ class SpeakerSampleRecordRequest(BaseModel):
     audio_source: str | None = None
 
 
+class MicTestRequest(BaseModel):
+    device_id: str | None = None
+    fixture_wav: str | None = None
+    audio_source: str | None = None
+    seconds: float = Field(default=3.0, ge=1.0, le=8.0)
+
+
 class SpeakerFeedbackRequest(BaseModel):
     session_id: Annotated[str, Field(min_length=1)]
     segment_id: str | None = None
@@ -156,7 +163,24 @@ def create_app() -> FastAPI:
 
     @app.get("/api/devices")
     async def devices() -> dict:
-        return {"devices": [device.to_dict() for device in list_audio_devices()]}
+        devices = [
+            device.to_dict()
+            for device in list_audio_devices(
+                preferred_device_id=settings.preferred_audio_device_id,
+                preferred_device_match=settings.preferred_audio_device_match,
+                preferred_device_label=settings.preferred_audio_device_label,
+            )
+        ]
+        return {
+            "devices": devices,
+            "preferred_device_configured": bool(
+                settings.preferred_audio_device_id or settings.preferred_audio_device_match
+            ),
+            "preferred_device_available": any(bool(device.get("preferred")) for device in devices),
+            "preferred_device_id": settings.preferred_audio_device_id,
+            "preferred_device_match": settings.preferred_audio_device_match,
+            "preferred_device_label": settings.preferred_audio_device_label,
+        }
 
     @app.get("/api/health/gpu")
     async def gpu_health() -> dict:
@@ -179,6 +203,9 @@ def create_app() -> FastAPI:
         status["asr_unload_ollama_on_start"] = settings.asr_unload_ollama_on_start
         status["asr_gpu_free_timeout_seconds"] = settings.asr_gpu_free_timeout_seconds
         status["audio_chunk_ms"] = settings.audio_chunk_ms
+        status["preferred_audio_device_id"] = settings.preferred_audio_device_id
+        status["preferred_audio_device_match"] = settings.preferred_audio_device_match
+        status["preferred_audio_device_label"] = settings.preferred_audio_device_label
         status["transcription_window_seconds"] = settings.transcription_window_seconds
         status["transcription_overlap_seconds"] = settings.transcription_overlap_seconds
         status["transcription_queue_size"] = settings.transcription_queue_size
@@ -342,6 +369,26 @@ def create_app() -> FastAPI:
     @app.get("/api/speaker/status")
     async def speaker_status() -> dict:
         return await manager.speaker_identity_status()
+
+    @app.post("/api/microphone/test")
+    async def microphone_test(request: MicTestRequest) -> dict:
+        fixture_wav = Path(request.fixture_wav).expanduser().resolve() if request.fixture_wav else None
+        if fixture_wav and not fixture_wav.exists():
+            raise HTTPException(status_code=400, detail=f"Fixture WAV does not exist: {fixture_wav}")
+        audio_source = _audio_source_for_request(
+            request.audio_source,
+            fixture_wav,
+            test_mode_enabled=settings.test_mode_enabled,
+        )
+        try:
+            return await manager.test_microphone(
+                device_id=request.device_id,
+                fixture_wav=fixture_wav,
+                audio_source=audio_source,
+                seconds=request.seconds,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/speaker/enrollments")
     async def create_speaker_enrollment() -> dict:

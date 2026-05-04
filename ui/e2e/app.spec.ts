@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { emitSessionEvent, installMockEventSource, mockApi } from "./mocks";
+import { emitSessionEvent, installMockEventSource, mockApi, mockDevices } from "./mocks";
 
 test.beforeEach(async ({ page }) => {
   await installMockEventSource(page);
@@ -176,6 +176,18 @@ test("shows speaker identity controls instead of legacy ASR voice training", asy
   await expect(speaker.getByLabel("Speaker training steps")).toContainText("1 Start");
   await expect(page.getByRole("region", { name: "Voice profile" })).toHaveCount(0);
   await expect(page.getByText("ASR guidance preview")).toHaveCount(0);
+  const micRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/microphone/test")
+  ));
+  await page.getByRole("button", { name: "Test Mic" }).click();
+  expect(JSON.parse((await micRequest).postData() ?? "{}")).toMatchObject({
+    device_id: "usb-blue",
+    audio_source: "server_device",
+    fixture_wav: null,
+    seconds: 3,
+  });
+  await expect(page.getByLabel("Microphone check")).toContainText("Mic check looks good");
+  await expect(page.getByLabel("Microphone check")).toContainText("2.6s speech");
   await speaker.getByText("Advanced speaker controls").click();
   await expect(speaker).toContainText("embeddings");
   await speaker.getByText("Review learned speaker profile").click();
@@ -498,6 +510,29 @@ test("locks live capture to the local USB microphone", async ({ page }) => {
     fixture_wav: null,
     audio_source: "server_device",
   });
+});
+
+test("blocks capture and speaker training when the preferred USB microphone is missing", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, {
+    devicesResponse: {
+      devices: [{ ...mockDevices[1], preferred: false }],
+      preferred_device_configured: true,
+      preferred_device_available: false,
+      preferred_device_match: "291a:3369",
+      preferred_device_label: "Anker PowerConf C200 microphone",
+    },
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Tools" }).click();
+
+  const drawer = page.getByLabel("Tools drawer");
+  await expect(drawer.getByLabel("USB microphone")).toHaveValue("");
+  await expect(drawer.getByRole("status")).toContainText("Anker PowerConf C200 microphone is not connected");
+  await expect(drawer.getByRole("button", { name: "Test Mic" })).toBeDisabled();
+  await expect(drawer.getByRole("button", { name: "Start Listening" })).toBeDisabled();
+  await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeDisabled();
+  await expect(drawer.getByRole("region", { name: "Speaker identity" }).getByRole("button", { name: "Set Up BP Label" }).first()).toBeDisabled();
 });
 
 test("uses mocked library and recall APIs", async ({ page }) => {

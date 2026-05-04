@@ -83,6 +83,44 @@ def test_speaker_enrollment_creates_centroid_without_raw_audio(tmp_path: Path) -
     assert not list(tmp_path.rglob("*.pcm"))
 
 
+def test_speaker_enrollment_finalizes_current_attempt_without_old_bad_samples(tmp_path: Path) -> None:
+    service = speaker_service(
+        tmp_path,
+        [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.99, 0.01, 0.0]],
+    )
+    pcm = tone_pcm(seconds=8.0)
+    old_enrollment = service.start_enrollment()
+    service.add_enrollment_sample(old_enrollment["id"], pcm)
+
+    enrollment = service.start_enrollment()
+    service.add_enrollment_sample(enrollment["id"], pcm)
+    service.add_enrollment_sample(enrollment["id"], pcm)
+    finalized = service.finalize_enrollment(enrollment["id"])
+
+    assert finalized["profile"]["ready"] is True
+    assert finalized["profile"]["embedding_count"] == 2
+    assert finalized["pruned"]["embeddings"] == 1
+
+
+def test_speaker_enrollment_ignores_outlier_when_consistent_speech_remains(tmp_path: Path) -> None:
+    service = speaker_service(
+        tmp_path,
+        [[1.0, 0.0, 0.0], [0.99, 0.01, 0.0], [0.0, 1.0, 0.0]],
+    )
+    enrollment = service.start_enrollment()
+    pcm = tone_pcm(seconds=8.0)
+
+    for _ in range(3):
+        service.add_enrollment_sample(enrollment["id"], pcm)
+
+    finalized = service.finalize_enrollment(enrollment["id"])
+
+    assert finalized["profile"]["ready"] is True
+    assert finalized["profile"]["embedding_count"] == 2
+    assert len(finalized["ignored_embedding_ids"]) == 1
+    assert finalized["raw_audio_retained"] is False
+
+
 def test_runtime_labels_matching_cluster_as_bp_only_above_threshold(tmp_path: Path) -> None:
     service = speaker_service(
         tmp_path,
@@ -196,6 +234,29 @@ def test_speaker_status_api_exposes_new_profile_and_legacy_voice_api_is_gone(mon
 
     legacy = client.get("/api/voice/profile")
     assert legacy.status_code == 410
+
+
+def test_microphone_test_endpoint_reports_quality_without_raw_audio(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BRAIN_SIDECAR_TEST_MODE_ENABLED", "true")
+    app = create_app()
+    wav_path = tmp_path / "mic-check.wav"
+    write_wav(wav_path, tone_pcm(seconds=3.0))
+
+    response = TestClient(app).post(
+        "/api/microphone/test",
+        json={
+            "audio_source": "fixture",
+            "fixture_wav": str(wav_path),
+            "seconds": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["raw_audio_retained"] is False
+    assert payload["quality"]["usable_speech_seconds"] > 0
+    assert payload["recommendation"]["status"] in {"good", "noisy"}
 
 
 def speaker_service(tmp_path: Path, vectors: list[list[float]]) -> SpeakerIdentityService:

@@ -816,6 +816,62 @@ class Storage:
             ).fetchall()
         return [self._speaker_embedding_row_to_dict(row) for row in rows]
 
+    def speaker_embedding(self, embedding_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "select * from speaker_embeddings where id = ?",
+            (embedding_id,),
+        ).fetchone()
+        return self._speaker_embedding_row_to_dict(row) if row is not None else None
+
+    def prune_speaker_enrollment_artifacts(
+        self,
+        *,
+        profile_id: str,
+        keep_enrollment_id: str,
+        keep_embedding_ids: list[str],
+    ) -> dict[str, int]:
+        placeholders = ",".join("?" for _ in keep_embedding_ids) or "null"
+        embedding_params: tuple[Any, ...] = (profile_id, *keep_embedding_ids)
+        sample_params: tuple[Any, ...] = (profile_id, keep_enrollment_id, *keep_embedding_ids)
+        with self._lock:
+            embedding_count = self.conn.execute(
+                f"""
+                select count(*) as count from speaker_embeddings
+                where profile_id = ? and source = 'enrollment' and id not in ({placeholders})
+                """,
+                embedding_params,
+            ).fetchone()["count"]
+            sample_count = self.conn.execute(
+                f"""
+                select count(*) as count from speaker_enrollment_samples
+                where profile_id = ? and (enrollment_id != ? or embedding_id not in ({placeholders}))
+                """,
+                sample_params,
+            ).fetchone()["count"]
+            self.conn.execute(
+                f"""
+                delete from speaker_embeddings
+                where profile_id = ? and source = 'enrollment' and id not in ({placeholders})
+                """,
+                embedding_params,
+            )
+            self.conn.execute(
+                f"""
+                delete from speaker_enrollment_samples
+                where profile_id = ? and (enrollment_id != ? or embedding_id not in ({placeholders}))
+                """,
+                sample_params,
+            )
+            self.conn.execute(
+                """
+                delete from speaker_enrollments
+                where profile_id = ? and id != ? and status != 'completed'
+                """,
+                (profile_id, keep_enrollment_id),
+            )
+            self.conn.commit()
+        return {"embeddings": int(embedding_count), "samples": int(sample_count)}
+
     def speaker_centroid_embedding(self, profile_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             """

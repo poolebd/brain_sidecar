@@ -27,7 +27,7 @@ from brain_sidecar.core.models import SidecarCard, TranscriptSegment, new_id
 from brain_sidecar.core.notes import NoteSynthesizer
 from brain_sidecar.core.ollama import OllamaClient
 from brain_sidecar.core.recall import RecallIndex
-from brain_sidecar.core.speaker_identity import SpeakerIdentityService
+from brain_sidecar.core.speaker_identity import SpeakerIdentityService, analyze_pcm16
 from brain_sidecar.core.storage import Storage
 from brain_sidecar.core.transcription import FasterWhisperTranscriber
 from brain_sidecar.core.web_context import (
@@ -431,6 +431,30 @@ class SessionManager:
         await self._publish_speaker_profile_update(payload["profile"])
         return payload
 
+    async def test_microphone(
+        self,
+        *,
+        device_id: str | None = None,
+        fixture_wav: Path | None = None,
+        audio_source: str = "server_device",
+        seconds: float = 3.0,
+    ) -> dict:
+        capture = self._build_capture(device_id=device_id, fixture_wav=fixture_wav, audio_source=audio_source)
+        pcm = await asyncio.wait_for(
+            self._record_pcm(capture, seconds=max(1.0, min(8.0, seconds))),
+            timeout=max(4.0, min(8.0, seconds) + 8.0),
+        )
+        quality = analyze_pcm16(pcm, self.settings.audio_sample_rate)
+        device = capture.device.to_dict() if isinstance(capture, FFmpegAudioCapture) else None
+        recommendation = microphone_recommendation(quality.to_dict())
+        return {
+            "device": device,
+            "audio_source": audio_source,
+            "quality": quality.to_dict(),
+            "recommendation": recommendation,
+            "raw_audio_retained": False,
+        }
+
     async def finalize_speaker_enrollment(self, enrollment_id: str) -> dict:
         payload = self.speaker_identity.finalize_enrollment(enrollment_id)
         await self._publish_speaker_profile_update(payload["profile"])
@@ -480,7 +504,12 @@ class SessionManager:
                 sample_rate=self.settings.audio_sample_rate,
                 chunk_ms=self.settings.audio_chunk_ms,
             )
-        device = find_device(device_id)
+        device = find_device(
+            device_id,
+            preferred_device_id=self.settings.preferred_audio_device_id,
+            preferred_device_match=self.settings.preferred_audio_device_match,
+            preferred_device_label=self.settings.preferred_audio_device_label,
+        )
         if device is None:
             raise RuntimeError("No capture device found. Connect a USB microphone or provide fixture_wav.")
         return FFmpegAudioCapture(
@@ -490,11 +519,10 @@ class SessionManager:
         )
 
     async def _record_enrollment_pcm(self, capture: AudioCapture) -> bytes:
-        target_bytes = int(
-            self.settings.audio_sample_rate
-            * 2
-            * self.settings.speaker_enrollment_sample_seconds
-        )
+        return await self._record_pcm(capture, seconds=self.settings.speaker_enrollment_sample_seconds)
+
+    async def _record_pcm(self, capture: AudioCapture, *, seconds: float) -> bytes:
+        target_bytes = int(self.settings.audio_sample_rate * 2 * seconds)
         buffer = bytearray()
         try:
             async for chunk in capture.chunks():
@@ -504,7 +532,7 @@ class SessionManager:
         finally:
             await capture.stop()
         if not buffer:
-            raise RuntimeError("No speaker enrollment audio was captured.")
+            raise RuntimeError("No microphone audio was captured.")
         return bytes(buffer[:target_bytes])
 
     async def _run_capture_loop(
@@ -1300,3 +1328,34 @@ def _card_source_type(source_type: str) -> str:
     if source_type in {"file", "document_chunk"}:
         return "local_file"
     return "saved_transcript"
+
+
+def microphone_recommendation(quality: dict) -> dict:
+    usable = float(quality.get("usable_speech_seconds") or 0.0)
+    score = float(quality.get("quality_score") or 0.0)
+    rms = float(quality.get("rms") or 0.0)
+    peak = float(quality.get("peak") or 0.0)
+    issues = list(quality.get("issues") or [])
+    if "clipping" in issues or peak >= 0.98:
+        return {
+            "status": "too_loud",
+            "title": "Input is clipping",
+            "detail": "Move back from the mic or lower input gain before recording speaker samples.",
+        }
+    if usable < 1.0 or rms < 0.008:
+        return {
+            "status": "too_quiet",
+            "title": "Not enough speech detected",
+            "detail": "Move closer, select the Anker mic, and speak normally for the whole test.",
+        }
+    if score < 0.55:
+        return {
+            "status": "noisy",
+            "title": "Mic check is marginal",
+            "detail": "Try a quieter room and keep other voices out before speaker training.",
+        }
+    return {
+        "status": "good",
+        "title": "Mic check looks good",
+        "detail": "Use this setup for speaker samples: one voice, normal meeting distance, steady speech.",
+    }

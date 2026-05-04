@@ -52,6 +52,17 @@ type DeviceInfo = {
   label: string;
   driver: string;
   ffmpeg_input: string;
+  hardware_id?: string;
+  preferred?: boolean;
+};
+
+type DeviceListResponse = {
+  devices: DeviceInfo[];
+  preferred_device_configured?: boolean;
+  preferred_device_available?: boolean;
+  preferred_device_id?: string | null;
+  preferred_device_match?: string | null;
+  preferred_device_label?: string | null;
 };
 
 type EventEnvelope = {
@@ -264,6 +275,27 @@ type SpeakerEnrollment = {
   raw_audio_retained: boolean;
 };
 
+type MicTestResult = {
+  device?: DeviceInfo | null;
+  audio_source: AudioSource;
+  quality: {
+    duration_seconds: number;
+    usable_speech_seconds: number;
+    speech_fraction: number;
+    rms: number;
+    peak: number;
+    clipping_fraction: number;
+    quality_score: number;
+    issues: string[];
+  };
+  recommendation: {
+    status: "good" | "too_quiet" | "too_loud" | "noisy";
+    title: string;
+    detail: string;
+  };
+  raw_audio_retained: boolean;
+};
+
 type ManualWebResponse = {
   query: string;
   enabled: boolean;
@@ -323,6 +355,7 @@ export function App() {
   });
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState("");
+  const [deviceNotice, setDeviceNotice] = useState("");
   const [audioSource, setAudioSource] = useState<AudioSource>(() => defaultAudioSource());
   const [sessionRetention, setSessionRetention] = useState<SessionRetention>(() => {
     if (typeof window === "undefined") {
@@ -357,6 +390,8 @@ export function App() {
   const [speakerStatus, setSpeakerStatus] = useState<SpeakerStatus | null>(null);
   const [speakerEnrollment, setSpeakerEnrollment] = useState<SpeakerEnrollment | null>(null);
   const [speakerBusy, setSpeakerBusy] = useState("");
+  const [micTest, setMicTest] = useState<MicTestResult | null>(null);
+  const [micTestBusy, setMicTestBusy] = useState(false);
   const [speakerRecordingStartedAt, setSpeakerRecordingStartedAt] = useState<number | null>(null);
   const [speakerRecordingNow, setSpeakerRecordingNow] = useState(Date.now());
   const [transcriptEvents, setTranscriptEvents] = useState<TranscriptEvent[]>([]);
@@ -517,6 +552,14 @@ export function App() {
   const speakerRecordButtonLabel = speakerBusy === "recording"
     ? `Recording ${Math.min(speakerSampleSeconds, speakerRecordingElapsedSeconds).toFixed(1)}s`
     : `Record ${speakerSampleSeconds.toFixed(0)}s Sample`;
+  const micQualityPercent = Math.round((micTest?.quality.quality_score ?? 0) * 100);
+  const micPeakPercent = Math.round((micTest?.quality.peak ?? 0) * 100);
+  const micUsableSeconds = micTest?.quality.usable_speech_seconds ?? 0;
+  const micTestTone = micTest?.recommendation.status === "good"
+    ? "good"
+    : micTest
+      ? "warning"
+      : "";
   const speakerNextActionLabel = speakerStage === "setup"
     ? "Speaker model unavailable"
     : speakerStage === "ready"
@@ -528,7 +571,8 @@ export function App() {
           : `Record ${Math.max(1, Math.ceil(speakerNeededSpeech / Math.max(1, speakerSampleSeconds)))} more sample${Math.ceil(speakerNeededSpeech / Math.max(1, speakerSampleSeconds)) === 1 ? "" : "s"}`;
   const captureStarting = ["starting", "freeing_gpu", "loading_asr"].includes(status);
   const captureActive = ["listening", "catching_up"].includes(status);
-  const captureStartDisabled = captureStarting || captureActive;
+  const missingServerDevice = audioSource === "server_device" && !selectedDevice;
+  const captureStartDisabled = captureStarting || captureActive || missingServerDevice;
   const captureStopDisabled = !sessionId || status === "idle" || status === "stopped";
   const activeRetention = activeSessionRetention ?? sessionRetention;
   const captureModeLabel = audioSource === "fixture"
@@ -578,11 +622,26 @@ export function App() {
 
   async function refreshDevices() {
     const response = await fetch(`${API_BASE}/api/devices`);
-    const payload = await response.json();
-    setDevices(payload.devices ?? []);
-    if (!selectedDevice && payload.devices?.[0]?.id) {
-      setSelectedDevice(payload.devices[0].id);
-    }
+    const payload = await response.json() as DeviceListResponse;
+    const nextDevices = payload.devices ?? [];
+    setDevices(nextDevices);
+    const preferred = nextDevices.find((device: DeviceInfo) => device.preferred);
+    const preferredMissing = Boolean(payload.preferred_device_configured && !payload.preferred_device_available);
+    setDeviceNotice(preferredMissing
+      ? `${payload.preferred_device_label || "Preferred microphone"} is not connected. Reconnect it, then refresh.`
+      : "");
+    setSelectedDevice((current) => {
+      if (preferred?.id) {
+        return preferred.id;
+      }
+      if (preferredMissing) {
+        return "";
+      }
+      if (current && nextDevices.some((device: DeviceInfo) => device.id === current)) {
+        return current;
+      }
+      return nextDevices[0]?.id ?? "";
+    });
   }
 
   async function refreshGpu() {
@@ -1212,6 +1271,38 @@ export function App() {
     });
   }
 
+  async function testMicrophone() {
+    setMicTestBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/microphone/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          device_id: selectedDevice || null,
+          audio_source: fixturePath.trim() && audioSource === "fixture" ? "fixture" : "server_device",
+          fixture_wav: fixturePath.trim() && audioSource === "fixture" ? fixturePath.trim() : null,
+          seconds: 3,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        setErrors((current) => [payload.detail ?? "Microphone test failed", ...current]);
+        return;
+      }
+      setMicTest(payload);
+      appendSystemLog({
+        level: payload.recommendation?.status === "good" ? "status" : "warning",
+        title: payload.recommendation?.title ?? "Microphone check complete",
+        message: payload.recommendation?.detail ?? "Mic test returned.",
+        metadata: payload,
+      });
+    } catch (error) {
+      pushError(error instanceof Error ? error.message : "Microphone test failed");
+    } finally {
+      setMicTestBusy(false);
+    }
+  }
+
   async function startSpeakerEnrollment() {
     setSpeakerBusy("starting");
     const response = await fetch(`${API_BASE}/api/speaker/enrollments`, { method: "POST" });
@@ -1603,8 +1694,33 @@ export function App() {
                 ))}
               </select>
             </label>
+            {deviceNotice && <p className="tool-note warning-text" role="status">{deviceNotice}</p>}
+            <div className={`mic-test-card ${micTestTone}`} aria-label="Microphone check">
+              <div>
+                <strong>{micTest?.recommendation.title ?? "Mic check"}</strong>
+                <span>
+                  {micTest
+                    ? micTest.recommendation.detail
+                    : "Run this before speaker training to confirm level, clipping, and usable single-speaker audio."}
+                </span>
+              </div>
+              {micTest && (
+                <div className="mic-meter" aria-label="Microphone test result">
+                  <div><span style={{ width: `${Math.min(100, micPeakPercent)}%` }} /></div>
+                  <small>{micUsableSeconds.toFixed(1)}s speech · quality {micQualityPercent}% · peak {micPeakPercent}%</small>
+                </div>
+              )}
+              {micTest?.quality.issues.length ? (
+                <div className="chip-row">
+                  {micTest.quality.issues.map((issue) => <span key={issue} className="chip warning">{issue}</span>)}
+                </div>
+              ) : null}
+            </div>
             <div className="button-row">
               <button className="secondary" onClick={refreshDevices}>Refresh</button>
+              <button className="secondary" onClick={testMicrophone} disabled={micTestBusy || audioSource !== "server_device" || missingServerDevice}>
+                {micTestBusy ? "Testing..." : "Test Mic"}
+              </button>
               <button className="primary" onClick={() => start()} disabled={captureStartDisabled}>
                 {captureButtonLabel}
               </button>
@@ -1739,7 +1855,7 @@ export function App() {
               <button
                 className="primary speaker-primary-action"
                 onClick={startSpeakerEnrollment}
-                disabled={Boolean(speakerBusy) || speakerStatus?.backend.available === false}
+                disabled={Boolean(speakerBusy) || speakerStatus?.backend.available === false || missingServerDevice}
               >
                 {speakerTrainingButtonLabel}
               </button>
@@ -1774,7 +1890,7 @@ export function App() {
                   <button
                     className={speakerCanFinalize ? "secondary" : "primary"}
                     onClick={recordSpeakerSample}
-                    disabled={speakerBusy === "recording" || speakerStatus?.backend.available === false}
+                    disabled={speakerBusy === "recording" || speakerStatus?.backend.available === false || missingServerDevice}
                   >
                     {speakerRecordButtonLabel}
                   </button>
@@ -1819,7 +1935,7 @@ export function App() {
                 <button
                   className="secondary"
                   onClick={startSpeakerEnrollment}
-                  disabled={Boolean(speakerBusy) || speakerStatus?.backend.available === false}
+                  disabled={Boolean(speakerBusy) || speakerStatus?.backend.available === false || missingServerDevice}
                 >
                   {speakerUsableSpeech > 0 ? "Start Over" : `Set Up ${speakerEnrollmentLabel} Label`}
                 </button>

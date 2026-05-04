@@ -105,6 +105,8 @@ def test_recall_and_work_memory_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_RECALL_MIN_SCORE", "0.7")
     monkeypatch.setenv("BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS", "2")
     monkeypatch.setenv("BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES", "false")
+    monkeypatch.setenv("BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_MATCH", "0c76:161e")
+    monkeypatch.setenv("BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_LABEL", "Anker PowerConf C200 microphone")
     monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT", str(tmp_path / "job"))
     monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT", str(tmp_path / "past"))
     monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT", str(tmp_path / "pas"))
@@ -114,6 +116,8 @@ def test_recall_and_work_memory_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.recall_min_score == 0.7
     assert settings.recall_max_live_hits == 2
     assert settings.recall_prefer_summaries is False
+    assert settings.preferred_audio_device_match == "0c76:161e"
+    assert settings.preferred_audio_device_label == "Anker PowerConf C200 microphone"
     assert settings.work_memory_job_history_root == tmp_path / "job"
     assert settings.work_memory_past_work_root == tmp_path / "past"
     assert settings.work_memory_pas_root == tmp_path / "pas"

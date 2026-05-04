@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import math
 import time
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ MIN_RUNTIME_MATCH_SECONDS = 0.8
 DEFAULT_SELF_THRESHOLD = 0.82
 DEFAULT_CLUSTER_THRESHOLD = 0.72
 MIN_SELF_MARGIN = 0.04
+MIN_ENROLLMENT_PAIR_SCORE = 0.52
 
 
 @dataclass(frozen=True)
@@ -270,6 +272,40 @@ def pairwise_scores(vectors: list[list[float]]) -> list[float]:
         for right in vectors[left_index + 1:]:
             scores.append(cosine_similarity(left, right))
     return scores
+
+
+def consistent_enrollment_subset(embeddings: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return the largest high-consistency subset and the ignored embedding ids."""
+    if len(embeddings) <= 2:
+        return embeddings, []
+    all_scores = pairwise_scores([row["vector"] for row in embeddings])
+    if all_scores and min(all_scores) >= MIN_ENROLLMENT_PAIR_SCORE:
+        return embeddings, []
+
+    best_subset: tuple[int, ...] = ()
+    best_rank: tuple[int, float, float] = (0, 0.0, 0.0)
+    indexes = range(len(embeddings))
+    for size in range(len(embeddings), 1, -1):
+        for subset in itertools.combinations(indexes, size):
+            subset_embeddings = [embeddings[index] for index in subset]
+            scores = pairwise_scores([row["vector"] for row in subset_embeddings])
+            if scores and min(scores) < MIN_ENROLLMENT_PAIR_SCORE:
+                continue
+            speech_seconds = sum(float(row.get("duration_seconds") or 0.0) for row in subset_embeddings)
+            quality = sum(float(row.get("quality_score") or 0.0) for row in subset_embeddings) / len(subset_embeddings)
+            rank = (size, speech_seconds, quality)
+            if rank > best_rank:
+                best_subset = subset
+                best_rank = rank
+        if best_subset:
+            break
+
+    if not best_subset:
+        return [], [str(row["id"]) for row in embeddings]
+    selected = [embeddings[index] for index in best_subset]
+    selected_ids = {row["id"] for row in selected}
+    ignored = [str(row["id"]) for row in embeddings if row["id"] not in selected_ids]
+    return selected, ignored
 
 
 def calibrate_threshold(same_speaker_scores: list[float], negative_scores: list[float] | None = None) -> float:
@@ -537,16 +573,26 @@ class SpeakerIdentityService:
         enrollment = self.storage.speaker_enrollment(enrollment_id)
         if enrollment["profile_id"] != SELF_PROFILE_ID:
             raise ValueError("Only the self speaker profile can be finalized from this flow.")
-        embeddings = self.storage.speaker_embeddings(SELF_PROFILE_ID, sources=("enrollment", "corrected_segment"))
-        total_speech = sum(float(row.get("duration_seconds") or 0.0) for row in embeddings)
-        if total_speech < MIN_ENROLLMENT_SPEECH_SECONDS:
+        enrollment_embeddings = self._enrollment_embeddings(enrollment_id)
+        if not enrollment_embeddings:
+            raise ValueError("Record at least two single-speaker samples before finalizing.")
+        total_recorded_speech = sum(float(row.get("duration_seconds") or 0.0) for row in enrollment_embeddings)
+        if total_recorded_speech < MIN_ENROLLMENT_SPEECH_SECONDS:
             raise ValueError(
                 f"Need at least {MIN_ENROLLMENT_SPEECH_SECONDS:.0f}s of usable single-speaker speech; "
-                f"currently have {total_speech:.1f}s."
+                f"currently have {total_recorded_speech:.1f}s."
+            )
+        embeddings, ignored_embedding_ids = consistent_enrollment_subset(enrollment_embeddings)
+        total_speech = sum(float(row.get("duration_seconds") or 0.0) for row in embeddings)
+        if len(embeddings) < 2 or total_speech < MIN_ENROLLMENT_SPEECH_SECONDS:
+            raise ValueError(
+                "Enrollment samples are inconsistent; run Mic Check, then record clean single-speaker samples "
+                f"until at least {MIN_ENROLLMENT_SPEECH_SECONDS:.0f}s of consistent speech is available. "
+                f"Best consistent speech: {total_speech:.1f}s of {total_recorded_speech:.1f}s."
             )
         vectors = [row["vector"] for row in embeddings]
         same_scores = pairwise_scores(vectors)
-        if same_scores and min(same_scores) < 0.52:
+        if same_scores and min(same_scores) < MIN_ENROLLMENT_PAIR_SCORE:
             raise ValueError("Enrollment samples are inconsistent; one sample may contain another speaker or bad audio.")
         threshold = calibrate_threshold(same_scores)
         centroid_vector = centroid(vectors)
@@ -564,7 +610,14 @@ class SpeakerIdentityService:
                 "threshold": threshold,
                 "raw_audio_retained": False,
                 "source_embedding_count": len(embeddings),
+                "ignored_embedding_ids": ignored_embedding_ids,
+                "enrollment_id": enrollment_id,
             },
+        )
+        pruned = self.storage.prune_speaker_enrollment_artifacts(
+            profile_id=SELF_PROFILE_ID,
+            keep_enrollment_id=enrollment_id,
+            keep_embedding_ids=[row["id"] for row in embeddings],
         )
         self.storage.update_speaker_profile(
             SELF_PROFILE_ID,
@@ -580,6 +633,8 @@ class SpeakerIdentityService:
             "centroid_embedding_id": centroid_row["id"],
             "threshold": threshold,
             "same_speaker_scores": same_scores,
+            "ignored_embedding_ids": ignored_embedding_ids,
+            "pruned": pruned,
             "raw_audio_retained": False,
         }
 
@@ -616,6 +671,18 @@ class SpeakerIdentityService:
         )
         self._session_clusters.clear()
         return {"removed": removed, "profile": self.status(), "raw_audio_retained": False}
+
+    def _enrollment_embeddings(self, enrollment_id: str) -> list[dict[str, Any]]:
+        samples = self.storage.speaker_enrollment_samples(enrollment_id)
+        embeddings: list[dict[str, Any]] = []
+        for sample in samples:
+            embedding_id = sample.get("embedding_id")
+            if not embedding_id:
+                continue
+            embedding = self.storage.speaker_embedding(str(embedding_id))
+            if embedding is not None and embedding.get("profile_id") == SELF_PROFILE_ID:
+                embeddings.append(embedding)
+        return embeddings
 
     def apply_feedback(
         self,

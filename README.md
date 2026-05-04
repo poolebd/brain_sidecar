@@ -83,6 +83,9 @@ Useful knobs:
 - `BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS`: audio window before ASR emits a transcript, default `3.4`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS`: overlap between ASR windows, default `0.8`.
 - `BRAIN_SIDECAR_AUDIO_CHUNK_MS`: capture chunk size, default `250`.
+- `BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_ID`: optional exact ALSA device id such as `alsa:plughw:2,0` to prefer when no UI device is selected.
+- `BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_MATCH`: optional substring matched against device id, label, ffmpeg input, or USB hardware id such as `291a:3369`; useful when ALSA card numbers move.
+- `BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_LABEL`: optional display label for the preferred device, for example `Anker PowerConf C200 microphone`.
 - `BRAIN_SIDECAR_ASR_NO_SPEECH_THRESHOLD`: reject segments Faster-Whisper marks as likely silence, default `0.6`.
 - `BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD`: reject low-confidence ASR segments, default `-1.0`.
 - `BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD`: reject repetitive/compressed ASR spans, default `2.4`.
@@ -199,6 +202,12 @@ curl -X POST http://127.0.0.1:8765/api/work-memory/search -H 'Content-Type: appl
 Open the Web UI and use **Speaker Identity** to teach the sidecar BP's voice from
 single-speaker USB-mic samples. The flow stores local speaker embeddings and
 discarded-audio quality metadata only; raw enrollment audio is not retained.
+Run **Test Mic** in the Input controls before recording samples. The mic check
+captures a short in-memory sample from the selected USB device and reports peak
+level, clipping, usable speech, quality, and a plain recommendation without
+writing audio to disk. Enrollment finalization uses only the current training
+attempt and can ignore an outlier sample when enough consistent single-speaker
+speech remains, so a failed attempt should not poison the next one.
 
 When ready, transcript events can label high-confidence BP speech with
 `speaker_role: "user"` and the configured label. Meeting-intelligence cards use
