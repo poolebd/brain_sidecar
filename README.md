@@ -203,9 +203,10 @@ Open the Web UI and use **Speaker Identity** to teach the sidecar BP's voice fro
 single-speaker USB-mic samples. The flow stores local speaker embeddings and
 discarded-audio quality metadata only; raw enrollment audio is not retained.
 Run **Test Mic** in the Input controls before recording samples. The mic check
-captures a short in-memory sample from the selected USB device and reports peak
-level, clipping, usable speech, quality, and a plain recommendation without
-writing audio to disk. Enrollment finalization uses only the current training
+captures a short in-memory sample from the selected USB device, exposes an
+in-browser playback preview, and reports peak level, clipping, usable speech,
+quality, and a plain recommendation without writing audio to disk. Enrollment
+finalization uses only the current training
 attempt and can ignore an outlier sample when enough consistent single-speaker
 speech remains, so a failed attempt should not poison the next one.
 

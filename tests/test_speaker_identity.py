@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import math
 import wave
 from dataclasses import replace
@@ -257,6 +259,14 @@ def test_microphone_test_endpoint_reports_quality_without_raw_audio(monkeypatch,
     assert payload["raw_audio_retained"] is False
     assert payload["quality"]["usable_speech_seconds"] > 0
     assert payload["recommendation"]["status"] in {"good", "noisy"}
+    assert payload["playback_audio"]["mime_type"] == "audio/wav"
+    assert payload["playback_audio"]["duration_seconds"] == pytest.approx(3.0, abs=0.05)
+    preview = base64.b64decode(payload["playback_audio"]["data_base64"])
+    with wave.open(io.BytesIO(preview), "rb") as wav:
+        assert wav.getnchannels() == 1
+        assert wav.getframerate() == 16_000
+        assert wav.getsampwidth() == 2
+        assert wav.getnframes() > 0
 
 
 def speaker_service(tmp_path: Path, vectors: list[list[float]]) -> SpeakerIdentityService:

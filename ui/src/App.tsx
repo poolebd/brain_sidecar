@@ -293,6 +293,11 @@ type MicTestResult = {
     title: string;
     detail: string;
   };
+  playback_audio?: {
+    mime_type: string;
+    data_base64: string;
+    duration_seconds: number;
+  } | null;
   raw_audio_retained: boolean;
 };
 
@@ -392,6 +397,7 @@ export function App() {
   const [speakerBusy, setSpeakerBusy] = useState("");
   const [micTest, setMicTest] = useState<MicTestResult | null>(null);
   const [micTestBusy, setMicTestBusy] = useState(false);
+  const [micPlaybackUrl, setMicPlaybackUrl] = useState("");
   const [speakerRecordingStartedAt, setSpeakerRecordingStartedAt] = useState<number | null>(null);
   const [speakerRecordingNow, setSpeakerRecordingNow] = useState(Date.now());
   const [transcriptEvents, setTranscriptEvents] = useState<TranscriptEvent[]>([]);
@@ -416,6 +422,7 @@ export function App() {
   const eventSeqRef = useRef(0);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const followLiveRef = useRef(true);
+  const micPlaybackUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     refreshDevices();
@@ -442,6 +449,9 @@ export function App() {
     return () => {
       eventSourceRef.current?.close();
       speakerEventSourceRef.current?.close();
+      if (micPlaybackUrlRef.current) {
+        URL.revokeObjectURL(micPlaybackUrlRef.current);
+      }
     };
   }, []);
 
@@ -1290,17 +1300,26 @@ export function App() {
         return;
       }
       setMicTest(payload);
+      replaceMicPlaybackUrl(micTestPlaybackUrl(payload));
       appendSystemLog({
         level: payload.recommendation?.status === "good" ? "status" : "warning",
         title: payload.recommendation?.title ?? "Microphone check complete",
         message: payload.recommendation?.detail ?? "Mic test returned.",
-        metadata: payload,
+        metadata: micTestLogMetadata(payload),
       });
     } catch (error) {
       pushError(error instanceof Error ? error.message : "Microphone test failed");
     } finally {
       setMicTestBusy(false);
     }
+  }
+
+  function replaceMicPlaybackUrl(nextUrl: string) {
+    if (micPlaybackUrlRef.current) {
+      URL.revokeObjectURL(micPlaybackUrlRef.current);
+    }
+    micPlaybackUrlRef.current = nextUrl || null;
+    setMicPlaybackUrl(nextUrl);
   }
 
   async function startSpeakerEnrollment() {
@@ -1708,6 +1727,13 @@ export function App() {
                 <div className="mic-meter" aria-label="Microphone test result">
                   <div><span style={{ width: `${Math.min(100, micPeakPercent)}%` }} /></div>
                   <small>{micUsableSeconds.toFixed(1)}s speech · quality {micQualityPercent}% · peak {micPeakPercent}%</small>
+                </div>
+              )}
+              {micPlaybackUrl && (
+                <div className="mic-playback" aria-label="Microphone test playback">
+                  <strong>Recorded preview</strong>
+                  <audio controls src={micPlaybackUrl} preload="metadata" />
+                  <small>Raw audio is not saved.</small>
                 </div>
               )}
               {micTest?.quality.issues.length ? (
@@ -2915,6 +2941,36 @@ function humanFileSize(bytes: number): string {
   }
   const digits = value >= 10 || unitIndex === 0 ? 0 : 1;
   return `${value.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function micTestPlaybackUrl(payload: MicTestResult): string {
+  const playback = payload.playback_audio;
+  if (!playback?.data_base64) {
+    return "";
+  }
+  try {
+    const binary = window.atob(playback.data_base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return URL.createObjectURL(new Blob([bytes], { type: playback.mime_type || "audio/wav" }));
+  } catch {
+    return "";
+  }
+}
+
+function micTestLogMetadata(payload: MicTestResult): Record<string, unknown> {
+  return {
+    ...payload,
+    playback_audio: payload.playback_audio
+      ? {
+          mime_type: payload.playback_audio.mime_type,
+          duration_seconds: payload.playback_audio.duration_seconds,
+          data_base64_bytes: payload.playback_audio.data_base64.length,
+        }
+      : null,
+  };
 }
 
 async function fetchJson<T>(url: string, init: RequestInit): Promise<FetchJsonResult<T>> {

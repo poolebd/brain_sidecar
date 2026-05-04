@@ -188,6 +188,10 @@ test("shows speaker identity controls instead of legacy ASR voice training", asy
   });
   await expect(page.getByLabel("Microphone check")).toContainText("Mic check looks good");
   await expect(page.getByLabel("Microphone check")).toContainText("2.6s speech");
+  const playback = page.getByLabel("Microphone test playback");
+  await expect(playback).toBeVisible();
+  await expect(playback.locator("audio")).toHaveAttribute("src", /^blob:/);
+  await expect(playback).toContainText("Raw audio is not saved");
   await speaker.getByText("Advanced speaker controls").click();
   await expect(speaker).toContainText("embeddings");
   await speaker.getByText("Review learned speaker profile").click();

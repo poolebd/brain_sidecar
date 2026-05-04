@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import time
+import wave
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -452,6 +455,7 @@ class SessionManager:
             "audio_source": audio_source,
             "quality": quality.to_dict(),
             "recommendation": recommendation,
+            "playback_audio": pcm16_wav_preview(pcm, self.settings.audio_sample_rate),
             "raw_audio_retained": False,
         }
 
@@ -1358,4 +1362,18 @@ def microphone_recommendation(quality: dict) -> dict:
         "status": "good",
         "title": "Mic check looks good",
         "detail": "Use this setup for speaker samples: one voice, normal meeting distance, steady speech.",
+    }
+
+
+def pcm16_wav_preview(pcm: bytes, sample_rate: int) -> dict:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm)
+    return {
+        "mime_type": "audio/wav",
+        "data_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+        "duration_seconds": len(pcm) / float(sample_rate * 2),
     }

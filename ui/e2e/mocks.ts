@@ -37,6 +37,7 @@ type MockSpeakerStatus = {
 };
 
 const API_ORIGIN = "http://127.0.0.1:8765";
+const MOCK_MIC_WAV_BASE64 = "UklGRmQBAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YUABAAAAAF8FlQp7D+sTwxflGjsdsh4/H90ekB1iG2MYqhRTEIALVgb7AJn7WPZh8dns4+ie5SHjgeHJ4ADhIuIo5APnnOrY7pfztfgK/m0Dtwi/DV4ScRbYGXscRB4nHxwfJB5GHJEZGBb4EU4NPgjwAo39O/gk83DuQeq45vDj/uHx4NDgnuFS4+LlOek97dHx0PYW/HgB0Qb1C74QCBWxGJ4buB3wHjwfmR4OHaUacBeJEw4PHwrjBIP/Jfr19Bjwtevs59vkmeI44cDgOOGZ4tvk7Oe16xjw9fQl+oP/4wQfCg4PiRNwF6UaDh2ZHjwf8B64HZ4bsRgIFb4Q9QvRBngBFvzQ9tHxPe056eLlUuOe4dDg8eD+4fDjuOZB6nDuJPM7+I398AI+CE4N+BEYFpEZRhwkHhwfJx9EHnsc2BlxFg==";
 
 type MockDevice = {
   id: string;
@@ -264,6 +265,11 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
           status: "good",
           title: "Mic check looks good",
           detail: "Use this setup for speaker samples: one voice, normal meeting distance, steady speech.",
+        },
+        playback_audio: {
+          mime_type: "audio/wav",
+          data_base64: MOCK_MIC_WAV_BASE64,
+          duration_seconds: 3,
         },
         raw_audio_retained: false,
       });
