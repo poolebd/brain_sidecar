@@ -1,0 +1,4 @@
+"""Brain Sidecar: all-local live transcription, notes, and recall."""
+
+__all__ = ["__version__"]
+__version__ = "0.1.0"

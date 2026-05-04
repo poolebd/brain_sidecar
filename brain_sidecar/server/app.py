@@ -1,0 +1,469 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import time
+from pathlib import Path
+from uuid import uuid4
+from typing import Annotated, Any, Literal
+
+import uvicorn
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from brain_sidecar.config import load_settings
+from brain_sidecar.core.devices import list_audio_devices
+from brain_sidecar.core.gpu import read_gpu_status
+from brain_sidecar.core.session import SessionManager
+from brain_sidecar.core.test_mode import TestModeService
+
+MAX_INPUT_FILE_BYTES = 1024 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class CreateSessionRequest(BaseModel):
+    title: str | None = None
+
+
+class StartSessionRequest(BaseModel):
+    device_id: str | None = None
+    fixture_wav: str | None = None
+    audio_source: Literal["server_device", "browser_stream", "fixture"] | None = None
+    save_transcript: bool = True
+
+
+class LibraryRootRequest(BaseModel):
+    path: Annotated[str, Field(min_length=1)]
+
+
+class RecallSearchRequest(BaseModel):
+    query: Annotated[str, Field(min_length=1)]
+    limit: int = Field(default=8, ge=1, le=24)
+
+
+class WorkMemoryReindexRequest(BaseModel):
+    roots: list[str] | None = None
+    embed: bool = True
+
+
+class WorkMemorySearchRequest(BaseModel):
+    query: Annotated[str, Field(min_length=1)]
+    limit: int = Field(default=5, ge=1, le=12)
+
+
+class WebContextSearchRequest(BaseModel):
+    query: Annotated[str, Field(min_length=1)]
+    session_id: str | None = None
+
+
+class SpeakerSampleRecordRequest(BaseModel):
+    device_id: str | None = None
+    fixture_wav: str | None = None
+    audio_source: Literal["server_device", "browser_stream", "fixture"] | None = None
+
+
+class SpeakerFeedbackRequest(BaseModel):
+    session_id: Annotated[str, Field(min_length=1)]
+    segment_id: str | None = None
+    old_label: str = ""
+    new_label: Annotated[str, Field(min_length=1)]
+    feedback_type: Annotated[str, Field(min_length=1)] = "correct_label"
+
+
+class TestAudioPrepareRequest(BaseModel):
+    source_path: Annotated[str, Field(min_length=1)]
+    max_seconds: float | None = Field(default=None, gt=0)
+    expected_terms: list[str] = Field(default_factory=list, max_length=64)
+
+
+class TestModeReportRequest(BaseModel):
+    report: dict[str, Any] = Field(default_factory=dict)
+
+
+def _safe_upload_name(filename: str | None) -> str:
+    original = Path(filename or "input-file").name
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", original).strip("._")
+    return (safe or "input-file")[:160]
+
+
+def create_app() -> FastAPI:
+    settings = load_settings()
+    manager = SessionManager(settings)
+    test_mode = TestModeService(settings)
+
+    app = FastAPI(
+        title="Brain Sidecar",
+        version="0.1.0",
+        description="Local live audio transcription, notes, and recall sidecar.",
+    )
+    app.state.manager = manager
+    app.state.settings = settings
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://127.0.0.1:8766",
+            "http://localhost:8766",
+            "http://127.0.0.1:8776",
+            "http://localhost:8776",
+            "https://notes.shoalstone.net",
+        ],
+        allow_origin_regex=r"https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\]):(8766|8776)",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/")
+    async def root() -> dict:
+        return {
+            "name": "Brain Sidecar",
+            "status": "ready",
+            "docs": "/docs",
+            "gpu_health": "/api/health/gpu",
+        }
+
+    @app.get("/api/devices")
+    async def devices() -> dict:
+        return {"devices": [device.to_dict() for device in list_audio_devices()]}
+
+    @app.get("/api/health/gpu")
+    async def gpu_health() -> dict:
+        status = read_gpu_status().to_dict()
+        status["required"] = True
+        status["asr_primary_model"] = settings.asr_primary_model
+        status["asr_fallback_model"] = settings.asr_fallback_model
+        status["asr_beam_size"] = settings.asr_beam_size
+        status["asr_vad_min_silence_ms"] = settings.asr_vad_min_silence_ms
+        status["asr_min_free_vram_mb"] = settings.asr_min_free_vram_mb
+        status["asr_unload_ollama_on_start"] = settings.asr_unload_ollama_on_start
+        status["asr_gpu_free_timeout_seconds"] = settings.asr_gpu_free_timeout_seconds
+        status["audio_chunk_ms"] = settings.audio_chunk_ms
+        status["transcription_window_seconds"] = settings.transcription_window_seconds
+        status["transcription_overlap_seconds"] = settings.transcription_overlap_seconds
+        status["transcription_queue_size"] = settings.transcription_queue_size
+        status["speaker_enrollment_sample_seconds"] = settings.speaker_enrollment_sample_seconds
+        status["speaker_identity_label"] = settings.speaker_identity_label
+        status["speaker_retain_raw_enrollment_audio"] = settings.speaker_retain_raw_enrollment_audio
+        status["dedupe_similarity_threshold"] = settings.dedupe_similarity_threshold
+        status["ollama_chat_model"] = settings.ollama_chat_model
+        status["ollama_embed_model"] = settings.ollama_embed_model
+        status["ollama_keep_alive"] = settings.ollama_keep_alive
+        status["web_context_enabled"] = settings.web_context_enabled
+        status["web_context_configured"] = bool(settings.brave_search_api_key.strip())
+        status["test_mode_enabled"] = settings.test_mode_enabled
+        status["test_audio_run_dir"] = str(settings.test_audio_run_dir)
+        return status
+
+    @app.post("/api/input-files")
+    async def upload_input_file(file: UploadFile = File(...)) -> dict:
+        upload_dir = settings.data_dir / "input-files"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = _safe_upload_name(file.filename)
+        target = upload_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}-{safe_name}"
+        size = 0
+        try:
+            with target.open("wb") as output:
+                while True:
+                    chunk = await file.read(UPLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_INPUT_FILE_BYTES:
+                        target.unlink(missing_ok=True)
+                        raise HTTPException(status_code=413, detail="Input file is larger than 1 GB.")
+                    output.write(chunk)
+        finally:
+            await file.close()
+
+        if size == 0:
+            target.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail="Input file is empty.")
+        return {"path": str(target), "filename": safe_name, "size_bytes": size}
+
+    @app.post("/api/test-mode/audio/prepare")
+    async def prepare_test_audio(request: TestAudioPrepareRequest) -> dict:
+        if not settings.test_mode_enabled:
+            raise HTTPException(status_code=403, detail="Recorded audio test mode is disabled.")
+        try:
+            prepared = await asyncio.to_thread(
+                test_mode.prepare_audio,
+                Path(request.source_path),
+                max_seconds=request.max_seconds,
+                expected_terms=request.expected_terms,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return prepared.to_dict()
+
+    @app.post("/api/test-mode/runs/{run_id}/report")
+    async def save_test_report(run_id: str, request: TestModeReportRequest) -> dict:
+        if not settings.test_mode_enabled:
+            raise HTTPException(status_code=403, detail="Recorded audio test mode is disabled.")
+        try:
+            return await asyncio.to_thread(test_mode.write_report, run_id, request.report)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/web-context/search")
+    async def search_web_context(request: WebContextSearchRequest) -> dict:
+        return await manager.search_web_context(request.query, session_id=request.session_id)
+
+    @app.post("/api/sessions")
+    async def create_session(request: CreateSessionRequest) -> dict:
+        return await manager.create_session(request.title)
+
+    @app.post("/api/sessions/{session_id}/start")
+    async def start_session(session_id: str, request: StartSessionRequest) -> dict:
+        fixture_wav = Path(request.fixture_wav).expanduser().resolve() if request.fixture_wav else None
+        if fixture_wav and not fixture_wav.exists():
+            raise HTTPException(status_code=400, detail=f"Fixture WAV does not exist: {fixture_wav}")
+        audio_source = request.audio_source or ("fixture" if fixture_wav else "server_device")
+        try:
+            await manager.start_session(
+                session_id,
+                device_id=request.device_id,
+                fixture_wav=fixture_wav,
+                audio_source=audio_source,
+                save_transcript=request.save_transcript,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "status": "running",
+            "session_id": session_id,
+            "audio_source": audio_source,
+            "save_transcript": request.save_transcript,
+            "raw_audio_retained": False,
+        }
+
+    @app.websocket("/api/sessions/{session_id}/audio-stream")
+    async def browser_audio_stream(session_id: str, websocket: WebSocket) -> None:
+        await websocket.accept()
+        try:
+            capture = manager.browser_audio_capture(session_id)
+        except (KeyError, RuntimeError) as exc:
+            await websocket.close(code=1008, reason=str(exc))
+            return
+
+        try:
+            while True:
+                message = await websocket.receive()
+                if "bytes" in message and message["bytes"]:
+                    await capture.feed(message["bytes"])
+                elif message.get("type") == "websocket.disconnect":
+                    break
+        except WebSocketDisconnect:
+            return
+
+    @app.post("/api/sessions/{session_id}/stop")
+    async def stop_session(session_id: str) -> dict:
+        await manager.stop_session(session_id)
+        return {"status": "stopped", "session_id": session_id, "raw_audio_retained": False}
+
+    @app.get("/api/sessions/{session_id}/events")
+    async def session_events(session_id: str) -> StreamingResponse:
+        async def stream():
+            async for event in manager.bus.subscribe(session_id):
+                data = json.dumps(event.to_dict(), ensure_ascii=False)
+                yield f"id: {event.id}\nevent: {event.type}\ndata: {data}\n\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/events")
+    async def events() -> StreamingResponse:
+        async def stream():
+            async for event in manager.bus.subscribe(None):
+                data = json.dumps(event.to_dict(), ensure_ascii=False)
+                yield f"id: {event.id}\nevent: {event.type}\ndata: {data}\n\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/speaker/status")
+    async def speaker_status() -> dict:
+        return await manager.speaker_identity_status()
+
+    @app.post("/api/speaker/enrollments")
+    async def create_speaker_enrollment() -> dict:
+        return await manager.create_speaker_enrollment()
+
+    @app.get("/api/speaker/enrollments/{enrollment_id}")
+    async def get_speaker_enrollment(enrollment_id: str) -> dict:
+        try:
+            return await manager.speaker_enrollment(enrollment_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/speaker/enrollments/{enrollment_id}/record")
+    async def record_speaker_sample(enrollment_id: str, request: SpeakerSampleRecordRequest) -> dict:
+        fixture_wav = Path(request.fixture_wav).expanduser().resolve() if request.fixture_wav else None
+        if fixture_wav and not fixture_wav.exists():
+            raise HTTPException(status_code=400, detail=f"Fixture WAV does not exist: {fixture_wav}")
+        audio_source = request.audio_source or ("fixture" if fixture_wav else "server_device")
+        try:
+            return await manager.record_speaker_enrollment_sample(
+                enrollment_id,
+                device_id=request.device_id,
+                fixture_wav=fixture_wav,
+                audio_source=audio_source,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.websocket("/api/speaker/enrollments/{enrollment_id}/audio-stream")
+    async def browser_speaker_audio_stream(enrollment_id: str, websocket: WebSocket) -> None:
+        await websocket.accept()
+        try:
+            capture = await manager.wait_for_browser_speaker_capture(enrollment_id)
+        except RuntimeError as exc:
+            await websocket.close(code=1008, reason=str(exc))
+            return
+
+        try:
+            while True:
+                message = await websocket.receive()
+                if "bytes" in message and message["bytes"]:
+                    await capture.feed(message["bytes"])
+                elif message.get("type") == "websocket.disconnect":
+                    break
+        except WebSocketDisconnect:
+            return
+
+    @app.post("/api/speaker/enrollments/{enrollment_id}/finalize")
+    async def finalize_speaker_enrollment(enrollment_id: str) -> dict:
+        try:
+            return await manager.finalize_speaker_enrollment(enrollment_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/speaker/profiles/self/recalibrate")
+    async def recalibrate_speaker_profile() -> dict:
+        try:
+            return await manager.recalibrate_speaker_profile()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/speaker/profiles/self/reset")
+    async def reset_speaker_profile() -> dict:
+        return await manager.reset_speaker_profile()
+
+    @app.post("/api/speaker/feedback")
+    async def speaker_feedback(request: SpeakerFeedbackRequest) -> dict:
+        return await manager.apply_speaker_feedback(
+            session_id=request.session_id,
+            segment_id=request.segment_id,
+            old_label=request.old_label,
+            new_label=request.new_label,
+            feedback_type=request.feedback_type,
+        )
+
+    @app.api_route("/api/voice/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    async def legacy_voice_removed(path: str) -> dict:
+        raise HTTPException(
+            status_code=410,
+            detail="Legacy ASR phrase-correction voice training has been removed from the active product path. Use /api/speaker/*.",
+        )
+
+    @app.post("/api/library/roots")
+    async def add_library_root(request: LibraryRootRequest) -> dict:
+        path = Path(request.path).expanduser().resolve()
+        if not path.exists():
+            raise HTTPException(status_code=400, detail=f"Path does not exist: {path}")
+        return await manager.add_library_root(path)
+
+    @app.get("/api/library/roots")
+    async def list_library_roots() -> dict:
+        return {"roots": [str(path) for path in manager.storage.library_roots()]}
+
+    @app.post("/api/library/reindex")
+    async def reindex_library() -> dict:
+        try:
+            report = await manager.recall.reindex_roots()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return report.to_dict()
+
+    @app.post("/api/recall/search")
+    async def recall_search(request: RecallSearchRequest) -> dict:
+        try:
+            hits = await manager.recall.search(request.query, limit=request.limit)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"hits": [hit.to_dict() for hit in hits]}
+
+    @app.get("/api/work-memory/status")
+    async def work_memory_status() -> dict:
+        return manager.work_memory.status()
+
+    @app.get("/api/work-memory/projects")
+    async def work_memory_projects() -> dict:
+        projects = manager.storage.work_memory_projects()
+        for project in projects:
+            project["evidence"] = manager.storage.work_memory_evidence(project["id"], limit=4)
+        return {"projects": projects}
+
+    @app.get("/api/work-memory/sources")
+    async def work_memory_sources(limit: int = 80) -> dict:
+        return {"sources": manager.storage.work_memory_sources(limit=max(1, min(limit, 200)))}
+
+    @app.post("/api/work-memory/reindex")
+    async def work_memory_reindex(request: WorkMemoryReindexRequest | None = None) -> dict:
+        roots = None
+        if request and request.roots:
+            roots = [Path(root).expanduser().resolve() for root in request.roots]
+            missing = [str(root) for root in roots if not root.exists()]
+            if missing:
+                raise HTTPException(status_code=400, detail=f"Work memory root does not exist: {missing[0]}")
+        try:
+            report = await manager.work_memory.reindex(roots=roots, embed=True if request is None else request.embed)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return report.to_dict()
+
+    @app.post("/api/work-memory/search")
+    async def work_memory_search(request: WorkMemorySearchRequest) -> dict:
+        try:
+            cards = manager.work_memory.search(request.query, limit=request.limit)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"cards": [card.to_dict() for card in cards]}
+
+    @app.on_event("shutdown")
+    async def shutdown() -> None:
+        active_ids = list(manager._active.keys())
+        await asyncio.gather(*(manager.stop_session(session_id) for session_id in active_ids), return_exceptions=True)
+
+    return app
+
+
+def main() -> None:
+    settings = load_settings()
+    uvicorn.run(
+        "brain_sidecar.server.app:create_app",
+        factory=True,
+        host=settings.host,
+        port=settings.port,
+    )
