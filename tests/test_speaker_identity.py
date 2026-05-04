@@ -14,6 +14,7 @@ from brain_sidecar.config import Settings
 from brain_sidecar.core.speaker_identity import (
     SpeakerBackendStatus,
     SpeakerIdentityService,
+    analyze_pcm16,
     calibrate_threshold,
     cosine_similarity,
     l2_normalize,
@@ -121,6 +122,21 @@ def test_speaker_enrollment_ignores_outlier_when_consistent_speech_remains(tmp_p
     assert finalized["profile"]["embedding_count"] == 2
     assert len(finalized["ignored_embedding_ids"]) == 1
     assert finalized["raw_audio_retained"] is False
+
+
+def test_audio_quality_counts_steady_training_speech_not_only_loud_peaks() -> None:
+    quality = analyze_pcm16(pulsed_training_pcm(seconds=8.0))
+
+    assert quality.duration_seconds == pytest.approx(8.0, abs=0.05)
+    assert quality.usable_speech_seconds >= 7.5
+    assert "too_much_silence" not in quality.issues
+
+
+def test_audio_quality_ignores_low_level_room_noise() -> None:
+    quality = analyze_pcm16(tone_pcm(seconds=3.0, amplitude=0.006))
+
+    assert quality.usable_speech_seconds == 0
+    assert "very_low_volume" in quality.issues
 
 
 def test_runtime_labels_matching_cluster_as_bp_only_above_threshold(tmp_path: Path) -> None:
@@ -275,11 +291,30 @@ def speaker_service(tmp_path: Path, vectors: list[list[float]]) -> SpeakerIdenti
     return SpeakerIdentityService(storage, make_settings(tmp_path), backend=QueueSpeakerBackend(vectors))
 
 
-def tone_pcm(*, seconds: float, sample_rate: int = 16_000, frequency: float = 220.0) -> bytes:
+def tone_pcm(
+    *,
+    seconds: float,
+    sample_rate: int = 16_000,
+    frequency: float = 220.0,
+    amplitude: float = 0.25,
+) -> bytes:
     frames = int(seconds * sample_rate)
     samples = bytearray()
     for index in range(frames):
-        value = int(0.25 * 32767 * math.sin(2.0 * math.pi * frequency * (index / sample_rate)))
+        value = int(amplitude * 32767 * math.sin(2.0 * math.pi * frequency * (index / sample_rate)))
+        samples.extend(value.to_bytes(2, byteorder="little", signed=True))
+    return bytes(samples)
+
+
+def pulsed_training_pcm(*, seconds: float, sample_rate: int = 16_000) -> bytes:
+    frames = int(seconds * sample_rate)
+    samples = bytearray()
+    pulse_centers = [0.8, 1.6, 2.5, 3.4, 4.2, 5.2, 6.3]
+    for index in range(frames):
+        t = index / sample_rate
+        pulse = sum(math.exp(-((t - center) / 0.08) ** 2) for center in pulse_centers)
+        amplitude = 0.018 + min(0.08, 0.06 * pulse)
+        value = int(amplitude * 32767 * math.sin(2.0 * math.pi * 190.0 * t))
         samples.extend(value.to_bytes(2, byteorder="little", signed=True))
     return bytes(samples)
 

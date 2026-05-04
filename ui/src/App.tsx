@@ -1934,7 +1934,7 @@ export function App() {
                     <div className="chip-row">
                       {speakerEnrollment.samples.slice(0, 6).map((sample) => (
                         <span key={sample.id} className={`chip ${sample.issues.length ? "warning" : ""}`}>
-                          {sample.usable_speech_seconds.toFixed(1)}s · {Math.round(sample.quality_score * 100)}%{sample.issues.length ? " · check" : ""}
+                          {sample.usable_speech_seconds.toFixed(1)}s usable / {sample.duration_seconds.toFixed(1)}s recorded · {Math.round(sample.quality_score * 100)}%{sample.issues.length ? " · check" : ""}
                         </span>
                       ))}
                     </div>

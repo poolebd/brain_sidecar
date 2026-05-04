@@ -378,8 +378,11 @@ def analyze_pcm16(pcm: bytes, sample_rate: int = SPEECH_SAMPLE_RATE) -> AudioQua
 
 def energy_speech_regions(samples: np.ndarray, sample_rate: int) -> list[tuple[int, int]]:
     frame_size = max(1, int(sample_rate * 0.03))
+    whole_rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+    if whole_rms < 0.008:
+        return []
     if samples.size < frame_size:
-        return [(0, int(samples.size))] if float(np.sqrt(np.mean(samples * samples))) >= 0.008 else []
+        return [(0, int(samples.size))]
 
     frame_rms: list[float] = []
     frame_ranges: list[tuple[int, int]] = []
@@ -390,7 +393,12 @@ def energy_speech_regions(samples: np.ndarray, sample_rate: int) -> list[tuple[i
         frame_ranges.append((start, end))
 
     arr = np.asarray(frame_rms, dtype=np.float32)
-    threshold = max(0.006, float(np.percentile(arr, 70)) * 0.38, float(np.median(arr)) * 1.5)
+    noise_floor = float(np.percentile(arr, 20))
+    speech_level = float(np.percentile(arr, 90))
+    dynamic_threshold = noise_floor + max(0.0015, (speech_level - noise_floor) * 0.25)
+    # Continuous enrollment speech often has no true silence floor. Avoid using
+    # the median as a threshold; it turns steady speech into a few loud peaks.
+    threshold = max(0.006, min(dynamic_threshold, noise_floor * 0.95))
     active = arr >= threshold
     regions: list[tuple[int, int]] = []
     start: int | None = None
@@ -404,10 +412,7 @@ def energy_speech_regions(samples: np.ndarray, sample_rate: int) -> list[tuple[i
             start = None
 
     if not regions:
-        whole_rms = float(np.sqrt(np.mean(samples * samples)))
-        if whole_rms >= 0.008:
-            return [(0, int(samples.size))]
-        return []
+        return [(0, int(samples.size))]
 
     merged: list[tuple[int, int]] = []
     max_gap = int(sample_rate * 0.2)
