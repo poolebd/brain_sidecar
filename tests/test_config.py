@@ -75,6 +75,20 @@ def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.transcription_overlap_seconds == 0.8
 
 
+def test_balanced_preview_env_profile(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")
+    monkeypatch.setenv("BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED", "true")
+    monkeypatch.setenv("BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS", "1.25")
+    monkeypatch.setenv("BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS", "0.8")
+
+    settings = load_settings()
+
+    assert settings.partial_transcripts_enabled is True
+    assert settings.partial_window_seconds == 1.25
+    assert settings.partial_min_interval_seconds == 0.8
+
+
 def test_transcription_overlap_is_clamped_below_window(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")

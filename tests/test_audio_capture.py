@@ -32,3 +32,19 @@ def test_ffmpeg_capture_omits_zero_gain_filter() -> None:
     )
 
     assert "-af" not in capture._args()
+
+
+def test_ffmpeg_capture_clamps_excessive_input_gain() -> None:
+    capture = FFmpegAudioCapture(
+        DeviceInfo(
+            id="alsa:plughw:2,0",
+            label="Server mic",
+            driver="alsa",
+            ffmpeg_input="plughw:2,0",
+        ),
+        input_gain_db=24,
+    )
+
+    args = capture._args()
+
+    assert args[args.index("-af") + 1] == "volume=12.0dB"

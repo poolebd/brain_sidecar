@@ -9,7 +9,7 @@ from brain_sidecar.core.dedupe import TranscriptDeduplicator
 from brain_sidecar.core.events import EVENT_SIDECAR_CARD, EVENT_TRANSCRIPT_FINAL, EVENT_TRANSCRIPT_PARTIAL, SidecarEvent
 from brain_sidecar.core.models import NoteCard, TranscriptSegment
 from brain_sidecar.core.notes import NoteSynthesisResult
-from brain_sidecar.core.session import ActiveSession, AudioWindow, SessionManager
+from brain_sidecar.core.session import ActiveSession, AudioWindow, SessionManager, normalize_mic_tuning, suggest_microphone_tuning
 from brain_sidecar.core.transcription import TranscribedSpan, TranscriptionResult
 
 
@@ -169,3 +169,18 @@ def active_session(session_id: str, *, save_transcript: bool) -> ActiveSession:
         deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
         save_transcript=save_transcript,
     )
+
+
+def test_mic_tuning_clamps_excessive_gain() -> None:
+    tuning = normalize_mic_tuning({"input_gain_db": 24, "speech_sensitivity": "normal"})
+
+    assert tuning["input_gain_db"] == 12.0
+
+
+def test_mic_tuning_suggestions_never_exceed_safe_gain() -> None:
+    suggested = suggest_microphone_tuning(
+        {"usable_speech_seconds": 0.2, "rms": 0.002, "peak": 0.1, "issues": []},
+        {"input_gain_db": 10, "speech_sensitivity": "normal", "auto_level": True},
+    )
+
+    assert suggested["input_gain_db"] == 12.0

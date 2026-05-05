@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  buildLiveFieldRows,
   buildSidecarDisplayCards,
   getTranscriptDisplayLabel,
   groupWorkCards,
@@ -96,6 +97,38 @@ test("groups useful cards into daily work buckets", () => {
   expect(groups.decisions.map((item) => item.id)).toEqual(["decision"]);
   expect(groups.questions.map((item) => item.id)).toEqual(["question"]);
   expect(groups.context.map((item) => item.id)).toEqual(["topic", "memory", "web"]);
+});
+
+test("pairs sidecar cards to transcript rows by source segment", () => {
+  const first = transcript("transcript-seg-1", "We need a tariff follow-up.", { segmentId: "seg-1", at: now - 2_000 });
+  const second = transcript("transcript-seg-2", "The interconnection owner is unclear.", { segmentId: "seg-2", at: now });
+  const rows = buildLiveFieldRows([
+    second,
+    first,
+  ], [
+    card("paired", { title: "Tariff follow-up", sourceSegmentIds: ["seg-1"], at: now + 500 }),
+    card("unpaired", { title: "General context", sourceSegmentIds: [], at: now + 1_000 }),
+  ]);
+
+  expect(rows).toHaveLength(3);
+  expect(rows[0].transcript?.segmentId).toBe("seg-1");
+  expect(rows[0].cards.map((item) => item.id)).toEqual(["paired"]);
+  expect(rows[1].transcript?.segmentId).toBe("seg-2");
+  expect(rows[1].cards).toEqual([]);
+  expect(rows[2].kind).toBe("sidecar");
+  expect(rows[2].cards.map((item) => item.id)).toEqual(["unpaired"]);
+});
+
+test("attaches manual sidecar cards to the latest typed query", () => {
+  const spoken = transcript("transcript-seg-1", "Live meeting audio.", { segmentId: "seg-1", at: now - 4_000 });
+  const typed = transcript("typed-query", "What prior work matches this?", { source: "typed", at: now - 1_000 });
+  const rows = buildLiveFieldRows([spoken, typed], [
+    card("manual", { explicitlyRequested: true, title: "Manual result", at: now }),
+  ]);
+
+  expect(rows).toHaveLength(2);
+  expect(rows[1].transcript?.id).toBe("typed-query");
+  expect(rows[1].cards.map((item) => item.id)).toEqual(["manual"]);
 });
 
 function transcript(id: string, text: string, overrides: Partial<TranscriptEvent> = {}): TranscriptEvent {

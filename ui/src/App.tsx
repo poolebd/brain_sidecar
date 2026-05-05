@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import {
+  buildLiveFieldRows,
   buildSidecarDisplayCards,
   getTranscriptDisplayLabel,
   groupWorkCards,
   normalizeDisplayText,
+  type LiveFieldRow,
   type SidecarDisplayCard,
   type SidecarPriority,
   type TranscriptEvent,
@@ -55,6 +57,7 @@ type DeviceInfo = {
   ffmpeg_input: string;
   hardware_id?: string;
   healthy?: boolean;
+  in_use?: boolean;
   score?: number;
   selection_reason?: string;
 };
@@ -475,7 +478,9 @@ export function App() {
     if (!followLiveRef.current) {
       return;
     }
-    window.requestAnimationFrame(() => scrollFieldToLive("smooth"));
+    const latestEvent = transcriptEvents[transcriptEvents.length - 1];
+    const behavior: ScrollBehavior = latestEvent && !latestEvent.isFinal ? "auto" : "smooth";
+    window.requestAnimationFrame(() => scrollFieldToLive(behavior));
   }, [transcriptEvents]);
 
   useEffect(() => {
@@ -505,13 +510,9 @@ export function App() {
     ),
     [dismissedCardKeys, sidecarCards, transcriptEvents],
   );
-  const contributionCards = useMemo(
-    () => buildSidecarDisplayCards(
-      sidecarCards.filter((card) => !dismissedCardKeys.has(card.cardKey ?? card.id)),
-      transcriptEvents,
-      { maxCards: 5 },
-    ),
-    [dismissedCardKeys, sidecarCards, transcriptEvents],
+  const liveFieldRows = useMemo(
+    () => buildLiveFieldRows(transcriptEvents, usefulContextCards),
+    [transcriptEvents, usefulContextCards],
   );
   const manualSourceCards = useMemo(
     () => sidecarCards.filter((card) => card.explicitlyRequested && !dismissedCardKeys.has(card.cardKey ?? card.id)).slice(0, 12),
@@ -522,10 +523,12 @@ export function App() {
     : usefulContextCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
   const visibleWorkCards = useMemo(() => groupWorkCards(visibleContextCards), [visibleContextCards]);
 
-  const latestTranscript = transcript[transcript.length - 1]?.text ?? "No transcript yet.";
   const workMemoryLabel = workMemoryStatus
     ? `${workMemoryStatus.projects} projects / ${workMemoryStatus.sources} sources`
     : "not indexed";
+  const streamingModeLabel = gpu.partial_transcripts_enabled
+    ? `Preview ${formatSeconds(gpu.partial_window_seconds ?? 0)}`
+    : `Final ${formatSeconds(gpu.transcription_window_seconds ?? 0)}`;
   const testModeVisible = Boolean(gpu.test_mode_enabled);
   const webStatusLabel = gpu.web_context_enabled
     ? gpu.web_context_configured ? "web ready" : "web key missing"
@@ -597,12 +600,13 @@ export function App() {
           : `Record ${Math.max(1, Math.ceil(speakerNeededSpeech / Math.max(1, speakerSampleSeconds)))} more sample${Math.ceil(speakerNeededSpeech / Math.max(1, speakerSampleSeconds)) === 1 ? "" : "s"}`;
   const captureStarting = ["starting", "freeing_gpu", "loading_asr"].includes(status);
   const captureActive = ["listening", "catching_up"].includes(status);
-  const missingServerDevice = audioSource === "server_device" && !selectedDevice;
+  const selectedServerMic = devices.find((device) => device.id === selectedDevice) ?? null;
+  const serverMicInUse = Boolean(selectedServerMic?.in_use);
+  const missingServerDevice = audioSource === "server_device" && (!selectedDevice || (serverMicInUse && !captureActive));
   const captureStartDisabled = captureStarting || captureActive || missingServerDevice;
   const captureStopDisabled = !sessionId || status === "idle" || status === "stopped";
-  const selectedServerMic = devices.find((device) => device.id === selectedDevice) ?? null;
   const serverMicStatus = selectedServerMic
-    ? `${selectedServerMic.label}${selectedServerMic.healthy === false ? " (not usable)" : ""}`
+    ? `${selectedServerMic.label}${selectedServerMic.in_use ? " (in use)" : selectedServerMic.healthy === false ? " (not usable)" : ""}`
     : "No healthy server microphone detected";
   const activeRetention = activeSessionRetention ?? sessionRetention;
   const captureModeLabel = audioSource === "fixture"
@@ -613,10 +617,10 @@ export function App() {
     ? "Transcript text and notes will be available for future recall. Raw audio is not saved."
     : "Ephemeral: transcript text and notes stay on screen only. Raw audio is not saved.";
   const contextEmptyTitle = captureStarting
-    ? "Starting"
+    ? "Starting context"
     : captureActive
-      ? activeRetention === "saved" ? "Recording" : "Listening"
-      : "Ready";
+      ? activeRetention === "saved" ? "Recording context" : "Listening for context"
+      : "Context standby";
   const contextEmptyBody = captureActive || captureStarting
     ? "Actions, decisions, questions, and useful context will appear here."
     : "Start listening, record a transcript, or run a query.";
@@ -897,10 +901,16 @@ export function App() {
 
   function appendTranscriptEvent(event: TranscriptEvent) {
     setTranscriptEvents((current) => {
+      if (!event.isFinal && current.some((candidate) => candidate.isFinal && transcriptEventsOverlap(candidate, event))) {
+        return current;
+      }
       const withoutSameId = current.filter((candidate) => candidate.id !== event.id);
-      const reconciled = event.isFinal
-        ? withoutSameId.filter((candidate) => candidate.isFinal || !transcriptEventsOverlap(candidate, event))
-        : withoutSameId;
+      const reconciled = withoutSameId.filter((candidate) => {
+        if (!transcriptEventsOverlap(candidate, event)) {
+          return true;
+        }
+        return candidate.isFinal;
+      });
       return [...reconciled, event].slice(-240);
     });
     if (!followLiveRef.current) {
@@ -1525,14 +1535,15 @@ export function App() {
       </header>
 
       <main className="workspace-grid">
-        <section className="transcript-pane" aria-label="Live transcript pane">
+        <section className="transcript-pane" aria-label="Live field pane">
           <div className="field-toolbar">
             <div>
-              <p className="label">Live Transcript</p>
-              <h1>Live transcript</h1>
+              <p className="label">Live Field</p>
+              <h1>Live field</h1>
             </div>
             <div className="field-toolbar-status">
               <span>{gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "GPU check"}</span>
+              <span>{streamingModeLabel}</span>
               <span>{gpuFreeLabel}</span>
             </div>
           </div>
@@ -1576,24 +1587,22 @@ export function App() {
 
           <div
             id="transcript"
-            className="transcript-scroll scroll"
+            className="transcript-scroll live-field-scroll scroll"
             role="feed"
-            aria-label="Live transcript"
+            aria-label="Live field"
             ref={transcriptScrollRef}
             onScroll={handleFieldScroll}
           >
-            <TranscriptPane events={transcriptEvents} />
+            <LiveFieldPane
+              rows={liveFieldRows}
+              expandedCards={expandedContextCards}
+              showDebugMetadata={showDebugMetadata}
+              onToggle={toggleExpandedContextCard}
+              onPin={togglePinnedCard}
+              onDismiss={dismissCard}
+              onCopy={copyCardSuggestion}
+            />
           </div>
-
-          <ContributionLane
-            cards={contributionCards}
-            expandedCards={expandedContextCards}
-            showDebugMetadata={showDebugMetadata}
-            onToggle={toggleExpandedContextCard}
-            onPin={togglePinnedCard}
-            onDismiss={dismissCard}
-            onCopy={copyCardSuggestion}
-          />
 
           {!followLive && (
             <button className="jump-live" onClick={() => scrollFieldToLive("smooth")}>
@@ -1621,31 +1630,30 @@ export function App() {
           </form>
 
           <ManualSourceSections cards={manualSourceCards} />
-
-          <section className="latest-card" aria-label="Latest heard" aria-live="polite">
-            <p className="label">Latest heard</p>
-            <blockquote>{latestTranscript}</blockquote>
-          </section>
         </section>
 
         <section className="context-pane" id="recall" aria-label="Work Notes">
           <div className="field-toolbar context-toolbar">
             <div>
               <p className="label">Sidecar</p>
-              <h1>Work Notes</h1>
+              <h1>Session Context</h1>
             </div>
             <div className="field-toolbar-status">
               <span>{workMemoryLabel}</span>
               <span>{usefulContextCards.length} useful</span>
             </div>
           </div>
-          <WorkNotesPane
+          <SessionContextPane
             groups={visibleWorkCards}
             usefulCount={usefulContextCards.length}
             rawCount={sidecarCards.length}
             loading={manualQueryBusy}
             emptyTitle={contextEmptyTitle}
             emptyBody={contextEmptyBody}
+            previewCards={visibleContextCards}
+            showAll={showAllContext}
+            canShowMore={usefulContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT}
+            onToggleShowAll={() => setShowAllContext((value) => !value)}
             expandedCards={expandedContextCards}
             showDebugMetadata={showDebugMetadata}
             onToggle={toggleExpandedContextCard}
@@ -1653,11 +1661,6 @@ export function App() {
             onDismiss={dismissCard}
             onCopy={copyCardSuggestion}
           />
-          {usefulContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT && (
-            <button className="secondary show-more-context" onClick={() => setShowAllContext((value) => !value)}>
-              {showAllContext ? "Show less" : `Show more (${usefulContextCards.length - DEFAULT_CONTEXT_CARD_LIMIT})`}
-            </button>
-          )}
         </section>
 
         <aside className={`tool-drawer ${drawerOpen ? "open" : ""}`} aria-label="Tools drawer">
@@ -1739,7 +1742,7 @@ export function App() {
                   aria-label="Input Boost"
                   type="range"
                   min="-12"
-                  max="24"
+                  max="12"
                   step="1"
                   value={micTuning.input_gain_db}
                   onChange={(event) => setMicTuning((current) => normalizeMicTuning({ ...current, input_gain_db: Number(event.target.value) }))}
@@ -1767,6 +1770,9 @@ export function App() {
                   </button>
                 )}
               </div>
+              {micTuning.input_gain_db >= 10 && (
+                <p className="tool-note warning-text">High boost can clip loud rooms or speaker audio. Run Test Mic before relying on it.</p>
+              )}
               {micTest?.suggested_tuning?.reason && <p className="tool-note">{micTest.suggested_tuning.reason}</p>}
             </div>
             {deviceNotice && <p className={`tool-note ${missingServerDevice ? "warning-text" : ""}`} role="status">{deviceNotice}</p>}
@@ -1835,11 +1841,11 @@ export function App() {
           </section>
 
           {testModeVisible && (
-            <section className="drawer-section" id="test-mode" role="region" aria-label="Recorded audio test">
-              <div className="drawer-section-heading">
+            <details className="drawer-section drawer-section-collapsible" id="test-mode" role="region" aria-label="Recorded audio test">
+              <summary className="drawer-section-heading">
                 <h3>Recorded Audio Test</h3>
                 <span>{testBusy || (testPrepared ? "ready" : "idle")}</span>
-              </div>
+              </summary>
               <div className="test-mode-grid">
                 <div className="field field-wide">
                   <span>Source audio path</span>
@@ -1902,14 +1908,14 @@ export function App() {
 	                  <small>{testReport.report_path ?? testPrepared?.report_path}</small>
 	                </div>
               )}
-            </section>
+            </details>
           )}
 
-          <section className="drawer-section" id="speaker-identity" aria-label="Speaker identity">
-            <div className="drawer-section-heading">
+          <details className="drawer-section drawer-section-collapsible" id="speaker-identity" aria-label="Speaker identity" role="region">
+            <summary className="drawer-section-heading">
               <h3>Speaker Identity</h3>
               <span>{speakerStatusLabel}</span>
-            </div>
+            </summary>
 
             <div className={`speaker-training-card ${speakerStage}`} aria-label="Speaker training next step">
               <div className="speaker-training-status">
@@ -2077,13 +2083,13 @@ export function App() {
                 Delete Learned Embeddings
               </button>
             </div>
-          </section>
+          </details>
 
-          <section className="drawer-section" id="indexes">
-            <div className="drawer-section-heading">
+          <details className="drawer-section drawer-section-collapsible" id="indexes" aria-label="Indexes" role="region">
+            <summary className="drawer-section-heading">
               <h3>Indexes</h3>
               <span>{workMemoryLabel}</span>
-            </div>
+            </summary>
             <div className="memory-overview" aria-label="Work memory index summary">
               <span><strong>{workMemoryStatus?.projects ?? 0}</strong> projects</span>
               <span><strong>{workMemoryStatus?.evidence ?? 0}</strong> citations</span>
@@ -2115,13 +2121,13 @@ export function App() {
                 {workMemoryBusy === "indexing" ? "Indexing..." : "Index Work"}
               </button>
             </div>
-          </section>
+          </details>
 
-          <section className="drawer-section">
-            <div className="drawer-section-heading">
+          <details className="drawer-section drawer-section-collapsible" aria-label="System" role="region">
+            <summary className="drawer-section-heading">
               <h3>System</h3>
               <span>{gpu.asr_cuda_available ? "ready" : "check"}</span>
-            </div>
+            </summary>
             <p className="gpu-name">{gpuLabel}</p>
             <div className="vram-bar" aria-label={`VRAM usage ${vramPercent}%`}>
               <span style={{ width: `${vramPercent}%` }} />
@@ -2178,7 +2184,7 @@ export function App() {
                 )}
               </details>
             )}
-          </section>
+          </details>
         </aside>
       </main>
     </div>
@@ -2195,42 +2201,91 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   );
 }
 
-function TranscriptPane({ events }: { events: TranscriptEvent[] }) {
-  if (events.length === 0) {
+function LiveFieldPane({
+  rows,
+  expandedCards,
+  showDebugMetadata,
+  onToggle,
+  onPin,
+  onDismiss,
+  onCopy,
+}: {
+  rows: LiveFieldRow[];
+  expandedCards: Set<string>;
+  showDebugMetadata: boolean;
+  onToggle: (id: string) => void;
+  onPin: (card: SidecarDisplayCard) => void;
+  onDismiss: (card: SidecarDisplayCard) => void;
+  onCopy: (card: SidecarDisplayCard) => void;
+}) {
+  if (rows.length === 0) {
     return <Empty title="Ready" body="Start listening or run a query." />;
   }
   return (
     <>
-      {events.map((event) => {
-        const label = getTranscriptDisplayLabel(event);
-        return (
-          <article
-            key={event.id}
-            className={`transcript-bubble ${event.source} ${event.isFinal ? "final" : "interim"}`}
-            aria-label={`${label} transcript item`}
-          >
-            <div className="transcript-bubble-head">
-              <span>{label}</span>
-              <div>
-                {!event.isFinal && <small>Interim</small>}
-                <time>{formatClock(event.at)}</time>
-              </div>
+      {rows.map((row) => (
+        <article
+          key={row.id}
+          className={`field-pair-row ${row.transcript ? "" : "unpaired"} ${row.cards.length ? "has-sidecar" : "transcript-only"}`}
+          aria-label={row.transcript ? "Transcript and sidecar row" : "Sidecar context row"}
+        >
+          {row.transcript && (
+            <div className="field-lane transcript-lane">
+              <TranscriptBubble event={row.transcript} />
             </div>
-            <p>{event.text}</p>
-          </article>
-        );
-      })}
+          )}
+          {row.cards.length > 0 && (
+            <div className="field-lane backend-lane">
+              {row.cards.map((card) => (
+                <ContextCard
+                  key={`live-${card.id}`}
+                  card={card}
+                  expanded={expandedCards.has(card.id)}
+                  showDebugMetadata={showDebugMetadata}
+                  onToggle={() => onToggle(card.id)}
+                  onPin={() => onPin(card)}
+                  onDismiss={() => onDismiss(card)}
+                  onCopy={() => onCopy(card)}
+                />
+              ))}
+            </div>
+          )}
+        </article>
+      ))}
     </>
   );
 }
 
-function WorkNotesPane({
+function TranscriptBubble({ event }: { event: TranscriptEvent }) {
+  const label = getTranscriptDisplayLabel(event);
+  return (
+    <article
+      className={`transcript-bubble ${event.source} ${event.isFinal ? "final" : "interim"}`}
+      aria-label={`${label} transcript item`}
+    >
+      <div className="transcript-bubble-head">
+        <span>{label}</span>
+        <div>
+          {!event.isFinal && <small>Preview</small>}
+          <time>{formatClock(event.at)}</time>
+        </div>
+      </div>
+      <p>{event.text}</p>
+    </article>
+  );
+}
+
+function SessionContextPane({
   groups,
   usefulCount,
   rawCount,
   loading,
   emptyTitle,
   emptyBody,
+  previewCards,
+  showAll,
+  canShowMore,
+  onToggleShowAll,
   expandedCards,
   showDebugMetadata,
   onToggle,
@@ -2244,6 +2299,10 @@ function WorkNotesPane({
   loading: boolean;
   emptyTitle: string;
   emptyBody: string;
+  previewCards: SidecarDisplayCard[];
+  showAll: boolean;
+  canShowMore: boolean;
+  onToggleShowAll: () => void;
   expandedCards: Set<string>;
   showDebugMetadata: boolean;
   onToggle: (id: string) => void;
@@ -2256,26 +2315,31 @@ function WorkNotesPane({
     return <Empty title="Searching" body="Looking for useful work context." />;
   }
   if (cardCount === 0 && rawCount > 0 && usefulCount === 0) {
-    return <Empty title="No Useful Context" body="Recent backend hits were echoes, duplicates, or too weak to show." />;
+    return <ContextQuietEmpty title="No useful context yet" body="Recent backend hits were echoes, duplicates, or too weak to show." />;
   }
   if (cardCount === 0) {
-    return <Empty title={emptyTitle} body={emptyBody} />;
+    return <ContextQuietEmpty title={emptyTitle} body={emptyBody} />;
   }
   return (
-    <div className="context-card-list work-notes-list scroll" aria-label="Work note cards">
-      {WORK_NOTE_SECTIONS.map((section) => (
-        <section key={section.bucket} className="work-note-section" aria-label={`${section.title} work notes`}>
-          <div className="work-note-section-head">
-            <h2>{section.title}</h2>
-            <span>{groups[section.bucket].length}</span>
-          </div>
-          {groups[section.bucket].length === 0 ? (
-            <p className="work-note-empty">{section.empty}</p>
-          ) : (
-            groups[section.bucket].map((card) => (
+    <div className="context-card-list session-context-list scroll" aria-label="Session context">
+      <section className="session-context-overview" aria-label="Context summary">
+        <span><strong>{usefulCount}</strong> useful</span>
+        <span><strong>{rawCount}</strong> raw</span>
+        <span><strong>{previewCards.length}</strong> shown</span>
+      </section>
+
+      {previewCards.length > 0 && (
+        <details className="session-context-preview" aria-label="Recent sidecar cards" open>
+          <summary>
+            <span>Recent Sidecar</span>
+            <strong>{previewCards.length}</strong>
+          </summary>
+          <div className="context-preview-list">
+            {previewCards.map((card) => (
               <ContextCard
-                key={card.id}
+                key={`context-preview-${card.id}`}
                 card={card}
+                compact
                 expanded={expandedCards.has(card.id)}
                 showDebugMetadata={showDebugMetadata}
                 onToggle={() => onToggle(card.id)}
@@ -2283,7 +2347,33 @@ function WorkNotesPane({
                 onDismiss={() => onDismiss(card)}
                 onCopy={() => onCopy(card)}
               />
-            ))
+            ))}
+          </div>
+          {canShowMore && (
+            <button className="secondary show-more-context" onClick={onToggleShowAll}>
+              {showAll ? "Show less" : "Show more"}
+            </button>
+          )}
+        </details>
+      )}
+
+      {WORK_NOTE_SECTIONS.map((section) => (
+        <section key={section.bucket} className="work-note-section compact-summary" aria-label={`${section.title} summary`}>
+          <div className="work-note-section-head">
+            <h2>{section.title}</h2>
+            <span>{groups[section.bucket].length}</span>
+          </div>
+          {groups[section.bucket].length === 0 ? (
+            <p className="work-note-empty">{section.empty}</p>
+          ) : (
+            <ul className="compact-summary-list">
+              {groups[section.bucket].slice(0, 3).map((card) => (
+                <li key={`summary-${section.bucket}-${card.id}`}>
+                  <strong>{card.title}</strong>
+                  <span>{card.whyRelevant ?? categoryLabel(card.category)}</span>
+                </li>
+              ))}
+            </ul>
           )}
         </section>
       ))}
@@ -2535,6 +2625,7 @@ function transcriptEventFromPayload(payload: Record<string, unknown>, envelope: 
   const at = payloadTimeMs(payload.created_at ?? envelope.at) ?? Date.now();
   return {
     id: `transcript-${String(payload.id)}`,
+    segmentId: String(payload.id),
     text: String(payload.text ?? ""),
     at,
     source,
@@ -2551,6 +2642,7 @@ function typedTranscriptEvent(text: string): TranscriptEvent {
   const at = Date.now();
   return {
     id: `typed-${at}`,
+    segmentId: `typed-${at}`,
     text,
     at,
     source: "typed",
@@ -2637,7 +2729,7 @@ function displayCardForWorkCard(card: WorkMemoryCard, options: BackendItemOption
     citations: card.citations,
     sourceSegmentIds,
     explicitlyRequested: options.origin === "manual",
-    priority: card.confidence >= 0.9 ? "high" : "normal",
+    priority: card.score < 0.45 && options.origin !== "manual" ? "low" : card.score >= 0.72 || card.confidence >= 0.9 ? "high" : "normal",
     debugMetadata: {
       sourceType: "work_memory_project",
       sourceId: card.project_id,
@@ -2946,6 +3038,15 @@ function Empty({ title, body }: { title: string; body: string }) {
   );
 }
 
+function ContextQuietEmpty({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="context-quiet-empty" aria-live="polite">
+      <strong>{title}</strong>
+      <span>{body}</span>
+    </div>
+  );
+}
+
 function formatClock(value: number): string {
   return new Date(value).toLocaleTimeString([], {
     hour: "2-digit",
@@ -3004,7 +3105,7 @@ function normalizeMicTuning(value?: Partial<MicTuning> | null): MicTuning {
   const inputGain = Number(value?.input_gain_db ?? 0);
   return {
     auto_level: value?.auto_level ?? true,
-    input_gain_db: Math.max(-12, Math.min(24, Number.isFinite(inputGain) ? inputGain : 0)),
+    input_gain_db: Math.max(-12, Math.min(12, Number.isFinite(inputGain) ? inputGain : 0)),
     speech_sensitivity: sensitivity === "quiet" || sensitivity === "noisy" ? sensitivity : "normal",
   };
 }

@@ -49,13 +49,38 @@ launch through `scripts/dev.sh` or source `scripts/gpu-env.sh`; it exports the
 
 ## Run
 
+Use the managed local runtime for the normal hosted stack:
+
 ```bash
-./scripts/dev.sh
+./start.sh
 ```
 
 Backend: `http://127.0.0.1:8765`
 
 UI: `http://127.0.0.1:8766`
+
+Hosted access remains through the existing Caddy route at
+`https://notes.shoalstone.net/`.
+
+`./start.sh` runs the FastAPI backend and Vite UI detached, writes PID files
+under `runtime/dev/pids/`, and writes logs under `runtime/dev/logs/`:
+
+- `runtime/dev/pids/backend.pid`
+- `runtime/dev/pids/frontend.pid`
+- `runtime/dev/logs/backend.log`
+- `runtime/dev/logs/frontend.log`
+
+Stop the managed stack with:
+
+```bash
+./stop.sh
+```
+
+For foreground debugging, use the developer runner instead:
+
+```bash
+./scripts/dev.sh
+```
 
 ## GPU Contract
 

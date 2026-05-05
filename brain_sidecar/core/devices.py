@@ -14,6 +14,7 @@ class DeviceInfo:
     ffmpeg_input: str
     hardware_id: str = ""
     healthy: bool = True
+    in_use: bool = False
     score: int = 0
     selection_reason: str = ""
 
@@ -25,6 +26,7 @@ class DeviceInfo:
             "ffmpeg_input": self.ffmpeg_input,
             "hardware_id": self.hardware_id,
             "healthy": self.healthy,
+            "in_use": self.in_use,
             "score": self.score,
             "selection_reason": self.selection_reason,
         }
@@ -51,9 +53,16 @@ def list_audio_devices(*, probe: bool = False) -> list[DeviceInfo]:
         hardware_id = _alsa_card_hardware_id(card)
         base_label = f"ALSA {card_name.strip()} / {device_name.strip()}"
         score, reason = _score_capture_device(base_label, hardware_id, ffmpeg_input)
-        healthy = _probe_capture(ffmpeg_input) if probe else True
+        healthy = True
+        in_use = False
+        if probe:
+            probe_result = _probe_capture_result(ffmpeg_input)
+            healthy = probe_result["healthy"]
+            in_use = probe_result["in_use"]
         if not healthy:
             reason = f"{reason}; probe failed"
+        elif in_use:
+            reason = f"{reason}; USB mic is in use by active capture"
         devices[device_id] = DeviceInfo(
             id=device_id,
             label=base_label,
@@ -61,6 +70,7 @@ def list_audio_devices(*, probe: bool = False) -> list[DeviceInfo]:
             ffmpeg_input=ffmpeg_input,
             hardware_id=hardware_id,
             healthy=healthy,
+            in_use=in_use,
             score=score,
             selection_reason=reason,
         )
@@ -76,8 +86,8 @@ def _device_sort_key(device: DeviceInfo) -> tuple[int, int, str]:
 def find_device(device_id: str | None, *, probe: bool = True) -> DeviceInfo | None:
     devices = list_audio_devices(probe=probe)
     if device_id is None:
-        return next((device for device in devices if device.healthy), None)
-    return next((device for device in devices if device.id == device_id and device.healthy), None)
+        return next((device for device in devices if device.healthy and not device.in_use), None)
+    return next((device for device in devices if device.id == device_id and device.healthy and not device.in_use), None)
 
 
 def _alsa_card_hardware_id(card: str) -> str:
@@ -115,6 +125,10 @@ def _score_capture_device(label: str, hardware_id: str, ffmpeg_input: str) -> tu
 
 
 def _probe_capture(ffmpeg_input: str) -> bool:
+    return _probe_capture_result(ffmpeg_input)["healthy"]
+
+
+def _probe_capture_result(ffmpeg_input: str) -> dict[str, bool]:
     try:
         result = subprocess.run(
             [
@@ -142,5 +156,10 @@ def _probe_capture(ffmpeg_input: str) -> bool:
             timeout=3,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
+        return {"healthy": False, "in_use": False}
+    if result.returncode == 0:
+        return {"healthy": True, "in_use": False}
+    output = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+    if any(marker in output for marker in ("device or resource busy", "resource busy", "device busy", "busy")):
+        return {"healthy": True, "in_use": True}
+    return {"healthy": False, "in_use": False}

@@ -56,7 +56,11 @@ def test_list_audio_devices_marks_probe_failures_and_keeps_best_healthy_first(mo
 
     monkeypatch.setattr(devices, "_run", lambda args: output if args == ["arecord", "-l"] else "")
     monkeypatch.setattr(devices, "_read_text", fake_read)
-    monkeypatch.setattr(devices, "_probe_capture", lambda ffmpeg_input: ffmpeg_input == "plughw:2,0")
+    monkeypatch.setattr(
+        devices,
+        "_probe_capture_result",
+        lambda ffmpeg_input: {"healthy": ffmpeg_input == "plughw:2,0", "in_use": False},
+    )
 
     listed = devices.list_audio_devices(probe=True)
 
@@ -78,7 +82,11 @@ def test_find_device_autoselects_best_healthy_server_mic(monkeypatch) -> None:
     )
     monkeypatch.setattr(devices, "_run", lambda args: output if args == ["arecord", "-l"] else "")
     monkeypatch.setattr(devices, "_read_text", lambda path: "0c76:161e\n")
-    monkeypatch.setattr(devices, "_probe_capture", lambda ffmpeg_input: ffmpeg_input != "plughw:2,0")
+    monkeypatch.setattr(
+        devices,
+        "_probe_capture_result",
+        lambda ffmpeg_input: {"healthy": ffmpeg_input != "plughw:2,0", "in_use": False},
+    )
 
     found = devices.find_device(None, probe=True)
 
@@ -86,3 +94,22 @@ def test_find_device_autoselects_best_healthy_server_mic(monkeypatch) -> None:
     assert found.id == "alsa:plughw:0,0"
     assert devices.find_device("alsa:plughw:2,0", probe=True) is None
     assert devices.find_device("alsa:plughw:2,0", probe=False) is not None
+
+
+def test_list_audio_devices_reports_busy_usb_mic_as_in_use(monkeypatch) -> None:
+    output = "card 2: Device [USB PnP Audio Device], device 0: USB Audio [USB Audio]"
+    monkeypatch.setattr(devices, "_run", lambda args: output if args == ["arecord", "-l"] else "")
+    monkeypatch.setattr(devices, "_read_text", lambda path: "0c76:161e\n")
+    monkeypatch.setattr(
+        devices,
+        "_probe_capture_result",
+        lambda ffmpeg_input: {"healthy": True, "in_use": True},
+    )
+
+    listed = devices.list_audio_devices(probe=True)
+
+    assert listed[0].healthy is True
+    assert listed[0].in_use is True
+    assert listed[0].to_dict()["in_use"] is True
+    assert "in use by active capture" in listed[0].selection_reason
+    assert devices.find_device(None, probe=True) is None

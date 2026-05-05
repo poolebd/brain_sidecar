@@ -533,7 +533,7 @@ def create_app() -> FastAPI:
     @app.post("/api/work-memory/search")
     async def work_memory_search(request: WorkMemorySearchRequest) -> dict:
         try:
-            cards = manager.work_memory.search(request.query, limit=request.limit)
+            cards = manager.work_memory.search(request.query, limit=request.limit, manual=True)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"cards": [card.to_dict() for card in cards]}

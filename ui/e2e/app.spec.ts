@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { emitSessionEvent, installMockEventSource, mockApi, mockDevices } from "./mocks";
 
 test.beforeEach(async ({ page }) => {
@@ -8,8 +8,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("loads mocked device and GPU state", async ({ page }) => {
-  await expect(page.getByRole("heading", { name: "Live transcript" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Work Notes" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Live field" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Session Context" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "midnight");
   await expect(page.getByRole("search")).toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
@@ -17,10 +17,47 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.getByLabel("USB microphone")).toHaveCount(0);
   await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
   await expect(page.getByLabel("Guided mic tuning")).toContainText("Auto Level");
+  await openDrawerRegion(page, "System");
   await expect(page.getByText("NVIDIA RTX 4090 · 6144/24576 MB")).toBeVisible();
   await expect(page.getByLabel("VRAM usage 25%")).toBeVisible();
   await expect(page.getByText("CUDA ready")).toBeVisible();
   await expect(page.getByLabel("Tools drawer").getByText("21 projects / 412 sources")).toBeVisible();
+});
+
+test("clamps stale high mic boost and warns before capture", async ({ page }) => {
+  await page.evaluate(() => {
+    window.localStorage.setItem("brain-sidecar-mic-tuning-v1", JSON.stringify({
+      auto_level: true,
+      input_gain_db: 24,
+      speech_sensitivity: "normal",
+    }));
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Tools" }).click();
+
+  const drawer = page.getByLabel("Tools drawer");
+  await expect(drawer.getByLabel("Input Boost")).toHaveValue("12");
+  await expect(drawer.getByLabel("Guided mic tuning")).toContainText("+12 dB");
+  await expect(drawer.getByLabel("Guided mic tuning")).toContainText("High boost can clip");
+});
+
+test("shows active USB mic capture as in use instead of missing", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, {
+    devicesResponse: {
+      devices: [{ ...mockDevices[0], in_use: true, selection_reason: "USB capture; USB mic is in use by active capture" }],
+      selected_device: { ...mockDevices[0], in_use: true, selection_reason: "USB capture; USB mic is in use by active capture" },
+      server_mic_available: true,
+      selection_reason: "USB capture; USB mic is in use by active capture",
+    },
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Tools" }).click();
+
+  const drawer = page.getByLabel("Tools drawer");
+  await expect(drawer.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone (in use)");
+  await expect(drawer.getByLabel("Server microphone")).toContainText("USB mic is in use by active capture");
+  await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeDisabled();
 });
 
 test("hides recorded audio test controls when test mode is disabled", async ({ page }) => {
@@ -62,7 +99,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
     type: "transcript_partial",
     payload: {
       id: "line-1-preview",
-      text: "We need to follow up with the platform team",
+      text: "We need to follow up with Alex",
       start_s: 1.2,
       end_s: 3.0,
       is_final: false,
@@ -72,7 +109,23 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
       raw_audio_retained: false,
     },
   });
-  await expect(page.getByLabel("Mic transcript item").filter({ hasText: "platform team" })).toContainText("Interim");
+  await expect(page.getByLabel("Mic transcript item").filter({ hasText: "Alex" })).toContainText("Preview");
+  await emitSessionEvent(page, {
+    type: "transcript_partial",
+    payload: {
+      id: "line-1-preview-2",
+      text: "We need to follow up with the platform team",
+      start_s: 1.3,
+      end_s: 3.2,
+      is_final: false,
+      asr_model: "whisper-large-v3",
+      queue_depth: 1,
+      transcript_retention: "temporary",
+      raw_audio_retained: false,
+    },
+  });
+  await expect(page.getByLabel("Mic transcript item").filter({ hasText: "platform team" })).toContainText("Preview");
+  await expect(page.locator("#transcript")).not.toContainText("Alex");
   await emitSessionEvent(page, {
     type: "transcript_final",
     payload: {
@@ -129,23 +182,23 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
 
   await expect(page.getByLabel("Runtime status")).toContainText("listening");
   await expect(page.getByLabel("Transcript metric")).toContainText("1");
-  await expect(page.getByLabel("Latest heard")).toContainText("platform team tomorrow");
-  await expect(page.locator("#transcript")).not.toContainText("Interim");
+  await expect(page.locator("#transcript")).not.toContainText("Preview");
   const transcriptItem = page.getByLabel("Mic transcript item").filter({ hasText: "platform team tomorrow" });
   await expect(transcriptItem).toBeVisible();
   await expect(transcriptItem).not.toContainText("You");
-  await expect(page.locator("#recall").getByRole("heading", { name: "Platform follow-up" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Actions work notes" })).toContainText("Platform follow-up");
-  await expect(page.getByRole("region", { name: "Decisions work notes" })).toContainText("No decisions yet.");
-  await expect(page.getByRole("region", { name: "Questions work notes" })).toContainText("No open questions yet.");
-  await expect(page.getByRole("region", { name: "Relevant Context work notes" })).toContainText("previous meeting");
-  await expect(page.getByRole("region", { name: "Contribution Lane" })).toContainText("Name the release owner");
-  await expect(page.getByRole("region", { name: "Contribution Lane" })).toContainText("It sounds like we should name one release owner");
-  await expect(page.locator("#recall").getByText("A previous meeting mentioned deployment readiness risks.")).toBeVisible();
+  const liveRow = page.getByRole("article", { name: "Transcript and sidecar row" }).filter({ hasText: "platform team tomorrow" });
+  await expect(liveRow.getByRole("heading", { name: "Platform follow-up" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Actions summary" })).toContainText("Platform follow-up");
+  await expect(page.getByRole("region", { name: "Decisions summary" })).toContainText("No decisions yet.");
+  await expect(page.getByRole("region", { name: "Questions summary" })).toContainText("No open questions yet.");
+  await expect(page.getByRole("region", { name: "Relevant Context summary" })).toContainText("Relevant memory");
+  await expect(liveRow).toContainText("Name the release owner");
+  await expect(liveRow).toContainText("It sounds like we should name one release owner");
+  await expect(page.locator("#transcript").getByText("A previous meeting mentioned deployment readiness risks.")).toBeVisible();
   await expect(page.getByLabel("Queue metric")).toContainText("2");
   await expect(page.locator("#transcript")).not.toContainText("whisper-large-v3");
-  await expect(page.locator("#recall")).not.toContainText("score 0.91");
-  await expect(page.locator("#recall")).not.toContainText("previous-session");
+  await expect(page.locator("#transcript")).not.toContainText("score 0.91");
+  await expect(page.locator("#transcript")).not.toContainText("previous-session");
   const transcriptBox = await page.locator("#transcript").boundingBox();
   const backendBox = await page.locator("#recall").boundingBox();
   expect(transcriptBox).not.toBeNull();
@@ -177,7 +230,7 @@ test("makes saved transcript recording an explicit capture mode", async ({ page 
 
 test("shows speaker identity controls instead of legacy ASR voice training", async ({ page }) => {
   await page.getByRole("button", { name: "Tools" }).click();
-  const speaker = page.getByRole("region", { name: "Speaker identity" });
+  const speaker = await openDrawerRegion(page, "Speaker identity");
   await expect(speaker).toBeVisible();
   await expect(speaker).toContainText("not enrolled");
   await expect(speaker).toContainText("0.0s usable");
@@ -294,8 +347,8 @@ test("supports contribution card copy, pin, and dismiss controls", async ({ page
     },
   });
 
-  const lane = page.getByRole("region", { name: "Contribution Lane" });
-  const card = lane.getByLabel("Ask this context card").filter({ hasText: "Clarify rollback timing" });
+  const liveField = page.locator("#transcript");
+  const card = liveField.getByLabel("Ask this context card").filter({ hasText: "Clarify rollback timing" });
   await expect(card).toBeVisible();
   await card.getByRole("button", { name: "Copy" }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedSuggestion?: string }).__copiedSuggestion)).toBe(
@@ -305,7 +358,7 @@ test("supports contribution card copy, pin, and dismiss controls", async ({ page
   await card.getByRole("button", { name: "Pin card" }).click();
   await expect(card.getByRole("button", { name: "Unpin card" })).toBeVisible();
   await card.getByRole("button", { name: "Dismiss card" }).click();
-  await expect(lane).toHaveCount(0);
+  await expect(liveField.getByLabel("Ask this context card").filter({ hasText: "Clarify rollback timing" })).toHaveCount(0);
 });
 
 test("shows GPU cleanup and ASR loading progress in capture controls", async ({ page }) => {
@@ -380,17 +433,19 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
     });
   }
 
-  await expect(page.locator("#recall .context-card")).toHaveCount(3);
-  await expect(page.locator("#recall")).not.toContainText("debug-source-1");
-  await expect(page.locator("#recall")).not.toContainText("0.89");
+  const debugRow = page.getByRole("article", { name: "Transcript and sidecar row" }).filter({ hasText: "Apollo rollout needs platform readiness context." });
+  await expect(debugRow.locator(".context-card")).toHaveCount(4);
+  await expect(page.locator("#transcript")).not.toContainText("debug-source-1");
+  await expect(page.locator("#transcript")).not.toContainText("0.89");
 
   await page.getByRole("button", { name: "Tools" }).click();
+  await openDrawerRegion(page, "System");
   await page.getByLabel("Show debug metadata").check();
   await page.getByRole("button", { name: "Close" }).click();
-  await page.locator("#recall .context-card").first().getByRole("button", { name: "Show details" }).click();
-  await expect(page.locator("#recall")).toContainText("source ID");
-  await expect(page.locator("#recall")).toContainText("debug-source-1");
-  await expect(page.locator("#recall")).toContainText("score");
+  await debugRow.locator(".context-card").first().getByRole("button", { name: "Show details" }).click();
+  await expect(page.locator("#transcript")).toContainText("source ID");
+  await expect(page.locator("#transcript")).toContainText(/debug-source-/);
+  await expect(page.locator("#transcript")).toContainText("score");
 });
 
 test("surfaces mocked SSE errors and supports stop", async ({ page }) => {
@@ -456,7 +511,7 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
   await page.reload();
   await page.getByRole("button", { name: "Tools" }).click();
 
-  const testPanel = page.getByRole("region", { name: "Recorded audio test" });
+  const testPanel = await openDrawerRegion(page, "Recorded audio test");
   await expect(testPanel).toBeVisible();
 
   await testPanel.getByLabel("Browse source audio").setInputFiles({
@@ -562,21 +617,23 @@ test("blocks capture and speaker training when no healthy server microphone is a
   await expect(drawer.getByRole("button", { name: "Test Mic" })).toBeDisabled();
   await expect(drawer.getByRole("button", { name: "Start Listening" })).toBeDisabled();
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeDisabled();
-  await expect(drawer.getByRole("region", { name: "Speaker identity" }).getByRole("button", { name: "Set Up BP Label" }).first()).toBeDisabled();
+  const speaker = await openDrawerRegion(page, "Speaker identity");
+  await expect(speaker.getByRole("button", { name: "Set Up BP Label" }).first()).toBeDisabled();
 });
 
 test("uses mocked library and recall APIs", async ({ page }) => {
   await page.getByRole("button", { name: "Tools" }).click();
-  await page.getByLabel("Browse index file").setInputFiles({
+  const indexes = await openDrawerRegion(page, "Indexes");
+  await indexes.getByLabel("Browse index file").setInputFiles({
     name: "project-history.md",
     mimeType: "text/markdown",
     buffer: Buffer.from("# Project history"),
   });
-  await expect(page.getByLabel("File root")).toHaveValue("/tmp/brain-sidecar-tests/input-files/uploaded-input.dat");
-  await page.getByRole("button", { name: "Add Files" }).click();
-  await expect(page.getByLabel("File root")).toHaveValue("");
+  await expect(indexes.getByLabel("File root")).toHaveValue("/tmp/brain-sidecar-tests/input-files/uploaded-input.dat");
+  await indexes.getByRole("button", { name: "Add Files" }).click();
+  await expect(indexes.getByLabel("File root")).toHaveValue("");
 
-  await page.getByRole("button", { name: "Reindex Files" }).click();
+  await indexes.getByRole("button", { name: "Reindex Files" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
 
   await page.getByRole("button", { name: "Close" }).click();
@@ -585,18 +642,18 @@ test("uses mocked library and recall APIs", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Prior transcript");
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("PAS / past work");
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Current public web");
-  await page.getByRole("button", { name: /Show more/ }).click();
-  await expect(page.locator("#recall").getByText("Prior planning note about the Apollo rollout.")).toBeVisible();
-  await expect(page.locator("#recall").getByText("Online Generator Monitoring - T.A. Smith", { exact: true })).toBeVisible();
-  await expect(page.locator("#recall").getByText("Web context: apollo rollout")).toBeVisible();
-  await expect(page.locator("#recall")).toContainText("failure modes");
+  await expect(page.locator("#transcript").getByText("Prior planning note about the Apollo rollout.")).toBeVisible();
+  await expect(page.locator("#transcript").getByText("Online Generator Monitoring - T.A. Smith", { exact: true })).toBeVisible();
+  await expect(page.locator("#transcript").getByText("Web context: apollo rollout")).toBeVisible();
+  await expect(page.locator("#transcript")).toContainText("failure modes");
   await expect(page.getByLabel("You transcript item")).toContainText("apollo rollout");
-  await expect(page.locator("#recall")).toContainText("Prior planning note about the Apollo rollout.");
-  await expect(page.locator("#recall")).not.toContainText("notes.md");
-  await expect(page.locator("#recall")).not.toContainText("score 0.93");
+  await expect(page.locator("#transcript")).toContainText("Prior planning note about the Apollo rollout.");
+  await expect(page.locator("#transcript")).not.toContainText("notes.md");
+  await expect(page.locator("#transcript")).not.toContainText("score 0.93");
 
   await page.getByRole("button", { name: "Tools" }).click();
-  await page.getByRole("button", { name: "Index Work" }).click();
+  const reopenedIndexes = await openDrawerRegion(page, "Indexes");
+  await reopenedIndexes.getByRole("button", { name: "Index Work" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("work memory indexed 21 projects");
 });
 
@@ -637,21 +694,35 @@ test("keeps transcript and context readable on a phone viewport", async ({ page 
 
 test("persists theme selection across reloads", async ({ page }) => {
   await page.getByRole("button", { name: "Tools" }).click();
-  await page.getByLabel("Theme").selectOption("canopy");
+  let system = await openDrawerRegion(page, "System");
+  await system.getByLabel("Theme").selectOption("canopy");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "canopy");
 
   await page.reload();
   await page.getByRole("button", { name: "Tools" }).click();
-  await expect(page.getByLabel("Theme")).toHaveValue("canopy");
+  system = await openDrawerRegion(page, "System");
+  await expect(system.getByLabel("Theme")).toHaveValue("canopy");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "canopy");
 });
 
 test("keeps core capture controls usable on a phone viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
 
-  await expect(page.getByRole("heading", { name: "Live transcript" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Live field" })).toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
   await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
   await expect(page.getByLabel("Guided mic tuning")).toBeVisible();
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeVisible();
 });
+
+async function openDrawerRegion(page: Page, name: string) {
+  const region = page.getByRole("region", { name });
+  await expect(region).toBeVisible();
+  const isOpen = await region.evaluate((element) => (
+    element instanceof HTMLDetailsElement ? element.open : true
+  ));
+  if (!isOpen) {
+    await region.locator("summary").first().click();
+  }
+  return region;
+}

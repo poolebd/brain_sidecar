@@ -46,6 +46,7 @@ type MockDevice = {
   ffmpeg_input: string;
   hardware_id: string;
   healthy: boolean;
+  in_use?: boolean;
   score: number;
   selection_reason: string;
 };

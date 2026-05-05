@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from brain_sidecar.config import Settings
-from brain_sidecar.core.audio import AudioCapture, FFmpegAudioCapture, FixtureWavAudioCapture
+from brain_sidecar.core.audio import AudioCapture, FFmpegAudioCapture, FixtureWavAudioCapture, MAX_INPUT_GAIN_DB, MIN_INPUT_GAIN_DB
 from brain_sidecar.core.dedupe import TranscriptDeduplicator
 from brain_sidecar.core.devices import find_device
 from brain_sidecar.core.event_bus import EventBus
@@ -72,6 +72,8 @@ class ActiveSession:
     deduper: TranscriptDeduplicator
     web_context_queue: asyncio.Queue[WebContextCandidate] | None = None
     audio_source: str = "server_device"
+    selected_device_id: str | None = None
+    input_gain_db: float = 0.0
     save_transcript: bool = True
     recent_segments: list[TranscriptSegment] = field(default_factory=list)
     final_segment_count: int = 0
@@ -165,6 +167,8 @@ class SessionManager:
                 ),
                 web_context_queue=web_context_queue,
                 audio_source=audio_source,
+                selected_device_id=capture.device.id if isinstance(capture, FFmpegAudioCapture) else None,
+                input_gain_db=capture.input_gain_db if isinstance(capture, FFmpegAudioCapture) else 0.0,
                 save_transcript=save_transcript,
                 next_note_segment_count=self.settings.notes_every_segments,
             )
@@ -194,6 +198,8 @@ class SessionManager:
                     "partial_window_seconds": self.settings.partial_window_seconds,
                     "partial_min_interval_seconds": self.settings.partial_min_interval_seconds,
                     "speaker_identity": self.speaker_identity.status(),
+                    "selected_device_id": active.selected_device_id,
+                    "input_gain_db": active.input_gain_db,
                     "save_transcript": active.save_transcript,
                     "raw_audio_retained": False,
                 },
@@ -866,6 +872,9 @@ class SessionManager:
             "partial_windows_dropped_for_final": active.partial_windows_dropped_for_final,
             "partial_asr_duration_ms": active.partial_asr_duration_ms,
             "event_drops": self.bus.drop_count(active.id),
+            "audio_source": active.audio_source,
+            "selected_device_id": active.selected_device_id,
+            "input_gain_db": active.input_gain_db,
         }
 
     def _speaker_payload_for_span(
@@ -1403,7 +1412,7 @@ def normalize_mic_tuning(tuning: dict[str, object] | None) -> dict[str, object]:
         input_gain_db = 0.0
     return {
         "auto_level": bool(tuning.get("auto_level", True)),
-        "input_gain_db": round(max(-12.0, min(24.0, input_gain_db)), 1),
+        "input_gain_db": round(max(MIN_INPUT_GAIN_DB, min(MAX_INPUT_GAIN_DB, input_gain_db)), 1),
         "speech_sensitivity": sensitivity,
     }
 
@@ -1419,10 +1428,10 @@ def suggest_microphone_tuning(quality: dict, current: dict[str, object] | None =
     reason = "Current mic tuning looks usable."
 
     if "clipping" in issues or peak >= 0.98:
-        gain = max(-12.0, gain - 6.0)
+        gain = max(MIN_INPUT_GAIN_DB, min(MAX_INPUT_GAIN_DB, gain) - 6.0)
         reason = "The recording clipped, so auto level recommends lowering input boost."
     elif usable < 1.5 or rms < 0.008:
-        gain = min(24.0, gain + 6.0)
+        gain = min(MAX_INPUT_GAIN_DB, gain + 6.0)
         if rms < 0.012:
             sensitivity = "quiet"
         reason = "Only a short stretch of speech was detected, so auto level recommends more boost and quieter-room sensitivity."

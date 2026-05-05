@@ -132,6 +132,14 @@ def recall_payload_to_sidecar_card(session_id: str, payload: dict[str, Any]) -> 
         reason = "Retrieved because it overlaps with the current discussion."
     title = metadata.get("title") or source_title(raw_source_type)
     suggested_say = metadata.get("suggested_say") or metadata.get("suggested_contribution")
+    priority = metadata.get("priority")
+    if not priority:
+        if source_type == "work_memory" and score < 0.45:
+            priority = "low"
+        elif score >= 0.88:
+            priority = "high"
+        else:
+            priority = "normal"
     return create_sidecar_card(
         session_id=session_id,
         category=category,
@@ -140,7 +148,7 @@ def recall_payload_to_sidecar_card(session_id: str, payload: dict[str, Any]) -> 
         suggested_say=suggested_say,
         suggested_ask=metadata.get("suggested_ask"),
         why_now=reason,
-        priority=metadata.get("priority") or ("high" if score >= 0.88 else "normal"),
+        priority=priority,
         confidence=score,
         source_segment_ids=payload.get("source_segment_ids") or [],
         source_type=source_type,

@@ -58,23 +58,59 @@ GUARDRAIL_PARTS = {
 GENERIC_TERMS = {
     "and",
     "assessment",
+    "about",
+    "all",
+    "are",
+    "because",
+    "but",
+    "can",
     "closeout",
     "current",
+    "for",
+    "from",
     "group",
+    "had",
+    "has",
+    "have",
+    "her",
+    "his",
     "latest",
     "management",
+    "not",
+    "one",
+    "out",
+    "over",
     "phase",
     "planning",
     "project",
     "public",
+    "real",
     "replacement",
+    "she",
     "smith",
     "status",
     "study",
+    "that",
+    "their",
+    "them",
+    "there",
+    "they",
+    "this",
     "today",
     "the",
+    "time",
+    "under",
     "upgrade",
+    "was",
+    "were",
+    "what",
+    "will",
+    "with",
+    "you",
+    "your",
 }
+LIVE_REQUIRED_MATCHED_TERMS = 3
+LIVE_MIN_RECALL_SCORE = 0.42
 MAX_TEXT_BYTES = 2_500_000
 MAX_EVIDENCE_PER_PROJECT = 14
 
@@ -327,11 +363,13 @@ class WorkMemoryService:
             )
             matched_terms = [term for term in query_terms if term in combined and term not in GENERIC_TERMS]
             alias_hits = [trigger for trigger in project["triggers"] if normalize_lookup(trigger) in clean]
-            required_terms = 1 if manual else 2
+            required_terms = 1 if manual else LIVE_REQUIRED_MATCHED_TERMS
             if not alias_hits and len(set(matched_terms)) < required_terms:
                 continue
             metadata_only_ratio = metadata_only_evidence_ratio(evidence)
             score = score_match(matched_terms, alias_hits, project["confidence"], metadata_only_ratio=metadata_only_ratio)
+            if not manual and not alias_hits and score < LIVE_MIN_RECALL_SCORE:
+                continue
             lesson = project["lessons"][0] if project["lessons"] else project["summary"]
             reason_terms = dedupe_strings(alias_hits + matched_terms)[:7]
             reason = "shared signals around " + ", ".join(reason_terms) if reason_terms else "a similar work pattern"

@@ -9,6 +9,9 @@ from typing import AsyncIterator
 
 from brain_sidecar.core.devices import DeviceInfo
 
+MIN_INPUT_GAIN_DB = -12.0
+MAX_INPUT_GAIN_DB = 12.0
+
 
 class AudioCapture(ABC):
     @abstractmethod
@@ -31,7 +34,7 @@ class FFmpegAudioCapture(AudioCapture):
         self.device = device
         self.sample_rate = sample_rate
         self.chunk_ms = chunk_ms
-        self.input_gain_db = max(-12.0, min(24.0, float(input_gain_db)))
+        self.input_gain_db = max(MIN_INPUT_GAIN_DB, min(MAX_INPUT_GAIN_DB, float(input_gain_db)))
         self._process: subprocess.Popen[bytes] | None = None
         self._running = False
 

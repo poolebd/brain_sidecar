@@ -160,6 +160,37 @@ def test_manual_work_memory_does_not_emit_unmatched_baseline_cards(tmp_path: Pat
     assert service.search("Apollo rollback owner", manual=True)
 
 
+def test_live_work_memory_ignores_generic_transcript_chatter(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "runtime")
+    storage.connect()
+    project_id = storage.upsert_work_memory_project(
+        key="online_generator_monitoring",
+        title="Online Generator Monitoring",
+        organization="Oglethorpe Power",
+        date_range="2021",
+        role="Project Manager",
+        domain="Generator monitoring",
+        summary="Condition monitoring work for generator failure modes and owner decisions.",
+        lessons=["Monitoring helps when measurements map to a failure mode and a decision owner."],
+        triggers=["generator monitoring", "failure mode", "condition monitoring"],
+        source_group="opc_history",
+        confidence=0.92,
+    )
+    storage.add_work_memory_evidence(
+        project_id=project_id,
+        source_id=None,
+        source_path="/tmp/ogm.txt",
+        snippet="Generator monitoring failure mode evidence.",
+        artifact_type="text_supported",
+        weight=1.0,
+    )
+    service = WorkMemoryService(storage)
+
+    assert service.search("you know what time it was with her and one real thing", limit=3) == []
+    assert service.search("generator monitoring failure mode decision owner", limit=3)
+    assert service.search("generator monitoring", limit=3, manual=True)
+
+
 def test_work_memory_uses_configured_roots_and_pas_root(tmp_path: Path) -> None:
     from brain_sidecar.config import Settings
 

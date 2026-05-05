@@ -3,6 +3,7 @@ export type SpeakerRole = "user" | "other" | "unknown";
 
 export type TranscriptEvent = {
   id: string;
+  segmentId?: string;
   text: string;
   at: number;
   source: TranscriptSource;
@@ -65,6 +66,14 @@ export type SidecarFilterOptions = {
 export type WorkCardBucket = "actions" | "decisions" | "questions" | "context";
 
 export type WorkCardGroups = Record<WorkCardBucket, SidecarDisplayCard[]>;
+
+export type LiveFieldRow = {
+  id: string;
+  at: number;
+  transcript?: TranscriptEvent;
+  cards: SidecarDisplayCard[];
+  kind: "transcript" | "sidecar";
+};
 
 const HIGH_CONFIDENCE_USER_SPEAKER = 0.85;
 const DEFAULT_MIN_SCORE = 0.65;
@@ -129,6 +138,56 @@ export function groupWorkCards(cards: SidecarDisplayCard[]): WorkCardGroups {
   }
 
   return groups;
+}
+
+export function buildLiveFieldRows(
+  transcriptEvents: TranscriptEvent[],
+  cards: SidecarDisplayCard[],
+): LiveFieldRow[] {
+  const transcripts = transcriptEvents
+    .filter((event) => event.text.trim())
+    .sort((left, right) => left.at - right.at);
+  const rows = transcripts.map((event): LiveFieldRow => ({
+    id: `row:${event.id}`,
+    at: event.at,
+    transcript: event,
+    cards: [],
+    kind: "transcript",
+  }));
+  const rowByTranscriptKey = new Map<string, LiveFieldRow>();
+
+  for (const row of rows) {
+    const transcript = row.transcript;
+    if (!transcript) {
+      continue;
+    }
+    rowByTranscriptKey.set(transcript.id, row);
+    if (transcript.segmentId) {
+      rowByTranscriptKey.set(transcript.segmentId, row);
+    }
+  }
+
+  const sortedCards = [...cards].sort(compareLiveFieldCards);
+  const unpairedRows: LiveFieldRow[] = [];
+  for (const card of sortedCards) {
+    const pairedRow = rowForCard(card, rowByTranscriptKey, transcripts);
+    if (pairedRow) {
+      pairedRow.cards.push(card);
+      continue;
+    }
+    unpairedRows.push({
+      id: `row:sidecar:${card.cardKey ?? card.id}`,
+      at: card.at,
+      cards: [card],
+      kind: "sidecar",
+    });
+  }
+
+  for (const row of rows) {
+    row.cards.sort(compareLiveFieldCards);
+  }
+
+  return [...rows, ...unpairedRows].sort(compareLiveFieldRows);
 }
 
 export function normalizeDisplayText(text: string): string {
@@ -201,6 +260,54 @@ function compareSidecarCards(left: SidecarDisplayCard, right: SidecarDisplayCard
     return scoreDelta;
   }
   return right.at - left.at;
+}
+
+function rowForCard(
+  card: SidecarDisplayCard,
+  rowByTranscriptKey: Map<string, LiveFieldRow>,
+  transcripts: TranscriptEvent[],
+): LiveFieldRow | null {
+  for (const sourceSegmentId of card.sourceSegmentIds ?? []) {
+    const row = rowByTranscriptKey.get(sourceSegmentId);
+    if (row) {
+      return row;
+    }
+  }
+
+  if (!card.explicitlyRequested) {
+    return null;
+  }
+
+  for (let index = transcripts.length - 1; index >= 0; index -= 1) {
+    const transcript = transcripts[index];
+    if (transcript.source === "typed" && transcript.at <= card.at + 2_000) {
+      return rowByTranscriptKey.get(transcript.id) ?? null;
+    }
+  }
+  return null;
+}
+
+function compareLiveFieldRows(left: LiveFieldRow, right: LiveFieldRow): number {
+  const atDelta = left.at - right.at;
+  if (atDelta !== 0) {
+    return atDelta;
+  }
+  if (left.kind !== right.kind) {
+    return left.kind === "transcript" ? -1 : 1;
+  }
+  return left.id.localeCompare(right.id);
+}
+
+function compareLiveFieldCards(left: SidecarDisplayCard, right: SidecarDisplayCard): number {
+  const rankDelta = cardRank(right) - cardRank(left);
+  if (rankDelta !== 0) {
+    return rankDelta;
+  }
+  const atDelta = left.at - right.at;
+  if (atDelta !== 0) {
+    return atDelta;
+  }
+  return left.id.localeCompare(right.id);
 }
 
 function cardRank(card: SidecarDisplayCard): number {
