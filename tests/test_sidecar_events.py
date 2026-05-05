@@ -59,6 +59,7 @@ class StaticNotes:
                     title="Rollback owner",
                     body="Confirm who owns the rollback plan before release.",
                     source_segment_ids=[segment.id for segment in recent_segments],
+                    evidence_quote=recent_segments[-1].text,
                 )
             ]
         )
@@ -133,7 +134,7 @@ def test_note_updates_also_publish_normalized_sidecar_cards(event_loop, tmp_path
             session_id=session.id,
             start_s=0.0,
             end_s=2.0,
-            text="We need a rollback owner.",
+            text="Please confirm who owns the rollback plan before release.",
         )
     ]
     manager._active[session.id] = active

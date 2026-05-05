@@ -131,3 +131,22 @@ def test_recall_and_work_memory_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.work_memory_job_history_root == tmp_path / "job"
     assert settings.work_memory_past_work_root == tmp_path / "past"
     assert settings.work_memory_pas_root == tmp_path / "pas"
+
+
+def test_sidecar_quality_gate_env_overrides(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_SIDECAR_QUALITY_GATE_ENABLED", "false")
+    monkeypatch.setenv("BRAIN_SIDECAR_SIDECAR_MIN_EVIDENCE_SEGMENTS", "3")
+    monkeypatch.setenv("BRAIN_SIDECAR_SIDECAR_DUPLICATE_WINDOW_SECONDS", "90")
+    monkeypatch.setenv("BRAIN_SIDECAR_SIDECAR_GENERIC_CLARIFY_WINDOW_SECONDS", "240")
+    monkeypatch.setenv("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN", "5")
+    monkeypatch.setenv("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS", "2")
+
+    settings = load_settings()
+
+    assert settings.sidecar_quality_gate_enabled is False
+    assert settings.sidecar_min_evidence_segments == 3
+    assert settings.sidecar_duplicate_window_seconds == 90.0
+    assert settings.sidecar_generic_clarify_window_seconds == 240.0
+    assert settings.sidecar_max_cards_per_5min == 5
+    assert settings.sidecar_max_cards_per_generation_pass == 2

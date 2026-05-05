@@ -109,8 +109,9 @@ GENERIC_TERMS = {
     "you",
     "your",
 }
-LIVE_REQUIRED_MATCHED_TERMS = 3
-LIVE_MIN_RECALL_SCORE = 0.42
+LIVE_REQUIRED_MATCHED_TERMS = 2
+LIVE_MIN_RECALL_SCORE = 0.55
+LIVE_STRONG_ALIAS_MIN_SCORE = 0.48
 MAX_TEXT_BYTES = 2_500_000
 MAX_EVIDENCE_PER_PROJECT = 14
 
@@ -364,11 +365,20 @@ class WorkMemoryService:
             matched_terms = [term for term in query_terms if term in combined and term not in GENERIC_TERMS]
             alias_hits = [trigger for trigger in project["triggers"] if normalize_lookup(trigger) in clean]
             required_terms = 1 if manual else LIVE_REQUIRED_MATCHED_TERMS
-            if not alias_hits and len(set(matched_terms)) < required_terms:
-                continue
+            entity_overlap = live_entity_overlap(clean, combined)
+            strong_alias_hit = bool(alias_hits) and bool(entity_overlap)
             metadata_only_ratio = metadata_only_evidence_ratio(evidence)
+            if manual:
+                if not alias_hits and len(set(matched_terms)) < required_terms:
+                    continue
+            elif not strong_alias_hit and len(set(matched_terms)) < required_terms:
+                continue
+            if not manual and not strong_alias_hit and not entity_overlap:
+                continue
+            if not manual and not strong_alias_hit and metadata_only_ratio >= 0.75:
+                continue
             score = score_match(matched_terms, alias_hits, project["confidence"], metadata_only_ratio=metadata_only_ratio)
-            if not manual and not alias_hits and score < LIVE_MIN_RECALL_SCORE:
+            if not manual and score < LIVE_MIN_RECALL_SCORE and not (strong_alias_hit and score >= LIVE_STRONG_ALIAS_MIN_SCORE):
                 continue
             lesson = project["lessons"][0] if project["lessons"] else project["summary"]
             reason_terms = dedupe_strings(alias_hits + matched_terms)[:7]
@@ -1014,6 +1024,20 @@ def suggested_contribution(project: dict[str, Any], lesson: str) -> str:
 def significant_terms(text: str) -> list[str]:
     terms = re.findall(r"[a-z0-9][a-z0-9&./+-]{2,}", normalize_lookup(text))
     return dedupe_strings([term for term in terms if term not in GENERIC_TERMS])
+
+
+def live_entity_overlap(query: str, project_text: str) -> set[str]:
+    query_terms = {
+        term
+        for term in significant_terms(query)
+        if term not in GENERIC_TERMS and (len(term) >= 5 or any(char.isdigit() for char in term))
+    }
+    project_terms = {
+        term
+        for term in significant_terms(project_text)
+        if term not in GENERIC_TERMS and (len(term) >= 5 or any(char.isdigit() for char in term))
+    }
+    return query_terms & project_terms
 
 
 def normalize_lookup(text: str) -> str:

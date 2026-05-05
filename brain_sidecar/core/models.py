@@ -131,6 +131,7 @@ class TranscriptSegment:
     speaker_confidence: float | None = None
     speaker_match_reason: str | None = None
     speaker_low_confidence: bool | None = None
+    source_segment_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -152,6 +153,8 @@ class TranscriptSegment:
             payload["speaker_match_reason"] = self.speaker_match_reason
         if self.speaker_low_confidence is not None:
             payload["speaker_low_confidence"] = self.speaker_low_confidence
+        if self.source_segment_ids:
+            payload["source_segment_ids"] = self.source_segment_ids
         return payload
 
 
@@ -164,9 +167,13 @@ class NoteCard:
     body: str
     source_segment_ids: list[str]
     created_at: float = field(default_factory=time.time)
+    evidence_quote: str = ""
+    owner: str | None = None
+    due_date: str | None = None
+    missing_info: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "id": self.id,
             "session_id": self.session_id,
             "kind": self.kind,
@@ -175,6 +182,15 @@ class NoteCard:
             "source_segment_ids": self.source_segment_ids,
             "created_at": self.created_at,
         }
+        if self.evidence_quote:
+            payload["evidence_quote"] = self.evidence_quote
+        if self.owner:
+            payload["owner"] = self.owner
+        if self.due_date:
+            payload["due_date"] = self.due_date
+        if self.missing_info:
+            payload["missing_info"] = self.missing_info
+        return payload
 
 
 @dataclass(frozen=True)
@@ -218,6 +234,10 @@ class SidecarCard:
     explicitly_requested: bool = False
     created_at: float = field(default_factory=time.time)
     raw_audio_retained: bool = False
+    evidence_quote: str = ""
+    owner: str | None = None
+    due_date: str | None = None
+    missing_info: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "category", normalize_sidecar_category(self.category))
@@ -233,9 +253,13 @@ class SidecarCard:
         object.__setattr__(self, "sources", compact_sources(self.sources, limit=6))
         object.__setattr__(self, "citations", compact_string_list(self.citations, limit=12))
         object.__setattr__(self, "raw_audio_retained", False)
+        object.__setattr__(self, "evidence_quote", compact_text(self.evidence_quote, limit=420))
+        object.__setattr__(self, "owner", compact_optional_text(self.owner, limit=120))
+        object.__setattr__(self, "due_date", compact_optional_text(self.due_date, limit=120))
+        object.__setattr__(self, "missing_info", compact_optional_text(self.missing_info, limit=240))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "id": self.id,
             "session_id": self.session_id,
             "category": self.category,
@@ -258,3 +282,12 @@ class SidecarCard:
             "created_at": self.created_at,
             "raw_audio_retained": self.raw_audio_retained,
         }
+        if self.evidence_quote:
+            payload["evidence_quote"] = self.evidence_quote
+        if self.owner:
+            payload["owner"] = self.owner
+        if self.due_date:
+            payload["due_date"] = self.due_date
+        if self.missing_info:
+            payload["missing_info"] = self.missing_info
+        return payload

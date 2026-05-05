@@ -1,0 +1,12 @@
+We need to review the Siemens client agreement and the generation agreement exhibit before we can answer the power quality question from Arup.
+The harmonics and other studies need to line up with the SLD and what Siemens and the client expect.
+Sunil is the reviewer, and if Sunil is unavailable we may need to use the proper client communication path.
+Manish is the SME on the NARC or nerd side and can clarify the SLC technical expertise.
+For the next few weeks, ask Roberto or Dan to confirm six to eight hours a week, roughly one day, for this project.
+Tomorrow after my morning meeting, maybe 11 Eastern, which is 10 your time; clarify the exact local time.
+Brandon is going to contribute on this continuous basis.
+Brandon Poole here we go.
+I'm in Cincinnati.
+Grass or something on the back end.
+Project Alpha timeline and milestones.
+Weak memory recall says CT/PT relay settings trip path breaker failure interlocks.

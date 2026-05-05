@@ -10,7 +10,7 @@ from pathlib import Path
 
 from brain_sidecar.config import Settings
 from brain_sidecar.core.audio import AudioCapture, FFmpegAudioCapture, FixtureWavAudioCapture, MAX_INPUT_GAIN_DB, MIN_INPUT_GAIN_DB
-from brain_sidecar.core.dedupe import TranscriptDeduplicator
+from brain_sidecar.core.dedupe import TranscriptDeduplicator, TranscriptFinalConsolidator
 from brain_sidecar.core.devices import find_device
 from brain_sidecar.core.event_bus import EventBus
 from brain_sidecar.core.events import (
@@ -27,7 +27,8 @@ from brain_sidecar.core.events import (
 )
 from brain_sidecar.core.gpu import GpuStatus, prepare_asr_gpu, read_gpu_status
 from brain_sidecar.core.models import SidecarCard, TranscriptSegment, new_id
-from brain_sidecar.core.notes import NoteSynthesizer
+from brain_sidecar.core.note_quality import NoteQualityGate
+from brain_sidecar.core.notes import NoteSynthesizer, note_from_sidecar
 from brain_sidecar.core.ollama import OllamaClient
 from brain_sidecar.core.recall import RecallIndex
 from brain_sidecar.core.speaker_identity import SpeakerIdentityService, analyze_pcm16
@@ -70,6 +71,8 @@ class ActiveSession:
     postprocess_queue: asyncio.Queue[SegmentBatch]
     tasks: list[asyncio.Task]
     deduper: TranscriptDeduplicator
+    note_consolidator: TranscriptFinalConsolidator | None = None
+    note_quality_gate: NoteQualityGate | None = None
     web_context_queue: asyncio.Queue[WebContextCandidate] | None = None
     audio_source: str = "server_device"
     selected_device_id: str | None = None
@@ -91,6 +94,10 @@ class ActiveSession:
     partial_windows_skipped_queue: int = 0
     partial_windows_dropped_for_final: int = 0
     partial_asr_duration_ms: float | None = None
+    note_segments: list[TranscriptSegment] = field(default_factory=list)
+    final_segments_collapsed: int = 0
+    final_segments_seen_for_notes: int = 0
+    final_segments_suppressed_for_notes: int = 0
 
 
 class SessionManager:
@@ -165,6 +172,8 @@ class SessionManager:
                     max_recent=self.settings.dedupe_recent_segments,
                     similarity_threshold=self.settings.dedupe_similarity_threshold,
                 ),
+                note_consolidator=TranscriptFinalConsolidator(max_recent=48),
+                note_quality_gate=self._new_note_quality_gate(),
                 web_context_queue=web_context_queue,
                 audio_source=audio_source,
                 selected_device_id=capture.device.id if isinstance(capture, FFmpegAudioCapture) else None,
@@ -813,6 +822,7 @@ class SessionManager:
             segment = _segment_with_speaker_payload(segment, speaker_payload)
             active.recent_segments.append(segment)
             active.recent_segments = active.recent_segments[-48:]
+            self._accept_note_evidence_segment(active, segment)
             if active.save_transcript:
                 self.storage.add_transcript_segment(segment)
             active.last_partial_text = ""
@@ -875,7 +885,35 @@ class SessionManager:
             "audio_source": active.audio_source,
             "selected_device_id": active.selected_device_id,
             "input_gain_db": active.input_gain_db,
+            "final_segments_collapsed": active.final_segments_collapsed,
+            "final_segments_seen_for_notes": active.final_segments_seen_for_notes,
+            "final_segments_suppressed_for_notes": active.final_segments_suppressed_for_notes,
+            "note_evidence_window_segments": len(active.note_segments),
         }
+
+    def _accept_note_evidence_segment(self, active: ActiveSession, segment: TranscriptSegment) -> None:
+        active.final_segments_seen_for_notes += 1
+        if active.note_consolidator is None:
+            active.note_consolidator = TranscriptFinalConsolidator(max_recent=48)
+        result = active.note_consolidator.accept(segment)
+        if result.collapsed:
+            active.final_segments_collapsed += 1
+        if result.suppressed:
+            active.final_segments_suppressed_for_notes += 1
+        active.note_segments = active.note_consolidator.segments()[-48:]
+
+    def _new_note_quality_gate(self) -> NoteQualityGate:
+        return NoteQualityGate(
+            min_evidence_segments=self.settings.sidecar_min_evidence_segments,
+            duplicate_window_seconds=self.settings.sidecar_duplicate_window_seconds,
+            generic_clarify_window_seconds=self.settings.sidecar_generic_clarify_window_seconds,
+            max_cards_per_5min=self.settings.sidecar_max_cards_per_5min,
+        )
+
+    def _note_quality_gate_for(self, active: ActiveSession) -> NoteQualityGate:
+        if active.note_quality_gate is None:
+            active.note_quality_gate = self._new_note_quality_gate()
+        return active.note_quality_gate
 
     def _speaker_payload_for_span(
         self,
@@ -956,15 +994,17 @@ class SessionManager:
     async def _refresh_notes(self, session_id: str) -> None:
         active = self._active.get(session_id)
         save_transcript = True if active is None else active.save_transcript
-        recent_segments = (
-            active.recent_segments[-10:]
-            if active is not None and active.recent_segments
-            else self.storage.recent_segments(session_id, limit=10)
-        )
-        source_segment_ids = [segment.id for segment in recent_segments]
+        if active is not None and active.note_segments:
+            recent_segments = active.note_segments[-12:]
+        elif active is not None and active.recent_segments:
+            recent_segments = active.recent_segments[-10:]
+        else:
+            recent_segments = self.storage.recent_segments(session_id, limit=10)
+        source_segment_ids = source_ids_for_segments(recent_segments)
         query = " ".join(segment.text for segment in recent_segments[-4:])
         self._maybe_enqueue_web_context(session_id, recent_segments)
         recall_hits = []
+        note_context_hits = []
         if not self.settings.disable_live_embeddings:
             try:
                 try:
@@ -985,6 +1025,9 @@ class SessionManager:
             except Exception as exc:
                 await self._publish_error(session_id, f"Recall search skipped: {exc}", fatal=False)
                 recall_hits = []
+            note_context_hits = [
+                hit for hit in recall_hits if hit.source_type not in {"work_memory", "work_memory_project"}
+            ]
 
         try:
             work_cards = await asyncio.wait_for(
@@ -995,7 +1038,6 @@ class SessionManager:
                 if save_transcript:
                     self.work_memory.record_recall_event(session_id, card, query)
                 hit = card.to_search_hit()
-                recall_hits.append(hit)
                 payload = hit.to_dict()
                 payload["source_segment_ids"] = source_segment_ids
                 await self.bus.publish(
@@ -1006,32 +1048,69 @@ class SessionManager:
             await self._publish_error(session_id, f"Work memory recall skipped: {exc}", fatal=False)
 
         try:
-            result = await self.notes.synthesize(session_id, recent_segments, recall_hits)
+            result = await self.notes.synthesize(session_id, recent_segments, note_context_hits)
         except Exception as exc:
             await self._publish_error(session_id, f"Note synthesis failed: {exc}")
             return
 
-        preferred_cards_by_key = {
-            card.card_key or f"{card.category}:{card.title}": card
-            for card in getattr(result, "sidecar_cards", [])
-        }
-        for note in result.notes:
+        generated_cards = self._cards_from_note_result(session_id, result, save_transcript=save_transcript)
+        accepted_cards = self._accepted_generated_cards(active, generated_cards, recent_segments)
+        for card in accepted_cards:
+            note = note_from_sidecar(card)
             if save_transcript:
                 self.storage.add_note(note)
             payload = note.to_dict()
             await self.bus.publish(SidecarEvent(type=EVENT_NOTE_UPDATE, session_id=session_id, payload=payload))
+            await self._publish_sidecar_card(card)
+
+    def _cards_from_note_result(
+        self,
+        session_id: str,
+        result: object,
+        *,
+        save_transcript: bool,
+    ) -> list[SidecarCard]:
+        preferred_cards_by_key = {
+            card.card_key or f"{card.category}:{card.title}": card
+            for card in getattr(result, "sidecar_cards", [])
+        }
         if preferred_cards_by_key:
-            for card in preferred_cards_by_key.values():
-                await self._publish_sidecar_card(card)
-        else:
-            for note in result.notes:
-                await self._publish_sidecar_card(
-                    self._sidecar_card_from_note_payload(
-                        session_id,
-                        note.to_dict(),
-                        save_transcript=save_transcript,
-                    )
+            return list(preferred_cards_by_key.values())
+        cards: list[SidecarCard] = []
+        for note in getattr(result, "notes", []):
+            cards.append(
+                self._sidecar_card_from_note_payload(
+                    session_id,
+                    note.to_dict(),
+                    save_transcript=save_transcript,
                 )
+            )
+        return cards
+
+    def _accepted_generated_cards(
+        self,
+        active: ActiveSession | None,
+        cards: list[SidecarCard],
+        evidence_segments: list[TranscriptSegment],
+    ) -> list[SidecarCard]:
+        if not cards:
+            return []
+        if not self.settings.sidecar_quality_gate_enabled or active is None:
+            return cards[: self.settings.sidecar_max_cards_per_generation_pass]
+        gate = self._note_quality_gate_for(active)
+        speaker_status = self.speaker_identity.status()
+        accepted: list[SidecarCard] = []
+        for card in cards:
+            decision = gate.evaluate(card, evidence_segments, speaker_status)
+            if decision.action != "accept":
+                continue
+            if decision.priority_override:
+                card = replace(card, priority=decision.priority_override)
+            gate.remember_accepted(card, evidence_segments)
+            accepted.append(card)
+            if len(accepted) >= self.settings.sidecar_max_cards_per_generation_pass:
+                break
+        return accepted
 
     async def _publish_sidecar_card(self, card: SidecarCard) -> None:
         await self.bus.publish(
@@ -1204,11 +1283,23 @@ def _segment_with_speaker_payload(segment: TranscriptSegment, payload: dict) -> 
     )
 
 
+def source_ids_for_segments(segments: list[TranscriptSegment]) -> list[str]:
+    seen: set[str] = set()
+    source_ids: list[str] = []
+    for segment in segments:
+        for source_id in segment.source_segment_ids or [segment.id]:
+            if source_id in seen:
+                continue
+            seen.add(source_id)
+            source_ids.append(source_id)
+    return source_ids
+
+
 def _build_session_memory_summary(session_id: str, segments: list[TranscriptSegment]) -> dict:
     text = " ".join(segment.text.strip() for segment in segments if segment.text.strip())
     clipped = _clip_text(text, 1200)
     topics = _keyword_list(text, limit=8)
-    source_segment_ids = [segment.id for segment in segments[-24:]]
+    source_segment_ids = source_ids_for_segments(segments[-24:])
     return {
         "session_id": session_id,
         "title": f"Session summary {time.strftime('%Y-%m-%d %H:%M')}",

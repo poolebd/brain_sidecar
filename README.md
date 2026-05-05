@@ -134,6 +134,12 @@ Useful knobs:
 - `BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT`: configured past-work root, default `/home/bp/Nextcloud2/_library/_shoalstone/past work`.
 - `BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT`: optional distinct PAS archive root.
 - `BRAIN_SIDECAR_WORK_MEMORY_SEARCH_TIMEOUT_SECONDS`: live work-memory search budget, default `1.5`.
+- `BRAIN_SIDECAR_SIDECAR_QUALITY_GATE_ENABLED`: require evidence-backed generated live cards, default `true`.
+- `BRAIN_SIDECAR_SIDECAR_MIN_EVIDENCE_SEGMENTS`: supporting transcript segments normally required for generated live cards, default `2`.
+- `BRAIN_SIDECAR_SIDECAR_DUPLICATE_WINDOW_SECONDS`: duplicate-card suppression window, default `120`.
+- `BRAIN_SIDECAR_SIDECAR_GENERIC_CLARIFY_WINDOW_SECONDS`: rate limit for generic clarification cards, default `300`.
+- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN`: rolling live-card volume cap, default `8`.
+- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS`: maximum generated cards emitted from one note refresh, default `3`.
 - `BRAIN_SIDECAR_WEB_CONTEXT_ENABLED`: set to `true` to allow selective Brave web context for explicit current-tech questions.
 - `BRAIN_SIDECAR_BRAVE_SEARCH_API_KEY`: Brave Search API key; without this, web context stays disabled.
 - `BRAIN_SIDECAR_WEB_CONTEXT_MIN_INTERVAL_SECONDS`: cooldown between live web lookups, default `90`.
@@ -170,6 +176,15 @@ speech sensitivity, reset, and mic-test playback. `fixture` is available only in
 explicit test mode, and browser microphone streaming is rejected to keep capture
 local to the trusted machine and avoid remote/browser mic drift.
 
+Generated live cards are intentionally sparse. Current-meeting notes must cite
+recent final transcript evidence, avoid memory-only assertions, and pass a local
+quality gate that suppresses unsupported finance, HR, maintenance, generic
+project-template, and protection-system claims. Narrow ASR aliases such as SLD,
+Siemens, NERC, GBA, and reviewer variants only help evidence matching; they do
+not rewrite displayed transcript text or create card facts. Work-memory cards
+may appear separately as reminders, but they are not fed back into current-note
+evidence.
+
 ## Event Contract
 
 SSE session streams emit compatibility events plus the normalized sidecar card
@@ -186,7 +201,7 @@ contract:
 - `note_update` and `recall_hit`: existing compatibility events consumed by the
   UI and external clients.
 - `sidecar_card`: normalized meeting-assistant card with category, title, body,
-  optional suggested say/ask text, `why_now`, priority, confidence,
+  optional suggested say/ask text, evidence quote, `why_now`, priority, confidence,
   `source_segment_ids`, `source_type`, sources/citations, `card_key`,
   ephemeral/expiry metadata, and `raw_audio_retained: false`.
 - `audio_status` and `gpu_status`: operational state such as queue depth,

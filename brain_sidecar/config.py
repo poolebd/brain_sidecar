@@ -71,6 +71,12 @@ class Settings:
     ollama_chat_timeout_seconds: float = 20.0
     ollama_embed_timeout_seconds: float = 12.0
     work_memory_search_timeout_seconds: float = 1.5
+    sidecar_quality_gate_enabled: bool = True
+    sidecar_min_evidence_segments: int = 2
+    sidecar_duplicate_window_seconds: float = 120.0
+    sidecar_generic_clarify_window_seconds: float = 300.0
+    sidecar_max_cards_per_5min: int = 8
+    sidecar_max_cards_per_generation_pass: int = 3
     asr_min_free_vram_mb: int = 3500
     asr_unload_ollama_on_start: bool = True
     asr_gpu_free_timeout_seconds: float = 10.0
@@ -158,6 +164,21 @@ def load_settings() -> Settings:
         work_memory_search_timeout_seconds=max(
             0.1,
             float(_env("BRAIN_SIDECAR_WORK_MEMORY_SEARCH_TIMEOUT_SECONDS", "1.5")),
+        ),
+        sidecar_quality_gate_enabled=_env_bool("BRAIN_SIDECAR_SIDECAR_QUALITY_GATE_ENABLED", True),
+        sidecar_min_evidence_segments=max(1, int(_env("BRAIN_SIDECAR_SIDECAR_MIN_EVIDENCE_SEGMENTS", "2"))),
+        sidecar_duplicate_window_seconds=max(
+            1.0,
+            float(_env("BRAIN_SIDECAR_SIDECAR_DUPLICATE_WINDOW_SECONDS", "120")),
+        ),
+        sidecar_generic_clarify_window_seconds=max(
+            1.0,
+            float(_env("BRAIN_SIDECAR_SIDECAR_GENERIC_CLARIFY_WINDOW_SECONDS", "300")),
+        ),
+        sidecar_max_cards_per_5min=max(1, int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN", "8"))),
+        sidecar_max_cards_per_generation_pass=max(
+            1,
+            int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS", "3")),
         ),
         speaker_enrollment_sample_seconds=max(
             2.0,

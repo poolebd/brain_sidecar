@@ -43,6 +43,10 @@ def create_sidecar_card(
     created_at: float | None = None,
     explicitly_requested: bool = False,
     provisional: bool = False,
+    evidence_quote: object = "",
+    owner: object = None,
+    due_date: object = None,
+    missing_info: object = None,
 ) -> SidecarCard:
     normalized_category = normalize_sidecar_category(category)
     normalized_source_type = normalize_sidecar_source_type(source_type)
@@ -86,6 +90,10 @@ def create_sidecar_card(
         explicitly_requested=bool(explicitly_requested),
         created_at=now,
         raw_audio_retained=False,
+        evidence_quote=compact_text(evidence_quote, limit=420),
+        owner=compact_optional_text(owner, limit=120),
+        due_date=compact_optional_text(due_date, limit=120),
+        missing_info=compact_optional_text(missing_info, limit=240),
     )
 
 
@@ -117,6 +125,10 @@ def note_payload_to_sidecar_card(session_id: str, payload: dict[str, Any], *, sa
         card_key=card_key,
         created_at=created_at,
         provisional=bool(payload.get("provisional")),
+        evidence_quote=payload.get("evidence_quote") or "",
+        owner=payload.get("owner"),
+        due_date=payload.get("due_date"),
+        missing_info=payload.get("missing_info"),
     )
 
 

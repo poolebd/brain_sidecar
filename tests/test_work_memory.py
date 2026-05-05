@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 
 from fastapi.testclient import TestClient
 
+from brain_sidecar.config import Settings
+from brain_sidecar.core.audio import AudioCapture
+from brain_sidecar.core.dedupe import TranscriptDeduplicator
+from brain_sidecar.core.models import TranscriptSegment
+from brain_sidecar.core.notes import NoteSynthesisResult
+from brain_sidecar.core.session import ActiveSession, SessionManager
 from brain_sidecar.core.storage import Storage
-from brain_sidecar.core.work_memory import WorkMemoryService, describe_source, normalize_lookup
+from brain_sidecar.core.work_memory import WorkMemoryRecallCard, WorkMemoryService, describe_source, normalize_lookup
 from brain_sidecar.server.app import create_app
 import brain_sidecar.core.work_memory as work_memory
 
@@ -16,6 +23,48 @@ class FakeRecallIndex:
 
     async def add_text(self, source_type: str, source_id: str, text: str, metadata: dict) -> None:
         self.embedded.append((source_type, source_id, text))
+
+
+class SilentCapture(AudioCapture):
+    async def chunks(self):
+        if False:
+            yield b""
+
+    async def stop(self) -> None:
+        return None
+
+
+class RecordingNotes:
+    def __init__(self) -> None:
+        self.recall_hits_seen: list = []
+
+    async def synthesize(self, session_id, recent_segments, recall_hits):
+        self.recall_hits_seen = list(recall_hits)
+        return NoteSynthesisResult(notes=[])
+
+
+class FakeLiveWorkMemory:
+    def __init__(self) -> None:
+        self.recorded: list[tuple[str, str]] = []
+
+    def search(self, query: str, limit: int = 5, *, manual: bool = False):
+        return [
+            WorkMemoryRecallCard(
+                project_id="wm-ct-pt",
+                title="Relay Replacement",
+                organization="OPC",
+                date_range="2020",
+                score=0.91,
+                confidence=0.94,
+                reason="relay, CT/PT, trip path",
+                lesson="Memory only unless live evidence mentions protection work.",
+                citations=["/tmp/relay.txt#snippet"],
+                card_key="work:wm-ct-pt",
+            )
+        ]
+
+    def record_recall_event(self, session_id: str, card: WorkMemoryRecallCard, query: str) -> None:
+        self.recorded.append((session_id, card.project_id))
 
 
 def test_describe_source_guards_sensitive_and_current_employer_material() -> None:
@@ -189,6 +238,112 @@ def test_live_work_memory_ignores_generic_transcript_chatter(tmp_path: Path) -> 
     assert service.search("you know what time it was with her and one real thing", limit=3) == []
     assert service.search("generator monitoring failure mode decision owner", limit=3)
     assert service.search("generator monitoring", limit=3, manual=True)
+
+
+def test_live_search_requires_strong_terms(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "runtime")
+    storage.connect()
+    storage.upsert_work_memory_project(
+        key="relay_project",
+        title="230kV Line Relay Replacement",
+        organization="OPC",
+        date_range="2020",
+        role="PM",
+        domain="Relay modernization",
+        summary="Relay settings, trip path, and breaker failure coordination.",
+        lessons=["Use relay evidence only when live discussion is specific."],
+        triggers=["relay replacement", "trip path", "breaker failure"],
+        source_group="opc_history",
+        confidence=0.92,
+    )
+    service = WorkMemoryService(storage)
+
+    assert service.search("the project has a reviewer and a client question", limit=3) == []
+    assert service.search("relay replacement trip path breaker failure", limit=3)
+
+
+def test_live_memory_low_score_hidden_or_low_priority(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "runtime")
+    storage.connect()
+    storage.upsert_work_memory_project(
+        key="metadata_only",
+        title="Damage Control Material Assessment",
+        organization="Navy",
+        date_range="2018",
+        role="Lead",
+        domain="Assessment",
+        summary="Material condition assessment.",
+        lessons=["Make the inspection evidence explicit."],
+        triggers=["material assessment"],
+        source_group="navy_history",
+        confidence=0.72,
+    )
+    service = WorkMemoryService(storage)
+
+    assert service.search("material question", limit=3) == []
+
+
+def test_live_memory_ct_pt_recall_does_not_create_current_note_without_live_ct_pt_evidence(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "runtime")
+    storage.connect()
+    storage.upsert_work_memory_project(
+        key="ct_pt_relay",
+        title="Line Relay Replacement",
+        organization="OPC",
+        date_range="2020",
+        role="PM",
+        domain="Protection",
+        summary="CT/PT relay settings, trip path, breaker failure, and interlocks.",
+        lessons=["Relay context is memory only unless live evidence mentions relay/protection terms."],
+        triggers=["CT/PT", "relay settings", "trip path", "breaker failure"],
+        source_group="opc_history",
+        confidence=0.94,
+    )
+    service = WorkMemoryService(storage)
+
+    assert service.search("Manish NERC SME hours Sunil Siemens harmonics SLD power quality", limit=3) == []
+
+
+def test_live_memory_does_not_become_note_evidence(event_loop, tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "runtime",
+        host="127.0.0.1",
+        port=8765,
+        asr_primary_model="tiny.en",
+        asr_fallback_model="tiny.en",
+        asr_compute_type="float16",
+        ollama_host="http://127.0.0.1:11434",
+        ollama_chat_model="qwen3.5:9b",
+        ollama_embed_model="embeddinggemma",
+        disable_live_embeddings=True,
+    )
+    manager = SessionManager(settings)
+    notes = RecordingNotes()
+    manager.notes = notes  # type: ignore[assignment]
+    manager.work_memory = FakeLiveWorkMemory()  # type: ignore[assignment]
+    session = manager.storage.create_session("memory-separation")
+    active = ActiveSession(
+        id=session.id,
+        capture=SilentCapture(),
+        window_queue=asyncio.Queue(maxsize=2),
+        postprocess_queue=asyncio.Queue(maxsize=1),
+        tasks=[],
+        deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
+        recent_segments=[
+            TranscriptSegment(
+                id="seg-live",
+                session_id=session.id,
+                start_s=0.0,
+                end_s=3.0,
+                text="Manish is the SME for the Siemens harmonics and SLD review.",
+            )
+        ],
+    )
+    manager._active[session.id] = active
+
+    event_loop.run_until_complete(manager._refresh_notes(session.id))
+
+    assert notes.recall_hits_seen == []
 
 
 def test_work_memory_uses_configured_roots_and_pas_root(tmp_path: Path) -> None:

@@ -64,7 +64,11 @@ class Storage:
                   title text not null,
                   body text not null,
                   source_segment_ids text not null,
-                  created_at real not null
+                  created_at real not null,
+                  evidence_quote text not null default '',
+                  owner text,
+                  due_date text,
+                  missing_info text
                 );
                 create index if not exists idx_notes_session on note_cards(session_id, created_at);
                 create table if not exists library_roots (
@@ -298,8 +302,13 @@ class Storage:
         self._ensure_column("transcript_segments", "speaker_confidence", "real")
         self._ensure_column("transcript_segments", "speaker_match_reason", "text")
         self._ensure_column("transcript_segments", "speaker_low_confidence", "integer")
+        self._ensure_column("note_cards", "evidence_quote", "text not null default ''")
+        self._ensure_column("note_cards", "owner", "text")
+        self._ensure_column("note_cards", "due_date", "text")
+        self._ensure_column("note_cards", "missing_info", "text")
         self._record_migration("20260504_transcript_speaker_fields")
         self._record_migration("20260504_session_memory_summaries")
+        self._record_migration("20260505_note_evidence_fields")
 
     def _record_migration(self, name: str) -> None:
         self.conn.execute(
@@ -1141,8 +1150,11 @@ class Storage:
         with self._lock:
             self.conn.execute(
                 """
-                insert into note_cards(id, session_id, kind, title, body, source_segment_ids, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
+                insert into note_cards(
+                  id, session_id, kind, title, body, source_segment_ids, created_at,
+                  evidence_quote, owner, due_date, missing_info
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     note.id,
@@ -1152,6 +1164,10 @@ class Storage:
                     note.body,
                     json.dumps(note.source_segment_ids),
                     note.created_at,
+                    note.evidence_quote,
+                    note.owner,
+                    note.due_date,
+                    note.missing_info,
                 ),
             )
             self.conn.commit()

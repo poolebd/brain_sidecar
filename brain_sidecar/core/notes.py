@@ -29,36 +29,41 @@ class NoteSynthesizer:
             return NoteSynthesisResult(notes=[])
 
         transcript = "\n".join(
-            f"{segment.id} [{segment.start_s:.1f}-{segment.end_s:.1f}] "
+            f"{source_ref(segment)} [{segment.start_s:.1f}-{segment.end_s:.1f}] "
             f"{speaker_prefix(segment)}{segment.text}"
             for segment in recent_segments
         )
         recall = "\n".join(recall_line(hit) for hit in recall_hits[:6]) or "- No prior context."
-        source_ids = [segment.id for segment in recent_segments]
+        source_ids = valid_source_ids_for_segments(recent_segments)
         system = (
             "You are Brain Sidecar, a local private meeting-intelligence assistant for BP. "
-            "Return compact JSON cards that help BP contribute in a technical meeting. "
-            "Stay grounded only in the transcript and provided recall/work/web context. "
+            "Return very few compact JSON cards that help an energy/project consultant during "
+            "or immediately after a meeting. Stay grounded only in transcript evidence. "
+            "Recall is reminder context only; never turn recall-only entities into current-meeting facts. "
             "Do not invent facts, do not restate the transcript, and do not imply BP promised "
-            "something unless speaker_role=user with adequate confidence."
+            "something unless speaker_role=user with adequate confidence. If evidence is weak, return no cards."
         )
         user = f"""
 Transcript:
 {transcript}
 
-Relevant recall, work memory, or web context:
+Relevant recall context for reminders only:
 {recall}
 
-Classify only useful, actionable cards:
-- action: who owes what by when; use BP-owned only when speaker metadata supports it
+Classify only useful, evidence-backed cards:
+- action: explicit review, send, reply, confirm, schedule, hours, or follow-up work; use BP-owned only when speaker metadata supports it
 - decision: what appears decided or settled
-- question: important unresolved question
-- risk: assumption or failure mode to watch
+- question: important unresolved technical or coordination question
+- risk: assumption or dependency to watch
 - clarification: concise question BP should ask to remove ambiguity
-- contribution: concise point BP could say from context
-- memory/work_memory/web: useful sourced context
-- status/note: only when nothing more actionable is justified
+- contribution: concise point BP could say from transcript evidence
 
+Prefer fewer cards. Return no card unless it would help an energy/project consultant.
+
+Do not infer finance, HR, policy, maintenance, or generic project-management topics unless explicitly stated.
+Do not create CT/PT, relay, protection, breaker, trip-path, interlock, or settings notes unless those concepts are present in transcript evidence.
+Do not convert noisy phrases like "contribute", "Brandon", or "taxes" into financial obligations unless the transcript explicitly discusses actual financial obligations.
+Do not introduce memory-only entities into a current-meeting note.
 Avoid generic meeting notes, transcript echoes, unsupported source IDs, private path exposure, and overconfident advice.
 
 Return JSON only:
@@ -74,7 +79,11 @@ Return JSON only:
       "priority": "low|normal|high",
       "confidence": 0.0,
       "source_segment_ids": ["segment ids from Transcript only"],
-      "source_type": "transcript|saved_transcript|work_memory|brave_web|local_file|model_fallback",
+      "evidence_quote": "short direct quote or close excerpt from those transcript segments",
+      "owner": "optional owner if directly supported",
+      "due_date": "optional due date or timing if directly supported",
+      "missing_info": "optional missing detail if directly useful",
+      "source_type": "transcript",
       "sources": [],
       "citations": [],
       "card_key": "optional stable dedupe key"
@@ -90,8 +99,6 @@ Return JSON only:
                 cards = merge_cards(cards, heuristic_cards)
         except Exception:
             cards = heuristic_cards or [fallback_sidecar_card(session_id, recent_segments, source_ids)]
-        if not cards:
-            cards = [fallback_sidecar_card(session_id, recent_segments, source_ids)]
         return NoteSynthesisResult(notes=[note_from_sidecar(card) for card in cards], sidecar_cards=cards)
 
 
@@ -119,6 +126,7 @@ def fallback_sidecar_card(
         source_type="model_fallback",
         card_key="note:status:current thread",
         ephemeral=True,
+        evidence_quote=recent_text,
     )
 
 
@@ -129,8 +137,8 @@ def parse_meeting_cards(
     recent_segments: list[TranscriptSegment],
 ) -> list[SidecarCard]:
     payload = _parse_json_object(content)
-    source_ids = [segment.id for segment in recent_segments]
-    valid_source_ids = set(source_ids)
+    source_ids = valid_source_ids_for_segments(recent_segments)
+    valid_source_ids = set(valid_source_ids_for_segments(recent_segments))
     recent_text = " ".join(segment.text for segment in recent_segments)
     raw_items = payload.get("cards")
     if raw_items is None:
@@ -141,7 +149,7 @@ def parse_meeting_cards(
     for item in raw_items:
         if not isinstance(item, dict):
             continue
-        source_segment_ids = _validated_source_ids(item, valid_source_ids, default=source_ids)
+        source_segment_ids = _validated_source_ids(item, valid_source_ids)
         title = compact_text(item.get("title") or "Sidecar note", limit=140)
         body = compact_text(item.get("body") or "", limit=900)
         suggested_say = item.get("suggested_say")
@@ -172,6 +180,10 @@ def parse_meeting_cards(
                 citations=item.get("citations") or [],
                 card_key=card_key,
                 ephemeral=True,
+                evidence_quote=item.get("evidence_quote") or "",
+                owner=item.get("owner"),
+                due_date=item.get("due_date"),
+                missing_info=item.get("missing_info"),
             )
         )
     return cards
@@ -200,6 +212,8 @@ def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSeg
                     source_type="transcript",
                     card_key=f"action:bp:{segment.id}",
                     ephemeral=True,
+                    evidence_quote=compact_text(text, limit=260),
+                    owner="BP",
                 )
             )
         elif commitment and segment.speaker_role == "other":
@@ -217,6 +231,7 @@ def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSeg
                     source_type="transcript",
                     card_key=f"clarify:owner:{segment.id}",
                     ephemeral=True,
+                    evidence_quote=compact_text(text, limit=260),
                 )
             )
         elif commitment:
@@ -234,6 +249,7 @@ def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSeg
                     source_type="transcript",
                     card_key=f"clarify:unknown-owner:{segment.id}",
                     ephemeral=True,
+                    evidence_quote=compact_text(text, limit=260),
                 )
             )
     risk_text = " ".join(segment.text for segment in recent_segments[-4:]).lower()
@@ -252,6 +268,7 @@ def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSeg
                 source_type="transcript",
                 card_key="risk:recent-window",
                 ephemeral=True,
+                evidence_quote=compact_text(" ".join(segment.text for segment in recent_segments[-4:]), limit=260),
             )
         )
     return cards[:3]
@@ -266,6 +283,10 @@ def note_from_sidecar(card: SidecarCard) -> NoteCard:
         title=card.title,
         body=card.body,
         source_segment_ids=card.source_segment_ids,
+        evidence_quote=card.evidence_quote,
+        owner=card.owner,
+        due_date=card.due_date,
+        missing_info=card.missing_info,
     )
 
 
@@ -298,9 +319,26 @@ def recall_line(hit: SearchHit) -> str:
     return f"- {source} score={hit.score:.2f} title={title or ''}: {hit.text[:520]}"
 
 
-def _validated_source_ids(item: dict, valid_source_ids: set[str], *, default: list[str]) -> list[str]:
+def source_ref(segment: TranscriptSegment) -> str:
+    source_ids = segment.source_segment_ids or [segment.id]
+    return ",".join(source_ids)
+
+
+def valid_source_ids_for_segments(segments: list[TranscriptSegment]) -> list[str]:
+    seen: set[str] = set()
+    source_ids: list[str] = []
+    for segment in segments:
+        for source_id in segment.source_segment_ids or [segment.id]:
+            if source_id in seen:
+                continue
+            seen.add(source_id)
+            source_ids.append(source_id)
+    return source_ids
+
+
+def _validated_source_ids(item: dict, valid_source_ids: set[str]) -> list[str]:
     if "source_segment_ids" not in item:
-        return default
+        return []
     raw = item.get("source_segment_ids")
     if not isinstance(raw, list):
         return []
