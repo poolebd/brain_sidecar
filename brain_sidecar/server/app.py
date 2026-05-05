@@ -6,7 +6,7 @@ import re
 import time
 from pathlib import Path
 from uuid import uuid4
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile, WebSocket
@@ -23,7 +23,7 @@ from brain_sidecar.core.test_mode import TestModeService
 MAX_INPUT_FILE_BYTES = 1024 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 BROWSER_STREAM_REMOVED = (
-    "Browser microphone capture has been removed. Use server_device for the USB microphone attached to this computer."
+    "Browser microphone capture has been removed. Use server_device for capture from the local server microphone."
 )
 FIXTURE_TEST_MODE_REQUIRED = "Fixture audio is only available when recorded audio test mode is enabled."
 SSE_HEARTBEAT = ": heartbeat\n\n"
@@ -38,11 +38,18 @@ class CreateSessionRequest(BaseModel):
     title: str | None = None
 
 
+class MicTuningRequest(BaseModel):
+    auto_level: bool = True
+    input_gain_db: float = Field(default=0.0, ge=-12.0, le=24.0)
+    speech_sensitivity: Literal["quiet", "normal", "noisy"] = "normal"
+
+
 class StartSessionRequest(BaseModel):
     device_id: str | None = None
     fixture_wav: str | None = None
     audio_source: str | None = None
     save_transcript: bool = True
+    mic_tuning: MicTuningRequest | None = None
 
 
 class LibraryRootRequest(BaseModel):
@@ -78,6 +85,7 @@ class SpeakerSampleRecordRequest(BaseModel):
     device_id: str | None = None
     fixture_wav: str | None = None
     audio_source: str | None = None
+    mic_tuning: MicTuningRequest | None = None
 
 
 class MicTestRequest(BaseModel):
@@ -85,6 +93,7 @@ class MicTestRequest(BaseModel):
     fixture_wav: str | None = None
     audio_source: str | None = None
     seconds: float = Field(default=3.0, ge=1.0, le=8.0)
+    mic_tuning: MicTuningRequest | None = None
 
 
 class SpeakerFeedbackRequest(BaseModel):
@@ -122,6 +131,14 @@ def _audio_source_for_request(audio_source: str | None, fixture_wav: Path | None
     if selected != "server_device":
         raise HTTPException(status_code=400, detail=f"Unsupported audio_source: {selected}")
     return "server_device"
+
+
+def _mic_tuning_payload(tuning: MicTuningRequest | None) -> dict[str, object] | None:
+    if tuning is None:
+        return None
+    if hasattr(tuning, "model_dump"):
+        return tuning.model_dump()
+    return tuning.dict()
 
 
 def create_app() -> FastAPI:
@@ -163,23 +180,14 @@ def create_app() -> FastAPI:
 
     @app.get("/api/devices")
     async def devices() -> dict:
-        devices = [
-            device.to_dict()
-            for device in list_audio_devices(
-                preferred_device_id=settings.preferred_audio_device_id,
-                preferred_device_match=settings.preferred_audio_device_match,
-                preferred_device_label=settings.preferred_audio_device_label,
-            )
-        ]
+        device_infos = list_audio_devices(probe=True)
+        devices = [device.to_dict() for device in device_infos]
+        selected_device = next((device for device in device_infos if device.healthy), None)
         return {
             "devices": devices,
-            "preferred_device_configured": bool(
-                settings.preferred_audio_device_id or settings.preferred_audio_device_match
-            ),
-            "preferred_device_available": any(bool(device.get("preferred")) for device in devices),
-            "preferred_device_id": settings.preferred_audio_device_id,
-            "preferred_device_match": settings.preferred_audio_device_match,
-            "preferred_device_label": settings.preferred_audio_device_label,
+            "selected_device": selected_device.to_dict() if selected_device else None,
+            "server_mic_available": selected_device is not None,
+            "selection_reason": selected_device.selection_reason if selected_device else "No healthy server microphone detected.",
         }
 
     @app.get("/api/health/gpu")
@@ -203,9 +211,7 @@ def create_app() -> FastAPI:
         status["asr_unload_ollama_on_start"] = settings.asr_unload_ollama_on_start
         status["asr_gpu_free_timeout_seconds"] = settings.asr_gpu_free_timeout_seconds
         status["audio_chunk_ms"] = settings.audio_chunk_ms
-        status["preferred_audio_device_id"] = settings.preferred_audio_device_id
-        status["preferred_audio_device_match"] = settings.preferred_audio_device_match
-        status["preferred_audio_device_label"] = settings.preferred_audio_device_label
+        status["server_audio_source"] = "auto_detected_server_device"
         status["transcription_window_seconds"] = settings.transcription_window_seconds
         status["transcription_overlap_seconds"] = settings.transcription_overlap_seconds
         status["transcription_queue_size"] = settings.transcription_queue_size
@@ -310,6 +316,7 @@ def create_app() -> FastAPI:
                 fixture_wav=fixture_wav,
                 audio_source=audio_source,
                 save_transcript=request.save_transcript,
+                mic_tuning=_mic_tuning_payload(request.mic_tuning),
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -386,6 +393,7 @@ def create_app() -> FastAPI:
                 fixture_wav=fixture_wav,
                 audio_source=audio_source,
                 seconds=request.seconds,
+                mic_tuning=_mic_tuning_payload(request.mic_tuning),
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -417,6 +425,7 @@ def create_app() -> FastAPI:
                 device_id=request.device_id,
                 fixture_wav=fixture_wav,
                 audio_source=audio_source,
+                mic_tuning=_mic_tuning_payload(request.mic_tuning),
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -139,6 +139,13 @@ def test_audio_quality_ignores_low_level_room_noise() -> None:
     assert "very_low_volume" in quality.issues
 
 
+def test_audio_quality_quiet_sensitivity_accepts_low_volume_speech() -> None:
+    quality = analyze_pcm16(tone_pcm(seconds=3.0, amplitude=0.006), speech_sensitivity="quiet")
+
+    assert quality.usable_speech_seconds > 2.5
+    assert "very_low_volume" not in quality.issues
+
+
 def test_runtime_labels_matching_cluster_as_bp_only_above_threshold(tmp_path: Path) -> None:
     service = speaker_service(
         tmp_path,
@@ -267,6 +274,11 @@ def test_microphone_test_endpoint_reports_quality_without_raw_audio(monkeypatch,
             "audio_source": "fixture",
             "fixture_wav": str(wav_path),
             "seconds": 3,
+            "mic_tuning": {
+                "auto_level": True,
+                "input_gain_db": 6,
+                "speech_sensitivity": "normal",
+            },
         },
     )
 
@@ -274,6 +286,8 @@ def test_microphone_test_endpoint_reports_quality_without_raw_audio(monkeypatch,
     payload = response.json()
     assert payload["raw_audio_retained"] is False
     assert payload["quality"]["usable_speech_seconds"] > 0
+    assert payload["mic_tuning"]["input_gain_db"] == 6
+    assert payload["suggested_tuning"]["speech_sensitivity"] in {"quiet", "normal", "noisy"}
     assert payload["recommendation"]["status"] in {"good", "noisy"}
     assert payload["playback_audio"]["mime_type"] == "audio/wav"
     assert payload["playback_audio"]["duration_seconds"] == pytest.approx(3.0, abs=0.05)

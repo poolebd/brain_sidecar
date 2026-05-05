@@ -23,6 +23,7 @@ const DEFAULT_THEME: ThemeName = "midnight";
 const THEME_STORAGE_KEY = "brain-sidecar-theme-v2";
 const DEBUG_METADATA_STORAGE_KEY = "brain-sidecar-debug-metadata-v1";
 const SESSION_RETENTION_STORAGE_KEY = "brain-sidecar-session-retention-v1";
+const MIC_TUNING_STORAGE_KEY = "brain-sidecar-mic-tuning-v1";
 const DEFAULT_CONTEXT_CARD_LIMIT = 3;
 
 const WORK_NOTE_SECTIONS: { bucket: WorkCardBucket; title: string; empty: string }[] = [
@@ -53,16 +54,24 @@ type DeviceInfo = {
   driver: string;
   ffmpeg_input: string;
   hardware_id?: string;
-  preferred?: boolean;
+  healthy?: boolean;
+  score?: number;
+  selection_reason?: string;
 };
 
 type DeviceListResponse = {
   devices: DeviceInfo[];
-  preferred_device_configured?: boolean;
-  preferred_device_available?: boolean;
-  preferred_device_id?: string | null;
-  preferred_device_match?: string | null;
-  preferred_device_label?: string | null;
+  selected_device?: DeviceInfo | null;
+  server_mic_available?: boolean;
+  selection_reason?: string;
+};
+
+type SpeechSensitivity = "quiet" | "normal" | "noisy";
+
+type MicTuning = {
+  auto_level: boolean;
+  input_gain_db: number;
+  speech_sensitivity: SpeechSensitivity;
 };
 
 type EventEnvelope = {
@@ -293,6 +302,8 @@ type MicTestResult = {
     title: string;
     detail: string;
   };
+  mic_tuning?: MicTuning;
+  suggested_tuning?: (MicTuning & { reason?: string }) | null;
   playback_audio?: {
     mime_type: string;
     data_base64: string;
@@ -362,6 +373,7 @@ export function App() {
   const [selectedDevice, setSelectedDevice] = useState("");
   const [deviceNotice, setDeviceNotice] = useState("");
   const [audioSource, setAudioSource] = useState<AudioSource>(() => defaultAudioSource());
+  const [micTuning, setMicTuning] = useState<MicTuning>(() => loadMicTuning());
   const [sessionRetention, setSessionRetention] = useState<SessionRetention>(() => {
     if (typeof window === "undefined") {
       return "temporary";
@@ -444,6 +456,10 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(SESSION_RETENTION_STORAGE_KEY, sessionRetention);
   }, [sessionRetention]);
+
+  useEffect(() => {
+    window.localStorage.setItem(MIC_TUNING_STORAGE_KEY, JSON.stringify(micTuning));
+  }, [micTuning]);
 
   useEffect(() => {
     return () => {
@@ -584,10 +600,14 @@ export function App() {
   const missingServerDevice = audioSource === "server_device" && !selectedDevice;
   const captureStartDisabled = captureStarting || captureActive || missingServerDevice;
   const captureStopDisabled = !sessionId || status === "idle" || status === "stopped";
+  const selectedServerMic = devices.find((device) => device.id === selectedDevice) ?? null;
+  const serverMicStatus = selectedServerMic
+    ? `${selectedServerMic.label}${selectedServerMic.healthy === false ? " (not usable)" : ""}`
+    : "No healthy server microphone detected";
   const activeRetention = activeSessionRetention ?? sessionRetention;
   const captureModeLabel = audioSource === "fixture"
     ? "Recording playback"
-    : "USB mic";
+    : "Server mic";
   const sessionRetentionStatus = sessionRetention === "saved" ? "Saved transcript" : "Not saved";
   const sessionRetentionDetail = sessionRetention === "saved"
     ? "Transcript text and notes will be available for future recall. Raw audio is not saved."
@@ -635,23 +655,11 @@ export function App() {
     const payload = await response.json() as DeviceListResponse;
     const nextDevices = payload.devices ?? [];
     setDevices(nextDevices);
-    const preferred = nextDevices.find((device: DeviceInfo) => device.preferred);
-    const preferredMissing = Boolean(payload.preferred_device_configured && !payload.preferred_device_available);
-    setDeviceNotice(preferredMissing
-      ? `${payload.preferred_device_label || "Preferred microphone"} is not connected. Reconnect it, then refresh.`
-      : "");
-    setSelectedDevice((current) => {
-      if (preferred?.id) {
-        return preferred.id;
-      }
-      if (preferredMissing) {
-        return "";
-      }
-      if (current && nextDevices.some((device: DeviceInfo) => device.id === current)) {
-        return current;
-      }
-      return nextDevices[0]?.id ?? "";
-    });
+    const selected = payload.selected_device ?? nextDevices.find((device: DeviceInfo) => device.healthy !== false) ?? null;
+    setDeviceNotice(selected
+      ? payload.selection_reason || selected.selection_reason || "Server microphone auto-selected."
+      : payload.selection_reason || "No healthy server microphone detected. Connect a mic, then refresh.");
+    setSelectedDevice(selected?.id ?? "");
   }
 
   async function refreshGpu() {
@@ -1027,10 +1035,11 @@ export function App() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        device_id: fixtureWav ? null : selectedDevice || null,
+        device_id: null,
         fixture_wav: fixtureWav,
         audio_source: fixtureWav ? "fixture" : "server_device",
         save_transcript: retentionForStart === "saved",
+        mic_tuning: micTuning,
       }),
     });
     if (!response.ok) {
@@ -1288,10 +1297,11 @@ export function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          device_id: selectedDevice || null,
+          device_id: null,
           audio_source: fixturePath.trim() && audioSource === "fixture" ? "fixture" : "server_device",
           fixture_wav: fixturePath.trim() && audioSource === "fixture" ? fixturePath.trim() : null,
           seconds: 3,
+          mic_tuning: micTuning,
         }),
       });
       const payload = await response.json();
@@ -1300,6 +1310,9 @@ export function App() {
         return;
       }
       setMicTest(payload);
+      if (payload.suggested_tuning && micTuning.auto_level) {
+        setMicTuning(normalizeMicTuning(payload.suggested_tuning));
+      }
       replaceMicPlaybackUrl(micTestPlaybackUrl(payload));
       appendSystemLog({
         level: payload.recommendation?.status === "good" ? "status" : "warning",
@@ -1353,9 +1366,10 @@ export function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          device_id: selectedDevice || null,
+          device_id: null,
           audio_source: fixturePath.trim() && audioSource === "fixture" ? "fixture" : "server_device",
           fixture_wav: fixturePath.trim() && audioSource === "fixture" ? fixturePath.trim() : null,
+          mic_tuning: micTuning,
         }),
       });
       const payload = await response.json();
@@ -1660,17 +1674,27 @@ export function App() {
               <h3>Input</h3>
               <span>{devices.length || "No"} devices</span>
             </div>
-            <label className="field field-wide">
-              <span>Audio source</span>
-              <select
-                aria-label="Audio source"
-                value={audioSource}
-                onChange={(event) => setAudioSource(event.target.value as AudioSource)}
-              >
-                <option value="server_device">Server USB microphone</option>
-                {ENABLE_FIXTURE_AUDIO && <option value="fixture">Fixture WAV</option>}
-              </select>
-            </label>
+            {ENABLE_FIXTURE_AUDIO && (
+              <label className="field field-wide">
+                <span>Audio source</span>
+                <select
+                  aria-label="Audio source"
+                  value={audioSource}
+                  onChange={(event) => setAudioSource(event.target.value as AudioSource)}
+                >
+                  <option value="server_device">Server microphone</option>
+                  <option value="fixture">Fixture WAV</option>
+                </select>
+              </label>
+            )}
+            <div className={`server-mic-card ${missingServerDevice ? "warning" : "ready"}`} aria-label="Server microphone">
+              <div>
+                <p className="label">Server microphone</p>
+                <strong>{serverMicStatus}</strong>
+                <span>{deviceNotice || "Auto-selected on this computer. Browser microphones are disabled."}</span>
+              </div>
+              <button className="secondary" onClick={refreshDevices}>Refresh</button>
+            </div>
             <div className="compact-tool">
               <p className="label">Transcript Retention</p>
               <div className="mode-control compact" role="group" aria-label="Transcript retention">
@@ -1697,23 +1721,55 @@ export function App() {
               </div>
               <p className="tool-note">{sessionRetentionDetail}</p>
             </div>
-            <label className="field field-wide">
-              <span>USB microphone</span>
-              <select
-                aria-label="USB microphone"
-                value={selectedDevice}
-                onChange={(event) => setSelectedDevice(event.target.value)}
-                disabled={audioSource !== "server_device"}
-              >
-                <option value="">No USB mic found yet</option>
-                {devices.map((device) => (
-                  <option key={device.id} value={device.id}>
-                    {device.label}
-                  </option>
+            <div className="compact-tool mic-tuning" role="region" aria-label="Guided mic tuning">
+              <div className="tuning-header">
+                <p className="label">Guided Auto</p>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={micTuning.auto_level}
+                    onChange={(event) => setMicTuning((current) => ({ ...current, auto_level: event.target.checked }))}
+                  />
+                  <span>Auto Level</span>
+                </label>
+              </div>
+              <label className="field field-wide">
+                <span>Input Boost</span>
+                <input
+                  aria-label="Input Boost"
+                  type="range"
+                  min="-12"
+                  max="24"
+                  step="1"
+                  value={micTuning.input_gain_db}
+                  onChange={(event) => setMicTuning((current) => normalizeMicTuning({ ...current, input_gain_db: Number(event.target.value) }))}
+                />
+                <small>{micTuning.input_gain_db > 0 ? "+" : ""}{micTuning.input_gain_db.toFixed(0)} dB</small>
+              </label>
+              <div className="mode-control compact sensitivity-control" role="group" aria-label="Speech Sensitivity">
+                {(["quiet", "normal", "noisy"] as SpeechSensitivity[]).map((level) => (
+                  <button
+                    key={level}
+                    type="button"
+                    aria-pressed={micTuning.speech_sensitivity === level}
+                    className={micTuning.speech_sensitivity === level ? "active" : ""}
+                    onClick={() => setMicTuning((current) => ({ ...current, speech_sensitivity: level }))}
+                  >
+                    <span>{capitalize(level)}</span>
+                  </button>
                 ))}
-              </select>
-            </label>
-            {deviceNotice && <p className="tool-note warning-text" role="status">{deviceNotice}</p>}
+              </div>
+              <div className="button-row">
+                <button className="secondary" onClick={() => setMicTuning(defaultMicTuning())}>Reset Auto</button>
+                {micTest?.suggested_tuning && (
+                  <button className="secondary" onClick={() => setMicTuning(normalizeMicTuning(micTest.suggested_tuning ?? undefined))}>
+                    Apply Suggested
+                  </button>
+                )}
+              </div>
+              {micTest?.suggested_tuning?.reason && <p className="tool-note">{micTest.suggested_tuning.reason}</p>}
+            </div>
+            {deviceNotice && <p className={`tool-note ${missingServerDevice ? "warning-text" : ""}`} role="status">{deviceNotice}</p>}
             <div className={`mic-test-card ${micTestTone}`} aria-label="Microphone check">
               <div>
                 <strong>{micTest?.recommendation.title ?? "Mic check"}</strong>
@@ -1743,7 +1799,6 @@ export function App() {
               ) : null}
             </div>
             <div className="button-row">
-              <button className="secondary" onClick={refreshDevices}>Refresh</button>
               <button className="secondary" onClick={testMicrophone} disabled={micTestBusy || audioSource !== "server_device" || missingServerDevice}>
                 {micTestBusy ? "Testing..." : "Test Mic"}
               </button>
@@ -2922,6 +2977,40 @@ function defaultAudioSource(): AudioSource {
     return "fixture";
   }
   return "server_device";
+}
+
+function defaultMicTuning(): MicTuning {
+  return {
+    auto_level: true,
+    input_gain_db: 0,
+    speech_sensitivity: "normal",
+  };
+}
+
+function loadMicTuning(): MicTuning {
+  if (typeof window === "undefined") {
+    return defaultMicTuning();
+  }
+  try {
+    const stored = window.localStorage.getItem(MIC_TUNING_STORAGE_KEY);
+    return normalizeMicTuning(stored ? JSON.parse(stored) : undefined);
+  } catch {
+    return defaultMicTuning();
+  }
+}
+
+function normalizeMicTuning(value?: Partial<MicTuning> | null): MicTuning {
+  const sensitivity = value?.speech_sensitivity;
+  const inputGain = Number(value?.input_gain_db ?? 0);
+  return {
+    auto_level: value?.auto_level ?? true,
+    input_gain_db: Math.max(-12, Math.min(24, Number.isFinite(inputGain) ? inputGain : 0)),
+    speech_sensitivity: sensitivity === "quiet" || sensitivity === "noisy" ? sensitivity : "normal",
+  };
+}
+
+function capitalize(value: string): string {
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
 }
 
 function isLocalBrowserHost(host: string): boolean {

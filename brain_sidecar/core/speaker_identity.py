@@ -24,6 +24,29 @@ DEFAULT_SELF_THRESHOLD = 0.82
 DEFAULT_CLUSTER_THRESHOLD = 0.72
 MIN_SELF_MARGIN = 0.04
 MIN_ENROLLMENT_PAIR_SCORE = 0.52
+SPEECH_SENSITIVITY_PROFILES: dict[str, dict[str, float]] = {
+    "quiet": {
+        "whole_rms_min": 0.004,
+        "low_volume_rms": 0.004,
+        "threshold_min": 0.0035,
+        "dynamic_floor": 0.0009,
+        "noise_multiplier": 0.85,
+    },
+    "normal": {
+        "whole_rms_min": 0.008,
+        "low_volume_rms": 0.008,
+        "threshold_min": 0.006,
+        "dynamic_floor": 0.0015,
+        "noise_multiplier": 0.95,
+    },
+    "noisy": {
+        "whole_rms_min": 0.012,
+        "low_volume_rms": 0.012,
+        "threshold_min": 0.009,
+        "dynamic_floor": 0.0025,
+        "noise_multiplier": 1.15,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -327,7 +350,16 @@ def confidence_from_score(score: float, threshold: float) -> float:
     return round(min(0.99, 0.86 + ((score - threshold) / room) * 0.13), 4)
 
 
-def analyze_pcm16(pcm: bytes, sample_rate: int = SPEECH_SAMPLE_RATE) -> AudioQuality:
+def _speech_sensitivity_profile(speech_sensitivity: str) -> dict[str, float]:
+    return SPEECH_SENSITIVITY_PROFILES.get(str(speech_sensitivity or "").strip().lower(), SPEECH_SENSITIVITY_PROFILES["normal"])
+
+
+def analyze_pcm16(
+    pcm: bytes,
+    sample_rate: int = SPEECH_SAMPLE_RATE,
+    speech_sensitivity: str = "normal",
+) -> AudioQuality:
+    profile = _speech_sensitivity_profile(speech_sensitivity)
     samples = pcm16_to_float32(pcm)
     duration_seconds = float(samples.size / sample_rate) if sample_rate else 0.0
     if samples.size == 0:
@@ -337,7 +369,7 @@ def analyze_pcm16(pcm: bytes, sample_rate: int = SPEECH_SAMPLE_RATE) -> AudioQua
     peak = float(np.max(abs_samples))
     rms = float(np.sqrt(np.mean(samples * samples)))
     clipping_fraction = float(np.mean(abs_samples >= 0.98))
-    regions = energy_speech_regions(samples, sample_rate)
+    regions = energy_speech_regions(samples, sample_rate, speech_sensitivity=speech_sensitivity)
     usable = sum((end - start) / sample_rate for start, end in regions)
     speech_fraction = usable / duration_seconds if duration_seconds > 0 else 0.0
 
@@ -346,7 +378,7 @@ def analyze_pcm16(pcm: bytes, sample_rate: int = SPEECH_SAMPLE_RATE) -> AudioQua
         issues.append("too_short")
     if usable < 0.5:
         issues.append("too_little_speech")
-    if rms < 0.008:
+    if rms < profile["low_volume_rms"]:
         issues.append("very_low_volume")
     if peak > 0.98 or clipping_fraction > 0.01:
         issues.append("clipping")
@@ -376,10 +408,15 @@ def analyze_pcm16(pcm: bytes, sample_rate: int = SPEECH_SAMPLE_RATE) -> AudioQua
     )
 
 
-def energy_speech_regions(samples: np.ndarray, sample_rate: int) -> list[tuple[int, int]]:
+def energy_speech_regions(
+    samples: np.ndarray,
+    sample_rate: int,
+    speech_sensitivity: str = "normal",
+) -> list[tuple[int, int]]:
+    profile = _speech_sensitivity_profile(speech_sensitivity)
     frame_size = max(1, int(sample_rate * 0.03))
     whole_rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
-    if whole_rms < 0.008:
+    if whole_rms < profile["whole_rms_min"]:
         return []
     if samples.size < frame_size:
         return [(0, int(samples.size))]
@@ -395,10 +432,13 @@ def energy_speech_regions(samples: np.ndarray, sample_rate: int) -> list[tuple[i
     arr = np.asarray(frame_rms, dtype=np.float32)
     noise_floor = float(np.percentile(arr, 20))
     speech_level = float(np.percentile(arr, 90))
-    dynamic_threshold = noise_floor + max(0.0015, (speech_level - noise_floor) * 0.25)
+    dynamic_threshold = noise_floor + max(profile["dynamic_floor"], (speech_level - noise_floor) * 0.25)
     # Continuous enrollment speech often has no true silence floor. Avoid using
     # the median as a threshold; it turns steady speech into a few loud peaks.
-    threshold = max(0.006, min(dynamic_threshold, noise_floor * 0.95))
+    threshold = max(
+        profile["threshold_min"],
+        min(dynamic_threshold, noise_floor * profile["noise_multiplier"]),
+    )
     active = arr >= threshold
     regions: list[tuple[int, int]] = []
     start: int | None = None
@@ -523,11 +563,12 @@ class SpeakerIdentityService:
         *,
         sample_rate: int = SPEECH_SAMPLE_RATE,
         source: str = "enrollment",
+        speech_sensitivity: str = "normal",
     ) -> dict[str, Any]:
         enrollment = self.storage.speaker_enrollment(enrollment_id)
         if enrollment["profile_id"] != SELF_PROFILE_ID:
             raise ValueError("Only the self speaker profile can be trained from this flow.")
-        quality = analyze_pcm16(pcm, sample_rate)
+        quality = analyze_pcm16(pcm, sample_rate, speech_sensitivity=speech_sensitivity)
         if quality.usable_speech_seconds < 0.5:
             raise ValueError("Not enough usable speech was detected. Record a single-speaker sample again.")
         if "clipping" in quality.issues:

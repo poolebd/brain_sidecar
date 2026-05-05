@@ -45,16 +45,16 @@ type MockDevice = {
   driver: string;
   ffmpeg_input: string;
   hardware_id: string;
-  preferred: boolean;
+  healthy: boolean;
+  score: number;
+  selection_reason: string;
 };
 
 type MockDeviceResponse = {
   devices: MockDevice[];
-  preferred_device_configured?: boolean;
-  preferred_device_available?: boolean;
-  preferred_device_id?: string | null;
-  preferred_device_match?: string | null;
-  preferred_device_label?: string | null;
+  selected_device?: MockDevice | null;
+  server_mic_available?: boolean;
+  selection_reason?: string;
 };
 
 type MockApiOptions = {
@@ -69,7 +69,9 @@ export const mockDevices: MockDevice[] = [
     driver: "alsa",
     ffmpeg_input: "plughw:1,0",
     hardware_id: "1111:2222",
-    preferred: true,
+    healthy: true,
+    score: 95,
+    selection_reason: "USB capture",
   },
   {
     id: "desk-array",
@@ -77,7 +79,9 @@ export const mockDevices: MockDevice[] = [
     driver: "alsa",
     ffmpeg_input: "plughw:2,0",
     hardware_id: "3333:4444",
-    preferred: false,
+    healthy: true,
+    score: 78,
+    selection_reason: "USB capture",
   },
 ];
 
@@ -149,9 +153,9 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
   const testModeEnabled = options.testModeEnabled ?? false;
   const devicesResponse: MockDeviceResponse = options.devicesResponse ?? {
     devices: mockDevices,
-    preferred_device_configured: true,
-    preferred_device_available: true,
-    preferred_device_label: mockDevices[0].label,
+    selected_device: mockDevices[0],
+    server_mic_available: true,
+    selection_reason: "USB capture",
   };
   let speakerStatus: MockSpeakerStatus = {
     profile: {
@@ -265,6 +269,17 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
           status: "good",
           title: "Mic check looks good",
           detail: "Use this setup for speaker samples: one voice, normal meeting distance, steady speech.",
+        },
+        mic_tuning: {
+          auto_level: true,
+          input_gain_db: 0,
+          speech_sensitivity: "normal",
+        },
+        suggested_tuning: {
+          auto_level: true,
+          input_gain_db: 0,
+          speech_sensitivity: "normal",
+          reason: "Current mic tuning looks usable.",
         },
         playback_audio: {
           mime_type: "audio/wav",

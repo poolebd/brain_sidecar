@@ -11,13 +11,15 @@ def test_list_audio_devices_uses_alsa_plughw_and_prefers_usb(monkeypatch) -> Non
         ]
     )
     monkeypatch.setattr(devices, "_run", lambda args: output if args == ["arecord", "-l"] else "")
+    monkeypatch.setattr(devices, "_read_text", lambda path: "0c76:161e\n" if "card2" in str(path) else "")
 
     listed = devices.list_audio_devices()
 
     assert [device.ffmpeg_input for device in listed] == ["plughw:2,0", "plughw:0,0"]
     assert listed[0].id == "alsa:plughw:2,0"
     assert "USB PnP Audio Device" in listed[0].label
-    assert listed[0].to_dict()["preferred"] is False
+    assert listed[0].to_dict()["healthy"] is True
+    assert listed[0].score > listed[1].score
 
 
 def test_list_audio_devices_ignores_pulse_pipewire_rows(monkeypatch) -> None:
@@ -29,6 +31,7 @@ def test_list_audio_devices_ignores_pulse_pipewire_rows(monkeypatch) -> None:
         return ""
 
     monkeypatch.setattr(devices, "_run", fake_run)
+    monkeypatch.setattr(devices, "_read_text", lambda path: "0c76:161e\n")
 
     listed = devices.list_audio_devices()
 
@@ -36,7 +39,7 @@ def test_list_audio_devices_ignores_pulse_pipewire_rows(monkeypatch) -> None:
     assert listed[0].driver == "alsa"
 
 
-def test_list_audio_devices_prefers_configured_usb_match_and_label(monkeypatch) -> None:
+def test_list_audio_devices_marks_probe_failures_and_keeps_best_healthy_first(monkeypatch) -> None:
     output = "\n".join(
         [
             "card 0: Webcam [Other USB Camera], device 0: USB Audio [USB Audio]",
@@ -53,25 +56,33 @@ def test_list_audio_devices_prefers_configured_usb_match_and_label(monkeypatch) 
 
     monkeypatch.setattr(devices, "_run", lambda args: output if args == ["arecord", "-l"] else "")
     monkeypatch.setattr(devices, "_read_text", fake_read)
+    monkeypatch.setattr(devices, "_probe_capture", lambda ffmpeg_input: ffmpeg_input == "plughw:2,0")
 
-    listed = devices.list_audio_devices(
-        preferred_device_match="0c76:161e",
-        preferred_device_label="Anker PowerConf C200 microphone",
-    )
+    listed = devices.list_audio_devices(probe=True)
 
     assert listed[0].id == "alsa:plughw:2,0"
     assert listed[0].hardware_id == "0c76:161e"
-    assert listed[0].preferred is True
-    assert listed[0].label.startswith("Anker PowerConf C200 microphone")
+    assert listed[0].healthy is True
+    assert "USB capture" in listed[0].selection_reason
     assert listed[0].to_dict()["hardware_id"] == "0c76:161e"
+    assert listed[1].healthy is False
+    assert "probe failed" in listed[1].selection_reason
 
 
-def test_find_device_does_not_fall_back_when_preferred_mic_is_missing(monkeypatch) -> None:
-    output = "card 2: Device [USB PnP Audio Device], device 0: USB Audio [USB Audio]"
+def test_find_device_autoselects_best_healthy_server_mic(monkeypatch) -> None:
+    output = "\n".join(
+        [
+            "card 0: PCH [HDA Intel PCH], device 0: ALC287 Analog [ALC287 Analog]",
+            "card 2: Device [USB PnP Audio Device], device 0: USB Audio [USB Audio]",
+        ]
+    )
     monkeypatch.setattr(devices, "_run", lambda args: output if args == ["arecord", "-l"] else "")
     monkeypatch.setattr(devices, "_read_text", lambda path: "0c76:161e\n")
+    monkeypatch.setattr(devices, "_probe_capture", lambda ffmpeg_input: ffmpeg_input != "plughw:2,0")
 
-    found = devices.find_device(None, preferred_device_match="291a:3369")
+    found = devices.find_device(None, probe=True)
 
-    assert found is None
-    assert devices.find_device("alsa:plughw:2,0", preferred_device_match="291a:3369") is not None
+    assert found is not None
+    assert found.id == "alsa:plughw:0,0"
+    assert devices.find_device("alsa:plughw:2,0", probe=True) is None
+    assert devices.find_device("alsa:plughw:2,0", probe=False) is not None

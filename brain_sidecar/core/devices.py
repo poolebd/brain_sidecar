@@ -13,16 +13,20 @@ class DeviceInfo:
     driver: str
     ffmpeg_input: str
     hardware_id: str = ""
-    preferred: bool = False
+    healthy: bool = True
+    score: int = 0
+    selection_reason: str = ""
 
-    def to_dict(self) -> dict[str, str | bool]:
+    def to_dict(self) -> dict[str, str | bool | int]:
         return {
             "id": self.id,
             "label": self.label,
             "driver": self.driver,
             "ffmpeg_input": self.ffmpeg_input,
             "hardware_id": self.hardware_id,
-            "preferred": self.preferred,
+            "healthy": self.healthy,
+            "score": self.score,
+            "selection_reason": self.selection_reason,
         }
 
 
@@ -34,12 +38,7 @@ def _run(args: list[str]) -> str:
     return (result.stdout or "") + (result.stderr or "")
 
 
-def list_audio_devices(
-    *,
-    preferred_device_id: str | None = None,
-    preferred_device_match: str | None = None,
-    preferred_device_label: str | None = None,
-) -> list[DeviceInfo]:
+def list_audio_devices(*, probe: bool = False) -> list[DeviceInfo]:
     devices: dict[str, DeviceInfo] = {}
 
     for line in _run(["arecord", "-l"]).splitlines():
@@ -51,50 +50,34 @@ def list_audio_devices(
         device_id = f"alsa:{ffmpeg_input}"
         hardware_id = _alsa_card_hardware_id(card)
         base_label = f"ALSA {card_name.strip()} / {device_name.strip()}"
-        preferred = _matches_preference(
-            device_id=device_id,
-            label=base_label,
-            ffmpeg_input=ffmpeg_input,
-            hardware_id=hardware_id,
-            preferred_device_id=preferred_device_id,
-            preferred_device_match=preferred_device_match,
-        )
+        score, reason = _score_capture_device(base_label, hardware_id, ffmpeg_input)
+        healthy = _probe_capture(ffmpeg_input) if probe else True
+        if not healthy:
+            reason = f"{reason}; probe failed"
         devices[device_id] = DeviceInfo(
             id=device_id,
-            label=_display_label(base_label, preferred=preferred, preferred_device_label=preferred_device_label),
+            label=base_label,
             driver="alsa",
             ffmpeg_input=ffmpeg_input,
             hardware_id=hardware_id,
-            preferred=preferred,
+            healthy=healthy,
+            score=score,
+            selection_reason=reason,
         )
 
     return sorted(devices.values(), key=_device_sort_key)
 
 
-def _device_sort_key(device: DeviceInfo) -> tuple[int, str]:
+def _device_sort_key(device: DeviceInfo) -> tuple[int, int, str]:
     label = device.label.lower()
-    if device.preferred:
-        return (0, label)
-    return (1 if "usb" in label or device.hardware_id else 2, label)
+    return (0 if device.healthy else 1, -device.score, label)
 
 
-def find_device(
-    device_id: str | None,
-    *,
-    preferred_device_id: str | None = None,
-    preferred_device_match: str | None = None,
-    preferred_device_label: str | None = None,
-) -> DeviceInfo | None:
-    devices = list_audio_devices(
-        preferred_device_id=preferred_device_id,
-        preferred_device_match=preferred_device_match,
-        preferred_device_label=preferred_device_label,
-    )
+def find_device(device_id: str | None, *, probe: bool = True) -> DeviceInfo | None:
+    devices = list_audio_devices(probe=probe)
     if device_id is None:
-        if preferred_device_id or preferred_device_match:
-            return next((device for device in devices if device.preferred), None)
-        return devices[0] if devices else None
-    return next((device for device in devices if device.id == device_id), None)
+        return next((device for device in devices if device.healthy), None)
+    return next((device for device in devices if device.id == device_id and device.healthy), None)
 
 
 def _alsa_card_hardware_id(card: str) -> str:
@@ -108,26 +91,56 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _matches_preference(
-    *,
-    device_id: str,
-    label: str,
-    ffmpeg_input: str,
-    hardware_id: str,
-    preferred_device_id: str | None,
-    preferred_device_match: str | None,
-) -> bool:
-    if preferred_device_id and device_id == preferred_device_id.strip():
-        return True
-    needle = (preferred_device_match or "").strip().lower()
-    if not needle:
+def _score_capture_device(label: str, hardware_id: str, ffmpeg_input: str) -> tuple[int, str]:
+    haystack = " ".join([label, hardware_id, ffmpeg_input]).lower()
+    score = 10
+    reasons: list[str] = []
+    if hardware_id:
+        score += 45
+        reasons.append("USB hardware id")
+    if "usb" in haystack:
+        score += 30
+        reasons.append("USB capture")
+    if any(token in haystack for token in ("mic", "microphone", "audio")):
+        score += 10
+        reasons.append("capture input")
+    if any(token in haystack for token in ("webcam", "camera")):
+        score -= 6
+        reasons.append("camera microphone")
+    if any(token in haystack for token in ("pch", "analog", "hdmi", "monitor", "loopback", "output")):
+        score -= 35
+        reasons.append("lower priority built-in/output device")
+    reason = ", ".join(reasons) if reasons else "available ALSA capture device"
+    return score, reason
+
+
+def _probe_capture(ffmpeg_input: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "alsa",
+                "-i",
+                ffmpeg_input,
+                "-t",
+                "0.2",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-f",
+                "null",
+                "-",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
-    haystack = " ".join([device_id, label, ffmpeg_input, hardware_id]).lower()
-    return needle in haystack
-
-
-def _display_label(base_label: str, *, preferred: bool, preferred_device_label: str | None) -> str:
-    clean_label = (preferred_device_label or "").strip()
-    if preferred and clean_label:
-        return f"{clean_label} ({base_label})"
-    return base_label
+    return result.returncode == 0

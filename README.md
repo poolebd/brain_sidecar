@@ -83,9 +83,6 @@ Useful knobs:
 - `BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS`: audio window before ASR emits a transcript, default `3.4`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS`: overlap between ASR windows, default `0.8`.
 - `BRAIN_SIDECAR_AUDIO_CHUNK_MS`: capture chunk size, default `250`.
-- `BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_ID`: optional exact ALSA device id such as `alsa:plughw:2,0` to prefer when no UI device is selected.
-- `BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_MATCH`: optional substring matched against device id, label, ffmpeg input, or USB hardware id such as `291a:3369`; useful when ALSA card numbers move.
-- `BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_LABEL`: optional display label for the preferred device, for example `Anker PowerConf C200 microphone`.
 - `BRAIN_SIDECAR_ASR_NO_SPEECH_THRESHOLD`: reject segments Faster-Whisper marks as likely silence, default `0.6`.
 - `BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD`: reject low-confidence ASR segments, default `-1.0`.
 - `BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD`: reject repetitive/compressed ASR spans, default `2.4`.
@@ -140,10 +137,13 @@ a quick meeting glance:
 - Tools keeps operational status, GPU details, indexing, and speaker identity
   controls away from the transcript.
 
-Capture is USB-only in the product path. `server_device` records from the USB
-microphone attached to this computer, `fixture` is available only in explicit
-test mode, and browser microphone streaming is rejected to keep capture local to
-the trusted machine and avoid remote/browser mic drift.
+Capture is server-mic-only in the product path. `server_device` records from the
+best healthy ALSA capture device on this computer, using `plughw` so mono USB
+mics can open cleanly. The UI does not pin a particular brand or ALSA card; it
+shows the auto-selected server mic plus Guided Auto controls for input boost,
+speech sensitivity, reset, and mic-test playback. `fixture` is available only in
+explicit test mode, and browser microphone streaming is rejected to keep capture
+local to the trusted machine and avoid remote/browser mic drift.
 
 ## Event Contract
 

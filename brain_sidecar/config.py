@@ -49,9 +49,6 @@ class Settings:
     ollama_embed_model: str
     audio_sample_rate: int = 16_000
     audio_chunk_ms: int = 250
-    preferred_audio_device_id: str | None = None
-    preferred_audio_device_match: str | None = None
-    preferred_audio_device_label: str | None = None
     transcription_window_seconds: float = 3.4
     transcription_overlap_seconds: float = 0.8
     transcription_queue_size: int = 8
@@ -119,9 +116,6 @@ def load_settings() -> Settings:
         ollama_chat_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", "phi3:mini"),
         ollama_embed_model=_env("BRAIN_SIDECAR_OLLAMA_EMBED_MODEL", "embeddinggemma"),
         audio_chunk_ms=max(50, int(_env("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250"))),
-        preferred_audio_device_id=os.environ.get("BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_ID") or None,
-        preferred_audio_device_match=os.environ.get("BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_MATCH") or None,
-        preferred_audio_device_label=os.environ.get("BRAIN_SIDECAR_PREFERRED_AUDIO_DEVICE_LABEL") or None,
         transcription_window_seconds=transcription_window_seconds,
         transcription_overlap_seconds=transcription_overlap_seconds,
         transcription_queue_size=max(1, int(_env("BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE", "8"))),

@@ -1222,6 +1222,84 @@ time {
   padding: 0.72rem;
 }
 
+.server-mic-card {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-2) 78%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0.72rem;
+}
+
+.server-mic-card.ready {
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+}
+
+.server-mic-card.warning {
+  border-color: color-mix(in srgb, var(--accent-contrast) 58%, var(--border));
+}
+
+.server-mic-card > div {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+.server-mic-card strong {
+  font-size: 0.92rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.server-mic-card span {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.mic-tuning {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.tuning-header,
+.toggle-row {
+  align-items: center;
+  display: flex;
+  gap: 0.6rem;
+}
+
+.tuning-header {
+  justify-content: space-between;
+}
+
+.toggle-row {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.toggle-row input {
+  accent-color: var(--accent);
+}
+
+.mic-tuning input[type="range"] {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+.mic-tuning small {
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.sensitivity-control {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .tool-note {
   color: var(--text-muted);
   font-size: 0.86rem;

@@ -13,10 +13,10 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.locator("html")).toHaveAttribute("data-theme", "midnight");
   await expect(page.getByRole("search")).toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
-  await expect(page.getByLabel("Audio source")).toHaveValue("server_device");
-  await expect(page.getByLabel("Audio source")).not.toContainText("browser");
-  await expect(page.getByLabel("USB microphone")).toHaveValue("usb-blue");
-  await expect(page.getByLabel("USB microphone").locator("option:checked")).toHaveText("Blue Yeti USB Microphone");
+  await expect(page.getByLabel("Audio source")).toHaveCount(0);
+  await expect(page.getByLabel("USB microphone")).toHaveCount(0);
+  await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
+  await expect(page.getByLabel("Guided mic tuning")).toContainText("Auto Level");
   await expect(page.getByText("NVIDIA RTX 4090 · 6144/24576 MB")).toBeVisible();
   await expect(page.getByLabel("VRAM usage 25%")).toBeVisible();
   await expect(page.getByText("CUDA ready")).toBeVisible();
@@ -34,7 +34,16 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
 
   await page.getByRole("button", { name: "Start Listening" }).click();
   const request = await startRequest;
-  expect(JSON.parse(request.postData() ?? "{}").save_transcript).toBe(false);
+  expect(JSON.parse(request.postData() ?? "{}")).toMatchObject({
+    device_id: null,
+    audio_source: "server_device",
+    save_transcript: false,
+    mic_tuning: {
+      auto_level: true,
+      input_gain_db: 0,
+      speech_sensitivity: "normal",
+    },
+  });
   await expect(page.getByLabel("Session save mode status")).toContainText("Listening");
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
 
@@ -176,15 +185,22 @@ test("shows speaker identity controls instead of legacy ASR voice training", asy
   await expect(speaker.getByLabel("Speaker training steps")).toContainText("1 Start");
   await expect(page.getByRole("region", { name: "Voice profile" })).toHaveCount(0);
   await expect(page.getByText("ASR guidance preview")).toHaveCount(0);
+  await expect(page.getByLabel("Guided mic tuning")).toContainText("Input Boost");
+  await page.getByLabel("Speech Sensitivity").getByRole("button", { name: "Quiet" }).click();
   const micRequest = page.waitForRequest((request) => (
     request.method() === "POST" && request.url().endsWith("/api/microphone/test")
   ));
   await page.getByRole("button", { name: "Test Mic" }).click();
   expect(JSON.parse((await micRequest).postData() ?? "{}")).toMatchObject({
-    device_id: "usb-blue",
+    device_id: null,
     audio_source: "server_device",
     fixture_wav: null,
     seconds: 3,
+    mic_tuning: {
+      auto_level: true,
+      input_gain_db: 0,
+      speech_sensitivity: "quiet",
+    },
   });
   await expect(page.getByLabel("Microphone check")).toContainText("Mic check looks good");
   await expect(page.getByLabel("Microphone check")).toContainText("2.6s speech");
@@ -211,9 +227,14 @@ test("shows speaker identity controls instead of legacy ASR voice training", asy
   ));
   await speaker.getByRole("button", { name: "Record 8s Sample" }).click();
   expect(JSON.parse((await recordRequest).postData() ?? "{}")).toMatchObject({
-    device_id: "usb-blue",
+    device_id: null,
     audio_source: "server_device",
     fixture_wav: null,
+    mic_tuning: {
+      auto_level: true,
+      input_gain_db: 0,
+      speech_sensitivity: "normal",
+    },
   });
   await expect(speaker).toContainText("7.2s");
 });
@@ -496,11 +517,11 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
   await expect(testPanel.getByLabel("Recorded audio report")).toContainText("report.json");
 });
 
-test("locks live capture to the local USB microphone", async ({ page }) => {
+test("locks live capture to the auto-selected server microphone", async ({ page }) => {
   await page.getByRole("button", { name: "Tools" }).click();
   const drawer = page.getByLabel("Tools drawer");
-  await expect(drawer.getByLabel("Audio source")).toHaveValue("server_device");
-  await expect(drawer.getByLabel("Audio source").locator("option")).toHaveText(["Server USB microphone"]);
+  await expect(drawer.getByLabel("Audio source")).toHaveCount(0);
+  await expect(drawer.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
   await expect(drawer.getByLabel("Browser microphone status")).toHaveCount(0);
 
   const startRequest = page.waitForRequest((request) => (
@@ -510,29 +531,34 @@ test("locks live capture to the local USB microphone", async ({ page }) => {
   const request = await startRequest;
 
   expect(JSON.parse(request.postData() ?? "{}")).toMatchObject({
-    device_id: "usb-blue",
+    device_id: null,
     fixture_wav: null,
     audio_source: "server_device",
+    mic_tuning: {
+      auto_level: true,
+      input_gain_db: 0,
+      speech_sensitivity: "normal",
+    },
   });
 });
 
-test("blocks capture and speaker training when the preferred USB microphone is missing", async ({ page }) => {
+test("blocks capture and speaker training when no healthy server microphone is available", async ({ page }) => {
   await page.unroute("http://127.0.0.1:8765/api/**");
   await mockApi(page, {
     devicesResponse: {
-      devices: [{ ...mockDevices[1], preferred: false }],
-      preferred_device_configured: true,
-      preferred_device_available: false,
-      preferred_device_match: "291a:3369",
-      preferred_device_label: "Anker PowerConf C200 microphone",
+      devices: [{ ...mockDevices[1], healthy: false, selection_reason: "probe failed" }],
+      selected_device: null,
+      server_mic_available: false,
+      selection_reason: "No healthy server microphone detected.",
     },
   });
   await page.reload();
   await page.getByRole("button", { name: "Tools" }).click();
 
   const drawer = page.getByLabel("Tools drawer");
-  await expect(drawer.getByLabel("USB microphone")).toHaveValue("");
-  await expect(drawer.getByRole("status")).toContainText("Anker PowerConf C200 microphone is not connected");
+  await expect(drawer.getByLabel("USB microphone")).toHaveCount(0);
+  await expect(drawer.getByLabel("Server microphone")).toContainText("No healthy server microphone detected");
+  await expect(drawer.getByRole("status")).toContainText("No healthy server microphone detected");
   await expect(drawer.getByRole("button", { name: "Test Mic" })).toBeDisabled();
   await expect(drawer.getByRole("button", { name: "Start Listening" })).toBeDisabled();
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeDisabled();
@@ -625,7 +651,7 @@ test("keeps core capture controls usable on a phone viewport", async ({ page }) 
 
   await expect(page.getByRole("heading", { name: "Live transcript" })).toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
-  await page.getByLabel("USB microphone").selectOption("desk-array");
-  await expect(page.getByLabel("USB microphone")).toHaveValue("desk-array");
+  await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
+  await expect(page.getByLabel("Guided mic tuning")).toBeVisible();
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeVisible();
 });

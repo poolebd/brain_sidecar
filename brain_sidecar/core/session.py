@@ -134,6 +134,7 @@ class SessionManager:
         fixture_wav: Path | None = None,
         audio_source: str = "server_device",
         save_transcript: bool = True,
+        mic_tuning: dict[str, object] | None = None,
     ) -> None:
         async with self._lock:
             if session_id in self._active:
@@ -143,7 +144,12 @@ class SessionManager:
                 await asyncio.to_thread(prepare_asr_gpu, self.settings)
                 await self._publish_audio_status(session_id, "loading_asr")
             await self.transcriber.load()
-            capture = self._build_capture(device_id=device_id, fixture_wav=fixture_wav, audio_source=audio_source)
+            capture = self._build_capture(
+                device_id=device_id,
+                fixture_wav=fixture_wav,
+                audio_source=audio_source,
+                mic_tuning=mic_tuning,
+            )
             window_queue: asyncio.Queue[AudioWindow] = asyncio.Queue(maxsize=self.settings.transcription_queue_size)
             postprocess_queue: asyncio.Queue[SegmentBatch] = asyncio.Queue(maxsize=self.settings.postprocess_queue_size)
             web_context_queue: asyncio.Queue[WebContextCandidate] = asyncio.Queue(maxsize=4)
@@ -413,11 +419,14 @@ class SessionManager:
         device_id: str | None = None,
         fixture_wav: Path | None = None,
         audio_source: str = "server_device",
+        mic_tuning: dict[str, object] | None = None,
     ) -> dict:
+        tuning = normalize_mic_tuning(mic_tuning)
         capture = self._build_capture(
             device_id=device_id,
             fixture_wav=fixture_wav,
             audio_source=audio_source,
+            mic_tuning=tuning,
         )
         try:
             pcm = await asyncio.wait_for(
@@ -430,6 +439,7 @@ class SessionManager:
             enrollment_id,
             pcm,
             sample_rate=self.settings.audio_sample_rate,
+            speech_sensitivity=str(tuning["speech_sensitivity"]),
         )
         await self._publish_speaker_profile_update(payload["profile"])
         return payload
@@ -441,13 +451,24 @@ class SessionManager:
         fixture_wav: Path | None = None,
         audio_source: str = "server_device",
         seconds: float = 3.0,
+        mic_tuning: dict[str, object] | None = None,
     ) -> dict:
-        capture = self._build_capture(device_id=device_id, fixture_wav=fixture_wav, audio_source=audio_source)
+        tuning = normalize_mic_tuning(mic_tuning)
+        capture = self._build_capture(
+            device_id=device_id,
+            fixture_wav=fixture_wav,
+            audio_source=audio_source,
+            mic_tuning=tuning,
+        )
         pcm = await asyncio.wait_for(
             self._record_pcm(capture, seconds=max(1.0, min(8.0, seconds))),
             timeout=max(4.0, min(8.0, seconds) + 8.0),
         )
-        quality = analyze_pcm16(pcm, self.settings.audio_sample_rate)
+        quality = analyze_pcm16(
+            pcm,
+            self.settings.audio_sample_rate,
+            speech_sensitivity=str(tuning["speech_sensitivity"]),
+        )
         device = capture.device.to_dict() if isinstance(capture, FFmpegAudioCapture) else None
         recommendation = microphone_recommendation(quality.to_dict())
         return {
@@ -455,6 +476,8 @@ class SessionManager:
             "audio_source": audio_source,
             "quality": quality.to_dict(),
             "recommendation": recommendation,
+            "mic_tuning": tuning,
+            "suggested_tuning": suggest_microphone_tuning(quality.to_dict(), tuning),
             "playback_audio": pcm16_wav_preview(pcm, self.settings.audio_sample_rate),
             "raw_audio_retained": False,
         }
@@ -493,9 +516,17 @@ class SessionManager:
         await self._publish_speaker_profile_update(payload["profile"])
         return payload
 
-    def _build_capture(self, *, device_id: str | None, fixture_wav: Path | None, audio_source: str) -> AudioCapture:
+    def _build_capture(
+        self,
+        *,
+        device_id: str | None,
+        fixture_wav: Path | None,
+        audio_source: str,
+        mic_tuning: dict[str, object] | None = None,
+    ) -> AudioCapture:
+        tuning = normalize_mic_tuning(mic_tuning)
         if audio_source == "browser_stream":
-            raise RuntimeError("Browser microphone capture has been removed. Use the server_device USB microphone.")
+            raise RuntimeError("Browser microphone capture has been removed. Use server_device for capture from the local server microphone.")
         if audio_source not in {"server_device", "fixture"}:
             raise RuntimeError(f"Unsupported audio source: {audio_source}")
         if fixture_wav is not None or audio_source == "fixture":
@@ -508,18 +539,14 @@ class SessionManager:
                 sample_rate=self.settings.audio_sample_rate,
                 chunk_ms=self.settings.audio_chunk_ms,
             )
-        device = find_device(
-            device_id,
-            preferred_device_id=self.settings.preferred_audio_device_id,
-            preferred_device_match=self.settings.preferred_audio_device_match,
-            preferred_device_label=self.settings.preferred_audio_device_label,
-        )
+        device = find_device(device_id, probe=True)
         if device is None:
-            raise RuntimeError("No capture device found. Connect a USB microphone or provide fixture_wav.")
+            raise RuntimeError("No healthy server microphone found. Connect a microphone, then refresh.")
         return FFmpegAudioCapture(
             device,
             sample_rate=self.settings.audio_sample_rate,
             chunk_ms=self.settings.audio_chunk_ms,
+            input_gain_db=float(tuning["input_gain_db"]),
         )
 
     async def _record_enrollment_pcm(self, capture: AudioCapture) -> bytes:
@@ -1350,7 +1377,7 @@ def microphone_recommendation(quality: dict) -> dict:
         return {
             "status": "too_quiet",
             "title": "Not enough speech detected",
-            "detail": "Move closer, select the Anker mic, and speak normally for the whole test.",
+            "detail": "Move closer, raise input boost, or switch sensitivity to Quiet, then speak normally for the whole test.",
         }
     if score < 0.55:
         return {
@@ -1362,6 +1389,55 @@ def microphone_recommendation(quality: dict) -> dict:
         "status": "good",
         "title": "Mic check looks good",
         "detail": "Use this setup for speaker samples: one voice, normal meeting distance, steady speech.",
+    }
+
+
+def normalize_mic_tuning(tuning: dict[str, object] | None) -> dict[str, object]:
+    tuning = tuning or {}
+    sensitivity = str(tuning.get("speech_sensitivity") or "normal").strip().lower()
+    if sensitivity not in {"quiet", "normal", "noisy"}:
+        sensitivity = "normal"
+    try:
+        input_gain_db = float(tuning.get("input_gain_db", 0.0))
+    except (TypeError, ValueError):
+        input_gain_db = 0.0
+    return {
+        "auto_level": bool(tuning.get("auto_level", True)),
+        "input_gain_db": round(max(-12.0, min(24.0, input_gain_db)), 1),
+        "speech_sensitivity": sensitivity,
+    }
+
+
+def suggest_microphone_tuning(quality: dict, current: dict[str, object] | None = None) -> dict[str, object]:
+    tuning = normalize_mic_tuning(current)
+    gain = float(tuning["input_gain_db"])
+    sensitivity = str(tuning["speech_sensitivity"])
+    usable = float(quality.get("usable_speech_seconds") or 0.0)
+    rms = float(quality.get("rms") or 0.0)
+    peak = float(quality.get("peak") or 0.0)
+    issues = set(quality.get("issues") or [])
+    reason = "Current mic tuning looks usable."
+
+    if "clipping" in issues or peak >= 0.98:
+        gain = max(-12.0, gain - 6.0)
+        reason = "The recording clipped, so auto level recommends lowering input boost."
+    elif usable < 1.5 or rms < 0.008:
+        gain = min(24.0, gain + 6.0)
+        if rms < 0.012:
+            sensitivity = "quiet"
+        reason = "Only a short stretch of speech was detected, so auto level recommends more boost and quieter-room sensitivity."
+    elif "too_much_silence" in issues and sensitivity != "quiet":
+        sensitivity = "quiet"
+        reason = "Speech was intermittent, so auto level recommends Quiet sensitivity."
+    elif "noisy" in issues and sensitivity != "noisy":
+        sensitivity = "noisy"
+        reason = "The mic check looked noisy, so auto level recommends Noisy sensitivity."
+
+    return {
+        "auto_level": bool(tuning["auto_level"]),
+        "input_gain_db": round(gain, 1),
+        "speech_sensitivity": sensitivity,
+        "reason": reason,
     }
 
 

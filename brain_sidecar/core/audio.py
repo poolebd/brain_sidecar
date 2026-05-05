@@ -21,16 +21,23 @@ class AudioCapture(ABC):
 
 
 class FFmpegAudioCapture(AudioCapture):
-    def __init__(self, device: DeviceInfo, sample_rate: int = 16_000, chunk_ms: int = 500) -> None:
+    def __init__(
+        self,
+        device: DeviceInfo,
+        sample_rate: int = 16_000,
+        chunk_ms: int = 500,
+        input_gain_db: float = 0.0,
+    ) -> None:
         self.device = device
         self.sample_rate = sample_rate
         self.chunk_ms = chunk_ms
+        self.input_gain_db = max(-12.0, min(24.0, float(input_gain_db)))
         self._process: subprocess.Popen[bytes] | None = None
         self._running = False
 
     def _args(self) -> list[str]:
         input_format = "pulse" if self.device.driver == "pulse" else "alsa"
-        return [
+        args = [
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
@@ -39,6 +46,10 @@ class FFmpegAudioCapture(AudioCapture):
             input_format,
             "-i",
             self.device.ffmpeg_input,
+        ]
+        if abs(self.input_gain_db) >= 0.05:
+            args.extend(["-af", f"volume={self.input_gain_db:.1f}dB"])
+        args.extend([
             "-ac",
             "1",
             "-ar",
@@ -46,7 +57,8 @@ class FFmpegAudioCapture(AudioCapture):
             "-f",
             "s16le",
             "pipe:1",
-        ]
+        ])
+        return args
 
     async def chunks(self) -> AsyncIterator[bytes]:
         bytes_per_chunk = int(self.sample_rate * 2 * (self.chunk_ms / 1000))
