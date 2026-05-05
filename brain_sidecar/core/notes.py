@@ -190,7 +190,7 @@ def parse_meeting_cards(
 
 
 def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSegment]) -> list[SidecarCard]:
-    cards: list[SidecarCard] = []
+    cards: list[SidecarCard] = heuristic_project_review_cards(session_id, recent_segments)
     for segment in recent_segments[-4:]:
         text = segment.text.strip()
         if not text:
@@ -253,7 +253,7 @@ def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSeg
                 )
             )
     risk_text = " ".join(segment.text for segment in recent_segments[-4:]).lower()
-    if any(term in risk_text for term in ["risk", "rollback", "failure", "blocked", "deadline", "dependency"]):
+    if any(term in risk_text for term in ["risk", "rollback", "blocked", "deadline", "dependency"]):
         cards.append(
             create_sidecar_card(
                 session_id=session_id,
@@ -271,7 +271,163 @@ def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSeg
                 evidence_quote=compact_text(" ".join(segment.text for segment in recent_segments[-4:]), limit=260),
             )
         )
-    return cards[:3]
+    return cards[:5]
+
+
+def heuristic_project_review_cards(session_id: str, recent_segments: list[TranscriptSegment]) -> list[SidecarCard]:
+    combined = " ".join(segment.text for segment in recent_segments)
+    clean = combined.lower()
+    cards: list[SidecarCard] = []
+    if "siemens" in clean and ("document" in clean or "documents" in clean) and "review" in clean:
+        selected = select_evidence_segments(recent_segments, ["siemens", "document", "documents", "review", "greg", "sunil"])
+        if not (
+            any("siemens" in segment.text.lower() for segment in selected)
+            and any("document" in segment.text.lower() and "review" in segment.text.lower() for segment in selected)
+        ):
+            selected = []
+    else:
+        selected = []
+    if selected:
+        cards.append(
+            heuristic_card(
+                session_id,
+                selected,
+                category="action",
+                title="Siemens document review",
+                body="Review the Siemens document.",
+                evidence_hint="siemens",
+                priority="high",
+            )
+        )
+    if "rfi" in clean and ("comment" in clean or "comments" in clean or "scope" in clean or "deviation" in clean):
+        selected = select_evidence_segments(recent_segments, ["rfi", "comment", "comments", "scope", "deviation", "deviations"])
+        cards.append(
+            heuristic_card(
+                session_id,
+                selected,
+                category="action",
+                title="RFI log review",
+                body="Review the RFI log.",
+                evidence_hint="rfi",
+                priority="normal",
+            )
+        )
+    if "monday" in clean and ("send" in clean or "comments" in clean or "target" in clean):
+        selected = select_evidence_segments(recent_segments, ["monday", "send", "comments", "target"])
+        cards.append(
+            heuristic_card(
+                session_id,
+                selected,
+                category="action",
+                title="Send by Monday",
+                body="Send by Monday.",
+                evidence_hint="monday",
+                priority="high",
+            )
+        )
+    if ("spec" in clean or "scope" in clean) and ("deviation" in clean or "deviations" in clean):
+        selected = select_evidence_segments(recent_segments, ["spec", "scope", "deviation", "deviations", "submitted"])
+        cards.append(
+            heuristic_card(
+                session_id,
+                selected,
+                category="question",
+                title="Spec deviation review",
+                body="Review the spec deviations.",
+                evidence_hint="deviation",
+                priority="normal",
+            )
+        )
+    names = [name for name in ["greg", "sunil", "kyle"] if name in clean]
+    if len(names) >= 2 and ("review" in clean or "reviewer" in clean or "focal point" in clean or "drive" in clean):
+        selected = select_evidence_segments(recent_segments, [*names, "review", "reviewer", "focal point", "drive"])
+        title_names = " / ".join(name.title() for name in names[:3])
+        body_names = " and ".join(name.title() for name in names[:3])
+        cards.append(
+            heuristic_card(
+                session_id,
+                selected,
+                category="clarification",
+                title=f"{title_names} review path",
+                body=f"Coordinate with {body_names} on the review path.",
+                evidence_hint=names[0],
+                priority="normal",
+            )
+        )
+    return dedupe_heuristic_cards(cards)
+
+
+def heuristic_card(
+    session_id: str,
+    segments: list[TranscriptSegment],
+    *,
+    category: str,
+    title: str,
+    body: str,
+    evidence_hint: str,
+    priority: str,
+) -> SidecarCard:
+    evidence_segments = segments or []
+    source_ids = valid_source_ids_for_segments(evidence_segments)
+    evidence_quote = evidence_quote_for(evidence_segments, evidence_hint)
+    key = normalize_for_echo(f"heuristic {category} {title}")
+    return create_sidecar_card(
+        session_id=session_id,
+        category=category,
+        title=title,
+        body=body,
+        why_now="Explicit project-review language appeared in the recent transcript.",
+        priority=priority,
+        confidence=0.7,
+        source_segment_ids=source_ids,
+        source_type="transcript",
+        card_key=f"heuristic:{category}:{key}",
+        ephemeral=True,
+        evidence_quote=evidence_quote,
+    )
+
+
+def select_evidence_segments(segments: list[TranscriptSegment], terms: list[str]) -> list[TranscriptSegment]:
+    selected: list[TranscriptSegment] = []
+    for segment in segments:
+        text = segment.text.lower()
+        if any(term in text for term in terms):
+            selected.append(segment)
+    if len(selected) == 1 and len(segments) > 1:
+        index = segments.index(selected[0])
+        neighbors = segments[max(0, index - 1) : min(len(segments), index + 2)]
+        selected = dedupe_segments([*selected, *neighbors])
+    return selected[:4]
+
+
+def evidence_quote_for(segments: list[TranscriptSegment], hint: str) -> str:
+    for segment in segments:
+        if hint.lower() in segment.text.lower():
+            return compact_text(segment.text, limit=260)
+    return compact_text(" ".join(segment.text for segment in segments[:2]), limit=260)
+
+
+def dedupe_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+    seen: set[str] = set()
+    result: list[TranscriptSegment] = []
+    for segment in segments:
+        if segment.id in seen:
+            continue
+        seen.add(segment.id)
+        result.append(segment)
+    return result
+
+
+def dedupe_heuristic_cards(cards: list[SidecarCard]) -> list[SidecarCard]:
+    seen: set[str] = set()
+    result: list[SidecarCard] = []
+    for card in cards:
+        key = card.card_key or f"{card.category}:{card.title}"
+        if key in seen or not card.source_segment_ids or not card.evidence_quote:
+            continue
+        seen.add(key)
+        result.append(card)
+    return result
 
 
 def note_from_sidecar(card: SidecarCard) -> NoteCard:

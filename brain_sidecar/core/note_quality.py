@@ -300,9 +300,9 @@ def evidence_segment_map(segments: list[TranscriptSegment]) -> dict[str, Transcr
 
 
 def normalized_fingerprint(card: SidecarCard, evidence_segments: list[TranscriptSegment]) -> str:
-    evidence_text = " ".join(segment.text for segment in evidence_segments)
-    entities = "-".join(important_terms(evidence_text)[:6])
-    verb = core_action_verb(" ".join([card.title, card.body, card.suggested_ask or "", card.suggested_say or ""]))
+    output_text = " ".join([card.title, card.body, card.suggested_ask or "", card.suggested_say or ""])
+    entities = "-".join(important_terms(output_text)[:6])
+    verb = core_action_verb(output_text)
     title = normalize_for_evidence_match(card.title)
     title = re.sub(r"\b(owner unclear|confirm owner|clarify|question|action|risk)\b", "", title).strip()
     return "|".join([card.category, title[:80], verb, entities])
@@ -335,7 +335,7 @@ def unsupported_material_terms(output_text: str, evidence_text: str) -> list[str
     evidence_terms = evidence_terms_with_aliases(evidence_text)
     unsupported: list[str] = []
     for term in output_terms:
-        if term in evidence_terms or term in STRUCTURE_TERMS:
+        if term in evidence_terms or plural_variant_supported(term, evidence_terms) or term in STRUCTURE_TERMS:
             continue
         alias = MATERIAL_ALLOW_IF_ALIAS.get(term)
         if alias and alias in evidence_terms:
@@ -344,6 +344,14 @@ def unsupported_material_terms(output_text: str, evidence_text: str) -> list[str
             continue
         unsupported.append(term)
     return unsupported
+
+
+def plural_variant_supported(term: str, evidence_terms: set[str]) -> bool:
+    if term.endswith("ies") and f"{term[:-3]}y" in evidence_terms:
+        return True
+    if term.endswith("s") and term[:-1] in evidence_terms:
+        return True
+    return f"{term}s" in evidence_terms or f"{term}es" in evidence_terms
 
 
 def important_terms(text: str) -> list[str]:

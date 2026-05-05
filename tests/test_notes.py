@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from brain_sidecar.core.models import TranscriptSegment
+from brain_sidecar.core.note_quality import NoteQualityGate
 from brain_sidecar.core.notes import NoteSynthesizer
 
 
@@ -121,3 +122,74 @@ def test_note_synthesizer_does_not_assign_other_speaker_commitment_to_bp(event_l
     assert result.sidecar_cards[0].category == "clarification"
     assert "do not assign this to BP" in result.sidecar_cards[0].body
     assert result.sidecar_cards[0].suggested_ask == "Can we confirm who owns that follow-up?"
+
+
+def test_note_synthesizer_extracts_project_review_cards_when_llm_times_out(event_loop) -> None:
+    synthesizer = NoteSynthesizer(FailingOllama())  # type: ignore[arg-type]
+    segments = [
+        TranscriptSegment(
+            id="seg_siemens",
+            session_id="ses_1",
+            start_s=0.0,
+            end_s=3.0,
+            text="There is a Siemens document which is under review from Greg and Sunil.",
+        ),
+        TranscriptSegment(
+            id="seg_rfi",
+            session_id="ses_1",
+            start_s=3.2,
+            end_s=6.4,
+            text="Create an RFI log for the scope comments and deviations.",
+        ),
+        TranscriptSegment(
+            id="seg_monday",
+            session_id="ses_1",
+            start_s=6.6,
+            end_s=9.5,
+            text="Monday is the target to send comments.",
+        ),
+    ]
+
+    result = event_loop.run_until_complete(synthesizer.synthesize("ses_1", segments, []))
+    titles = {card.title for card in result.sidecar_cards}
+
+    assert "Siemens document review" in titles
+    assert "RFI log review" in titles
+    assert "Send by Monday" in titles
+    assert all(card.source_segment_ids for card in result.sidecar_cards)
+    assert all(card.evidence_quote for card in result.sidecar_cards)
+
+
+def test_project_review_heuristics_pass_quality_gate(event_loop) -> None:
+    synthesizer = NoteSynthesizer(FailingOllama())  # type: ignore[arg-type]
+    segments = [
+        TranscriptSegment(
+            id="seg_siemens",
+            session_id="ses_1",
+            start_s=0.0,
+            end_s=3.0,
+            text="There is a Siemens document which is under review from Greg and Sunil.",
+        ),
+        TranscriptSegment(
+            id="seg_rfi",
+            session_id="ses_1",
+            start_s=3.2,
+            end_s=6.4,
+            text="Create an RFI log for the scope comments and deviations.",
+        ),
+        TranscriptSegment(
+            id="seg_monday",
+            session_id="ses_1",
+            start_s=6.6,
+            end_s=9.5,
+            text="Monday is the target to send comments.",
+        ),
+    ]
+    gate = NoteQualityGate()
+
+    result = event_loop.run_until_complete(synthesizer.synthesize("ses_1", segments, []))
+    decisions = [gate.evaluate(card, segments, {"ready": False, "enrollment_status": "not_enrolled"}, now=card.created_at) for card in result.sidecar_cards]
+
+    assert any(card.title == "Siemens document review" and decision.action == "accept" for card, decision in zip(result.sidecar_cards, decisions))
+    assert any(card.title == "RFI log review" and decision.action == "accept" for card, decision in zip(result.sidecar_cards, decisions))
+    assert any(card.title == "Send by Monday" and decision.action == "accept" for card, decision in zip(result.sidecar_cards, decisions))
