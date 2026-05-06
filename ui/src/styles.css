@@ -1010,6 +1010,33 @@ time {
   font-weight: 750;
 }
 
+.context-card-meta {
+  align-items: center;
+  color: var(--text-subtle);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  font-weight: 750;
+  gap: 0.35rem;
+}
+
+.context-card-meta span {
+  background: color-mix(in srgb, var(--surface) 70%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.14rem 0.42rem;
+}
+
+.context-card-meta .source-chip {
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--surface));
+  color: var(--text);
+}
+
+.context-card-meta .quality-chip {
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+  color: var(--success);
+}
+
 .context-card-why {
   background: color-mix(in srgb, var(--surface) 72%, var(--bg));
   border: 1px solid var(--border);
@@ -1107,6 +1134,13 @@ time {
   padding: 0.15rem 0;
 }
 
+.card-detail-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
 .field-details {
   border-top: 1px solid var(--border);
   display: grid;
@@ -1114,6 +1148,121 @@ time {
   max-height: 12rem;
   overflow: auto;
   padding-top: 0.65rem;
+}
+
+.evidence-quote {
+  background: color-mix(in srgb, var(--accent-soft) 38%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.45;
+  margin: 0;
+  padding: 0.62rem 0.72rem;
+}
+
+.source-segment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.source-segment-chip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.72rem;
+  min-height: auto;
+  padding: 0.18rem 0.42rem;
+}
+
+.missing-info {
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--border));
+  border-radius: 8px;
+  padding: 0.52rem 0.6rem;
+}
+
+.detail-note {
+  background: color-mix(in srgb, var(--surface) 76%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.52rem 0.6rem;
+}
+
+.transcript-bubble.evidence-highlight {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.quality-strip {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface) 74%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  gap: 0.45rem;
+  padding: 0.62rem 0.7rem;
+}
+
+.quality-strip span {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.16rem 0.45rem;
+}
+
+.quality-strip .quiet {
+  color: var(--text-subtle);
+}
+
+.meeting-output-section .context-preview-list,
+.memory-output .context-preview-list,
+.context-output .context-preview-list,
+.manual-output .context-preview-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.consulting-brief {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.75rem;
+  padding: 0.8rem;
+}
+
+.consulting-brief-head {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.consulting-brief h2 {
+  margin: 0;
+}
+
+.consulting-brief pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 18rem;
+  overflow: auto;
+  padding: 0.7rem;
+  white-space: pre-wrap;
 }
 
 .debug-details,

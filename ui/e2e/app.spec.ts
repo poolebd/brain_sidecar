@@ -9,7 +9,7 @@ test.beforeEach(async ({ page }) => {
 
 test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Live field" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Session Context" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Meeting Output" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "midnight");
   await expect(page.getByRole("search")).toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
@@ -147,6 +147,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
 	      title: "Platform follow-up",
 	      body: "Schedule a short sync about deployment readiness.",
 	      source_segment_ids: ["line-1"],
+        evidence_quote: "follow up with the platform team tomorrow",
 	    },
 	  });
 	  await emitSessionEvent(page, {
@@ -174,6 +175,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
       confidence: 0.92,
       source_segment_ids: ["line-1"],
       source_type: "transcript",
+      evidence_quote: "follow up with the platform team tomorrow",
       card_key: "contribution:release-owner",
       ephemeral: true,
       raw_audio_retained: false,
@@ -190,11 +192,20 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   await expect(liveRow.getByRole("heading", { name: "Platform follow-up" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Actions summary" })).toContainText("Platform follow-up");
   await expect(page.getByRole("region", { name: "Decisions summary" })).toContainText("No decisions yet.");
-  await expect(page.getByRole("region", { name: "Questions summary" })).toContainText("No open questions yet.");
-  await expect(page.getByRole("region", { name: "Relevant Context summary" })).toContainText("Relevant memory");
+  await expect(page.getByRole("region", { name: "Questions / Clarifications summary" })).toContainText("No open questions yet.");
   await expect(liveRow).toContainText("Name the release owner");
   await expect(liveRow).toContainText("It sounds like we should name one release owner");
-  await expect(page.locator("#transcript").getByText("A previous meeting mentioned deployment readiness risks.")).toBeVisible();
+  const contributionCard = liveRow.getByLabel("Say this context card").filter({ hasText: "Name the release owner" });
+  await expect(contributionCard).toContainText("Current meeting");
+  await expect(contributionCard).toContainText("Evidence-backed");
+  await contributionCard.getByRole("button", { name: "Evidence" }).click();
+  await expect(contributionCard.getByLabel("Evidence for Name the release owner")).toContainText("platform team tomorrow");
+  await contributionCard.getByRole("button", { name: "Jump to source" }).click();
+  await expect(transcriptItem).toHaveClass(/evidence-highlight/);
+  const contextSection = page.getByLabel("Context cards");
+  await contextSection.getByText("Context / past transcript / web").click();
+  await expect(contextSection).toContainText("A previous meeting mentioned deployment readiness risks.");
+  await expect(page.locator("#transcript").getByText("A previous meeting mentioned deployment readiness risks.")).toHaveCount(0);
   await expect(page.getByLabel("Queue metric")).toContainText("2");
   await expect(page.locator("#transcript")).not.toContainText("whisper-large-v3");
   await expect(page.locator("#transcript")).not.toContainText("score 0.91");
@@ -434,7 +445,10 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
   }
 
   const debugRow = page.getByRole("article", { name: "Transcript and sidecar row" }).filter({ hasText: "Apollo rollout needs platform readiness context." });
-  await expect(debugRow.locator(".context-card")).toHaveCount(4);
+  await expect(debugRow.locator(".context-card")).toHaveCount(0);
+  const contextSection = page.getByLabel("Context cards");
+  await contextSection.getByText("Context / past transcript / web").click();
+  await expect(contextSection.locator(".context-card")).toHaveCount(3);
   await expect(page.locator("#transcript")).not.toContainText("debug-source-1");
   await expect(page.locator("#transcript")).not.toContainText("0.89");
 
@@ -442,10 +456,10 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
   await openDrawerRegion(page, "System");
   await page.getByLabel("Show debug metadata").check();
   await page.getByRole("button", { name: "Close" }).click();
-  await debugRow.locator(".context-card").first().getByRole("button", { name: "Show details" }).click();
-  await expect(page.locator("#transcript")).toContainText("source ID");
-  await expect(page.locator("#transcript")).toContainText(/debug-source-/);
-  await expect(page.locator("#transcript")).toContainText("score");
+  await contextSection.locator(".context-card").first().getByRole("button", { name: "Details" }).click();
+  await expect(page.locator("#recall")).toContainText("source ID");
+  await expect(page.locator("#recall")).toContainText(/debug-source-/);
+  await expect(page.locator("#recall")).toContainText("score");
 });
 
 test("surfaces mocked SSE errors and supports stop", async ({ page }) => {
@@ -462,6 +476,75 @@ test("surfaces mocked SSE errors and supports stop", async ({ page }) => {
 
   await page.getByRole("button", { name: "Stop" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("stopped");
+});
+
+test("shows copyable post-call brief from evidence-backed cards", async ({ page }) => {
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          (window as unknown as { __copiedBrief?: string }).__copiedBrief = text;
+        },
+      },
+    });
+  });
+  await page.getByRole("button", { name: "Start Listening" }).click();
+
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "brief-line-1",
+      text: "Send the Siemens comments by Monday.",
+      start_s: 0,
+      end_s: 3,
+    },
+  });
+  await emitSessionEvent(page, {
+    type: "sidecar_card",
+    payload: {
+      id: "brief-card-1",
+      session_id: "session-123",
+      category: "action",
+      title: "Send by Monday",
+      body: "Send the Siemens comments by Monday.",
+      why_now: "The meeting set a Monday target.",
+      priority: "high",
+      confidence: 0.93,
+      source_segment_ids: ["brief-line-1"],
+      source_type: "transcript",
+      evidence_quote: "Send the Siemens comments by Monday.",
+      due_date: "Monday",
+      card_key: "action:send-by-monday",
+    },
+  });
+  await emitSessionEvent(page, {
+    type: "sidecar_card",
+    payload: {
+      id: "brief-memory-1",
+      session_id: "session-123",
+      category: "work_memory",
+      title: "Relay distractor",
+      body: "Past CT/PT relay settings work.",
+      why_now: "Injected memory distractor.",
+      priority: "normal",
+      confidence: 0.76,
+      source_segment_ids: [],
+      source_type: "work_memory_project",
+      citations: ["eval-memory:relay"],
+      card_key: "memory:relay",
+    },
+  });
+
+  await page.getByRole("button", { name: "Stop" }).click();
+  const brief = page.getByLabel("Consulting brief");
+  await expect(brief).toBeVisible();
+  await expect(brief).toContainText("Evidence: \"Send the Siemens comments by Monday.\"");
+  await expect(brief).toContainText("## Relevant Work Memory");
+  await brief.getByRole("button", { name: "Copy Markdown" }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedBrief?: string }).__copiedBrief)).toContain(
+    "Source segments: brief-line-1",
+  );
 });
 
 test("renders ephemeral web context notes in the context pane", async ({ page }) => {
@@ -494,11 +577,12 @@ test("renders ephemeral web context notes in the context pane", async ({ page })
   });
 
   const field = page.locator("#recall");
+  await field.getByLabel("Context cards").getByText("Context / past transcript / web").click();
   const webItem = field.getByLabel("Web context card").filter({ hasText: "vector database indexing" });
   await expect(webItem).toBeVisible();
   await expect(page.getByLabel("Mic transcript item")).toContainText("current best practices");
   await expect(webItem).not.toContainText("live only");
-  await webItem.getByRole("button", { name: "Show details" }).click();
+  await webItem.getByRole("button", { name: "Details" }).click();
   await expect(webItem.getByRole("link", { name: "Brave Search API docs" })).toHaveAttribute(
     "href",
     "https://api-dashboard.search.brave.com/app/documentation/web-search/get-started",
@@ -640,8 +724,8 @@ test("uses mocked library and recall APIs", async ({ page }) => {
   await page.getByPlaceholder("Ask Sidecar anything").fill("apollo rollout");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Prior transcript");
-  await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("PAS / past work");
-  await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Current public web");
+  await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Work memory");
+  await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Web");
   await expect(page.locator("#transcript").getByText("Prior planning note about the Apollo rollout.")).toBeVisible();
   await expect(page.locator("#transcript").getByText("Online Generator Monitoring - T.A. Smith", { exact: true })).toBeVisible();
   await expect(page.locator("#transcript").getByText("Web context: apollo rollout")).toBeVisible();

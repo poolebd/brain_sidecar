@@ -2,16 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import {
   buildLiveFieldRows,
+  buildConsultingBriefMarkdown,
   buildSidecarDisplayCards,
+  buildSidecarQualityMetrics,
+  displaySourceLabel,
   getTranscriptDisplayLabel,
-  groupWorkCards,
+  groupMeetingOutputCards,
+  isCurrentMeetingCard,
+  isManualCard,
+  isWorkMemoryCard,
   normalizeDisplayText,
+  qualityLabelForCard,
   type LiveFieldRow,
+  type MeetingOutputBucket,
   type SidecarDisplayCard,
   type SidecarPriority,
   type TranscriptEvent,
   type TranscriptSource,
-  type WorkCardBucket,
 } from "./presentation";
 
 type ThemeName = "neutral" | "midnight" | "canopy" | "ember";
@@ -28,11 +35,12 @@ const SESSION_RETENTION_STORAGE_KEY = "brain-sidecar-session-retention-v1";
 const MIC_TUNING_STORAGE_KEY = "brain-sidecar-mic-tuning-v1";
 const DEFAULT_CONTEXT_CARD_LIMIT = 3;
 
-const WORK_NOTE_SECTIONS: { bucket: WorkCardBucket; title: string; empty: string }[] = [
+const MEETING_OUTPUT_SECTIONS: { bucket: MeetingOutputBucket; title: string; empty: string }[] = [
   { bucket: "actions", title: "Actions", empty: "No actions yet." },
   { bucket: "decisions", title: "Decisions", empty: "No decisions yet." },
-  { bucket: "questions", title: "Questions", empty: "No open questions yet." },
-  { bucket: "context", title: "Relevant Context", empty: "No useful context yet." },
+  { bucket: "questions", title: "Questions / Clarifications", empty: "No open questions yet." },
+  { bucket: "risks", title: "Risks", empty: "No risks yet." },
+  { bucket: "notes", title: "Other Notes", empty: "No other meeting notes yet." },
 ];
 
 const SPEAKER_TRAINING_PROMPTS = [
@@ -110,6 +118,16 @@ type NoteCard = {
   ephemeral?: boolean;
   source_type?: string;
   sources?: NoteSource[];
+  evidence_quote?: string;
+  owner?: string;
+  due_date?: string;
+  missing_info?: string;
+  confidence?: number;
+  priority?: string;
+  why_now?: string;
+  suggested_say?: string;
+  suggested_ask?: string;
+  citations?: string[];
 };
 
 type RecallHit = {
@@ -213,6 +231,7 @@ type GpuHealth = {
   web_context_enabled?: boolean;
   web_context_configured?: boolean;
   test_mode_enabled?: boolean;
+  sidecar_quality_gate_enabled?: boolean;
   test_audio_run_dir?: string;
 };
 
@@ -419,8 +438,10 @@ export function App() {
   const [sidecarCards, setSidecarCards] = useState<SidecarDisplayCard[]>([]);
   const [dismissedCardKeys, setDismissedCardKeys] = useState<Set<string>>(() => new Set());
   const [expandedContextCards, setExpandedContextCards] = useState<Set<string>>(() => new Set());
+  const [highlightedSourceIds, setHighlightedSourceIds] = useState<Set<string>>(() => new Set());
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>([]);
   const [showAllContext, setShowAllContext] = useState(false);
+  const [briefVisible, setBriefVisible] = useState(false);
   const [showDebugMetadata, setShowDebugMetadata] = useState(() => {
     if (typeof window === "undefined") {
       return false;
@@ -438,6 +459,7 @@ export function App() {
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const followLiveRef = useRef(true);
   const micPlaybackUrlRef = useRef<string | null>(null);
+  const evidenceHighlightTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     refreshDevices();
@@ -468,6 +490,9 @@ export function App() {
     return () => {
       eventSourceRef.current?.close();
       speakerEventSourceRef.current?.close();
+      if (evidenceHighlightTimerRef.current) {
+        window.clearTimeout(evidenceHighlightTimerRef.current);
+      }
       if (micPlaybackUrlRef.current) {
         URL.revokeObjectURL(micPlaybackUrlRef.current);
       }
@@ -510,18 +535,45 @@ export function App() {
     ),
     [dismissedCardKeys, sidecarCards, transcriptEvents],
   );
-  const liveFieldRows = useMemo(
-    () => buildLiveFieldRows(transcriptEvents, usefulContextCards),
-    [transcriptEvents, usefulContextCards],
+  const currentMeetingCards = useMemo(
+    () => usefulContextCards.filter(isCurrentMeetingCard),
+    [usefulContextCards],
+  );
+  const workMemoryContextCards = useMemo(
+    () => usefulContextCards.filter(isWorkMemoryCard),
+    [usefulContextCards],
+  );
+  const otherContextCards = useMemo(
+    () => usefulContextCards.filter((card) => !isCurrentMeetingCard(card) && !isWorkMemoryCard(card) && !isManualCard(card)),
+    [usefulContextCards],
   );
   const manualSourceCards = useMemo(
-    () => sidecarCards.filter((card) => card.explicitlyRequested && !dismissedCardKeys.has(card.cardKey ?? card.id)).slice(0, 12),
-    [dismissedCardKeys, sidecarCards],
+    () => usefulContextCards.filter(isManualCard).slice(0, 12),
+    [usefulContextCards],
   );
-  const visibleContextCards = showAllContext
-    ? usefulContextCards
-    : usefulContextCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
-  const visibleWorkCards = useMemo(() => groupWorkCards(visibleContextCards), [visibleContextCards]);
+  const liveCards = useMemo(
+    () => usefulContextCards.filter((card) => isCurrentMeetingCard(card) || isManualCard(card)),
+    [usefulContextCards],
+  );
+  const liveFieldRows = useMemo(
+    () => buildLiveFieldRows(transcriptEvents, liveCards),
+    [transcriptEvents, liveCards],
+  );
+  const visibleMeetingCards = showAllContext
+    ? currentMeetingCards
+    : currentMeetingCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
+  const visibleMemoryCards = showAllContext
+    ? workMemoryContextCards
+    : workMemoryContextCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
+  const visibleOtherContextCards = showAllContext
+    ? otherContextCards
+    : otherContextCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
+  const meetingOutputGroups = useMemo(() => groupMeetingOutputCards(visibleMeetingCards), [visibleMeetingCards]);
+  const qualityMetrics = useMemo(() => buildSidecarQualityMetrics(usefulContextCards), [usefulContextCards]);
+  const consultingBriefMarkdown = useMemo(
+    () => buildConsultingBriefMarkdown(usefulContextCards, "Consulting Brief"),
+    [usefulContextCards],
+  );
 
   const workMemoryLabel = workMemoryStatus
     ? `${workMemoryStatus.projects} projects / ${workMemoryStatus.sources} sources`
@@ -974,6 +1026,23 @@ export function App() {
     }
   }
 
+  async function copyConsultingBrief() {
+    try {
+      await navigator.clipboard?.writeText(consultingBriefMarkdown);
+      appendSystemLog({
+        level: "status",
+        title: "Copied consulting brief",
+        message: "Meeting brief copied as Markdown.",
+      });
+    } catch {
+      appendSystemLog({
+        level: "warning",
+        title: "Copy unavailable",
+        message: consultingBriefMarkdown,
+      });
+    }
+  }
+
   function appendSystemLog(item: SystemLogInput) {
     eventSeqRef.current += 1;
     const nextItem: SystemLog = {
@@ -1019,6 +1088,31 @@ export function App() {
     });
   }
 
+  function jumpToEvidence(card: SidecarDisplayCard) {
+    const ids = new Set((card.sourceSegmentIds ?? []).filter(Boolean));
+    if (ids.size === 0) {
+      return;
+    }
+    setExpandedContextCards((current) => new Set(current).add(card.id));
+    setHighlightedSourceIds(ids);
+    if (evidenceHighlightTimerRef.current) {
+      window.clearTimeout(evidenceHighlightTimerRef.current);
+    }
+    evidenceHighlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedSourceIds(new Set());
+      evidenceHighlightTimerRef.current = null;
+    }, 2400);
+
+    const node = transcriptScrollRef.current;
+    if (!node) {
+      return;
+    }
+    const targets = Array.from(node.querySelectorAll<HTMLElement>("[data-transcript-id], [data-segment-id]"))
+      .filter((element) => ids.has(element.dataset.transcriptId ?? "") || ids.has(element.dataset.segmentId ?? ""));
+    targets[0]?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setFollowState(false);
+  }
+
   async function start(options: {
     fixtureWav?: string;
     testRun?: TestModePrepared;
@@ -1034,6 +1128,7 @@ export function App() {
     const retentionForStart = sessionRetention;
     setActiveSessionRetention(retentionForStart);
     setStatus("starting");
+    setBriefVisible(false);
     appendSystemLog({
       level: "status",
       title: "Starting capture",
@@ -1090,6 +1185,7 @@ export function App() {
         ? `${transcript.length} heard lines saved as transcript text.`
         : `${transcript.length} heard lines shown live; transcript text was not saved.`,
     });
+    setBriefVisible(true);
     setActiveSessionRetention(null);
     if (testPrepared && testStartedAtRef.current && testSessionIdRef.current === stoppedSessionId) {
       await saveTestReport(stoppedSessionId, testPrepared, testStartedAtRef.current);
@@ -1596,8 +1692,10 @@ export function App() {
             <LiveFieldPane
               rows={liveFieldRows}
               expandedCards={expandedContextCards}
+              highlightedSourceIds={highlightedSourceIds}
               showDebugMetadata={showDebugMetadata}
               onToggle={toggleExpandedContextCard}
+              onJumpToEvidence={jumpToEvidence}
               onPin={togglePinnedCard}
               onDismiss={dismissCard}
               onCopy={copyCardSuggestion}
@@ -1632,35 +1730,52 @@ export function App() {
           <ManualSourceSections cards={manualSourceCards} />
         </section>
 
-        <section className="context-pane" id="recall" aria-label="Work Notes">
+        <section className="context-pane" id="recall" aria-label="Meeting Output">
           <div className="field-toolbar context-toolbar">
             <div>
               <p className="label">Sidecar</p>
-              <h1>Session Context</h1>
+              <h1>Meeting Output</h1>
             </div>
             <div className="field-toolbar-status">
               <span>{workMemoryLabel}</span>
-              <span>{usefulContextCards.length} useful</span>
+              <span>{currentMeetingCards.length} current</span>
             </div>
           </div>
           <SessionContextPane
-            groups={visibleWorkCards}
-            usefulCount={usefulContextCards.length}
+            groups={meetingOutputGroups}
+            usefulCount={currentMeetingCards.length}
             rawCount={sidecarCards.length}
+            qualityMetrics={qualityMetrics}
+            qualityGateActive={gpu.sidecar_quality_gate_enabled !== false}
             loading={manualQueryBusy}
             emptyTitle={contextEmptyTitle}
             emptyBody={contextEmptyBody}
-            previewCards={visibleContextCards}
+            workMemoryCards={visibleMemoryCards}
+            contextCards={visibleOtherContextCards}
+            manualCards={manualSourceCards}
             showAll={showAllContext}
-            canShowMore={usefulContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT}
+            canShowMore={
+              currentMeetingCards.length > DEFAULT_CONTEXT_CARD_LIMIT
+              || workMemoryContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT
+              || otherContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT
+            }
             onToggleShowAll={() => setShowAllContext((value) => !value)}
             expandedCards={expandedContextCards}
             showDebugMetadata={showDebugMetadata}
             onToggle={toggleExpandedContextCard}
+            onJumpToEvidence={jumpToEvidence}
             onPin={togglePinnedCard}
             onDismiss={dismissCard}
             onCopy={copyCardSuggestion}
           />
+          {briefVisible && (
+            <ConsultingBriefPane
+              markdown={consultingBriefMarkdown}
+              currentCount={currentMeetingCards.length}
+              memoryCount={workMemoryContextCards.length}
+              onCopy={copyConsultingBrief}
+            />
+          )}
         </section>
 
         <aside className={`tool-drawer ${drawerOpen ? "open" : ""}`} aria-label="Tools drawer">
@@ -2204,16 +2319,20 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 function LiveFieldPane({
   rows,
   expandedCards,
+  highlightedSourceIds,
   showDebugMetadata,
   onToggle,
+  onJumpToEvidence,
   onPin,
   onDismiss,
   onCopy,
 }: {
   rows: LiveFieldRow[];
   expandedCards: Set<string>;
+  highlightedSourceIds: Set<string>;
   showDebugMetadata: boolean;
   onToggle: (id: string) => void;
+  onJumpToEvidence: (card: SidecarDisplayCard) => void;
   onPin: (card: SidecarDisplayCard) => void;
   onDismiss: (card: SidecarDisplayCard) => void;
   onCopy: (card: SidecarDisplayCard) => void;
@@ -2231,7 +2350,7 @@ function LiveFieldPane({
         >
           {row.transcript && (
             <div className="field-lane transcript-lane">
-              <TranscriptBubble event={row.transcript} />
+              <TranscriptBubble event={row.transcript} highlighted={transcriptHighlighted(row.transcript, highlightedSourceIds)} />
             </div>
           )}
           {row.cards.length > 0 && (
@@ -2243,6 +2362,7 @@ function LiveFieldPane({
                   expanded={expandedCards.has(card.id)}
                   showDebugMetadata={showDebugMetadata}
                   onToggle={() => onToggle(card.id)}
+                  onJumpToEvidence={() => onJumpToEvidence(card)}
                   onPin={() => onPin(card)}
                   onDismiss={() => onDismiss(card)}
                   onCopy={() => onCopy(card)}
@@ -2256,12 +2376,14 @@ function LiveFieldPane({
   );
 }
 
-function TranscriptBubble({ event }: { event: TranscriptEvent }) {
+function TranscriptBubble({ event, highlighted = false }: { event: TranscriptEvent; highlighted?: boolean }) {
   const label = getTranscriptDisplayLabel(event);
   return (
     <article
-      className={`transcript-bubble ${event.source} ${event.isFinal ? "final" : "interim"}`}
+      className={`transcript-bubble ${event.source} ${event.isFinal ? "final" : "interim"} ${highlighted ? "evidence-highlight" : ""}`}
       aria-label={`${label} transcript item`}
+      data-transcript-id={event.id}
+      data-segment-id={event.segmentId}
     >
       <div className="transcript-bubble-head">
         <span>{label}</span>
@@ -2275,90 +2397,71 @@ function TranscriptBubble({ event }: { event: TranscriptEvent }) {
   );
 }
 
+function transcriptHighlighted(event: TranscriptEvent, highlightedSourceIds: Set<string>): boolean {
+  return highlightedSourceIds.has(event.id) || Boolean(event.segmentId && highlightedSourceIds.has(event.segmentId));
+}
+
 function SessionContextPane({
   groups,
   usefulCount,
   rawCount,
+  qualityMetrics,
+  qualityGateActive,
   loading,
   emptyTitle,
   emptyBody,
-  previewCards,
+  workMemoryCards,
+  contextCards,
+  manualCards,
   showAll,
   canShowMore,
   onToggleShowAll,
   expandedCards,
   showDebugMetadata,
   onToggle,
+  onJumpToEvidence,
   onPin,
   onDismiss,
   onCopy,
 }: {
-  groups: Record<WorkCardBucket, SidecarDisplayCard[]>;
+  groups: Record<MeetingOutputBucket, SidecarDisplayCard[]>;
   usefulCount: number;
   rawCount: number;
+  qualityMetrics: ReturnType<typeof buildSidecarQualityMetrics>;
+  qualityGateActive: boolean;
   loading: boolean;
   emptyTitle: string;
   emptyBody: string;
-  previewCards: SidecarDisplayCard[];
+  workMemoryCards: SidecarDisplayCard[];
+  contextCards: SidecarDisplayCard[];
+  manualCards: SidecarDisplayCard[];
   showAll: boolean;
   canShowMore: boolean;
   onToggleShowAll: () => void;
   expandedCards: Set<string>;
   showDebugMetadata: boolean;
   onToggle: (id: string) => void;
+  onJumpToEvidence: (card: SidecarDisplayCard) => void;
   onPin: (card: SidecarDisplayCard) => void;
   onDismiss: (card: SidecarDisplayCard) => void;
   onCopy: (card: SidecarDisplayCard) => void;
 }) {
-  const cardCount = WORK_NOTE_SECTIONS.reduce((count, section) => count + groups[section.bucket].length, 0);
+  const cardCount = MEETING_OUTPUT_SECTIONS.reduce((count, section) => count + groups[section.bucket].length, 0);
   if (loading && cardCount === 0) {
     return <Empty title="Searching" body="Looking for useful work context." />;
   }
-  if (cardCount === 0 && rawCount > 0 && usefulCount === 0) {
+  if (cardCount === 0 && rawCount > 0 && usefulCount === 0 && workMemoryCards.length === 0 && contextCards.length === 0 && manualCards.length === 0) {
     return <ContextQuietEmpty title="No useful context yet" body="Recent backend hits were echoes, duplicates, or too weak to show." />;
   }
-  if (cardCount === 0) {
+  if (cardCount === 0 && workMemoryCards.length === 0 && contextCards.length === 0 && manualCards.length === 0) {
     return <ContextQuietEmpty title={emptyTitle} body={emptyBody} />;
   }
   return (
-    <div className="context-card-list session-context-list scroll" aria-label="Session context">
-      <section className="session-context-overview" aria-label="Context summary">
-        <span><strong>{usefulCount}</strong> useful</span>
-        <span><strong>{rawCount}</strong> raw</span>
-        <span><strong>{previewCards.length}</strong> shown</span>
-      </section>
+    <div className="context-card-list session-context-list scroll" aria-label="Meeting output">
+      <QualityStrip metrics={qualityMetrics} rawCount={rawCount} qualityGateActive={qualityGateActive} />
 
-      {previewCards.length > 0 && (
-        <details className="session-context-preview" aria-label="Recent sidecar cards" open>
-          <summary>
-            <span>Recent Sidecar</span>
-            <strong>{previewCards.length}</strong>
-          </summary>
-          <div className="context-preview-list">
-            {previewCards.map((card) => (
-              <ContextCard
-                key={`context-preview-${card.id}`}
-                card={card}
-                compact
-                expanded={expandedCards.has(card.id)}
-                showDebugMetadata={showDebugMetadata}
-                onToggle={() => onToggle(card.id)}
-                onPin={() => onPin(card)}
-                onDismiss={() => onDismiss(card)}
-                onCopy={() => onCopy(card)}
-              />
-            ))}
-          </div>
-          {canShowMore && (
-            <button className="secondary show-more-context" onClick={onToggleShowAll}>
-              {showAll ? "Show less" : "Show more"}
-            </button>
-          )}
-        </details>
-      )}
-
-      {WORK_NOTE_SECTIONS.map((section) => (
-        <section key={section.bucket} className="work-note-section compact-summary" aria-label={`${section.title} summary`}>
+      {MEETING_OUTPUT_SECTIONS.map((section) => (
+        <section key={section.bucket} className="work-note-section meeting-output-section" aria-label={`${section.title} summary`}>
           <div className="work-note-section-head">
             <h2>{section.title}</h2>
             <span>{groups[section.bucket].length}</span>
@@ -2366,65 +2469,156 @@ function SessionContextPane({
           {groups[section.bucket].length === 0 ? (
             <p className="work-note-empty">{section.empty}</p>
           ) : (
-            <ul className="compact-summary-list">
-              {groups[section.bucket].slice(0, 3).map((card) => (
-                <li key={`summary-${section.bucket}-${card.id}`}>
-                  <strong>{card.title}</strong>
-                  <span>{card.whyRelevant ?? categoryLabel(card.category)}</span>
-                </li>
+            <div className="context-preview-list">
+              {groups[section.bucket].map((card) => (
+                <ContextCard
+                  key={`meeting-${section.bucket}-${card.id}`}
+                  card={card}
+                  compact
+                  expanded={expandedCards.has(card.id)}
+                  showDebugMetadata={showDebugMetadata}
+                  onToggle={() => onToggle(card.id)}
+                  onJumpToEvidence={() => onJumpToEvidence(card)}
+                  onPin={() => onPin(card)}
+                  onDismiss={() => onDismiss(card)}
+                  onCopy={() => onCopy(card)}
+                />
               ))}
-            </ul>
+            </div>
           )}
         </section>
       ))}
+
+      {canShowMore && (
+        <button className="secondary show-more-context" onClick={onToggleShowAll}>
+          {showAll ? "Show less" : "Show more"}
+        </button>
+      )}
+
+      {workMemoryCards.length > 0 && (
+        <details className="session-context-preview memory-output" aria-label="Work memory cards">
+          <summary>
+            <span>Work memory</span>
+            <strong>{workMemoryCards.length}</strong>
+          </summary>
+          <div className="context-preview-list">
+            {workMemoryCards.map((card) => (
+              <ContextCard
+                key={`memory-${card.id}`}
+                card={card}
+                compact
+                expanded={expandedCards.has(card.id)}
+                showDebugMetadata={showDebugMetadata}
+                onToggle={() => onToggle(card.id)}
+                onJumpToEvidence={() => onJumpToEvidence(card)}
+                onPin={() => onPin(card)}
+                onDismiss={() => onDismiss(card)}
+                onCopy={() => onCopy(card)}
+              />
+            ))}
+          </div>
+        </details>
+      )}
+
+      {contextCards.length > 0 && (
+        <details className="session-context-preview context-output" aria-label="Context cards">
+          <summary>
+            <span>Context / past transcript / web</span>
+            <strong>{contextCards.length}</strong>
+          </summary>
+          <div className="context-preview-list">
+            {contextCards.map((card) => (
+              <ContextCard
+                key={`context-${card.id}`}
+                card={card}
+                compact
+                expanded={expandedCards.has(card.id)}
+                showDebugMetadata={showDebugMetadata}
+                onToggle={() => onToggle(card.id)}
+                onJumpToEvidence={() => onJumpToEvidence(card)}
+                onPin={() => onPin(card)}
+                onDismiss={() => onDismiss(card)}
+                onCopy={() => onCopy(card)}
+              />
+            ))}
+          </div>
+        </details>
+      )}
+
+      {manualCards.length > 0 && (
+        <details className="session-context-preview manual-output" aria-label="Manual query cards">
+          <summary>
+            <span>Manual query</span>
+            <strong>{manualCards.length}</strong>
+          </summary>
+          <div className="context-preview-list">
+            {manualCards.map((card) => (
+              <ContextCard
+                key={`manual-${card.id}`}
+                card={card}
+                compact
+                expanded={expandedCards.has(card.id)}
+                showDebugMetadata={showDebugMetadata}
+                onToggle={() => onToggle(card.id)}
+                onJumpToEvidence={() => onJumpToEvidence(card)}
+                onPin={() => onPin(card)}
+                onDismiss={() => onDismiss(card)}
+                onCopy={() => onCopy(card)}
+              />
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
 
-function ContributionLane({
-  cards,
-  expandedCards,
-  showDebugMetadata,
-  onToggle,
-  onPin,
-  onDismiss,
+function QualityStrip({
+  metrics,
+  rawCount,
+  qualityGateActive,
+}: {
+  metrics: ReturnType<typeof buildSidecarQualityMetrics>;
+  rawCount: number;
+  qualityGateActive: boolean;
+}) {
+  return (
+    <section className="quality-strip" aria-label="Sidecar quality status">
+      <span><strong>{metrics.acceptedCurrentCount}</strong> current</span>
+      <span><strong>{metrics.workMemoryCount}</strong> memory</span>
+      <span><strong>{metrics.manualCount}</strong> manual</span>
+      <span><strong>{formatPercent(metrics.evidenceQuoteCoverage)}</strong> evidence</span>
+      <span><strong>{formatPercent(metrics.sourceIdCoverage)}</strong> sources</span>
+      <span>{qualityGateActive ? "Quality gate active" : "Quality gate off"}</span>
+      <span className="quiet">{rawCount} raw</span>
+    </section>
+  );
+}
+
+function ConsultingBriefPane({
+  markdown,
+  currentCount,
+  memoryCount,
   onCopy,
 }: {
-  cards: SidecarDisplayCard[];
-  expandedCards: Set<string>;
-  showDebugMetadata: boolean;
-  onToggle: (id: string) => void;
-  onPin: (card: SidecarDisplayCard) => void;
-  onDismiss: (card: SidecarDisplayCard) => void;
-  onCopy: (card: SidecarDisplayCard) => void;
+  markdown: string;
+  currentCount: number;
+  memoryCount: number;
+  onCopy: () => void;
 }) {
-  if (cards.length === 0) {
-    return null;
-  }
   return (
-    <section className="contribution-lane" aria-label="Contribution Lane">
-      <div className="contribution-lane-head">
+    <section className="consulting-brief" aria-label="Consulting brief">
+      <div className="consulting-brief-head">
         <div>
-          <p className="label">Contribution Lane</p>
-          <h2>Say, ask, watch</h2>
+          <p className="label">Post-call</p>
+          <h2>Consulting brief</h2>
         </div>
-        <span>{cards.length}</span>
+        <button className="secondary" type="button" onClick={onCopy}>Copy Markdown</button>
       </div>
-      <div className="contribution-card-row">
-        {cards.map((card) => (
-          <ContextCard
-            key={`lane-${card.id}`}
-            card={card}
-            compact
-            expanded={expandedCards.has(card.id)}
-            showDebugMetadata={showDebugMetadata}
-            onToggle={() => onToggle(card.id)}
-            onPin={() => onPin(card)}
-            onDismiss={() => onDismiss(card)}
-            onCopy={() => onCopy(card)}
-          />
-        ))}
-      </div>
+      <p className="tool-note">
+        Built from {currentCount} current-meeting cards and {memoryCount} separated work-memory cards.
+      </p>
+      <pre>{markdown}</pre>
     </section>
   );
 }
@@ -2434,9 +2628,9 @@ function ManualSourceSections({ cards }: { cards: SidecarDisplayCard[] }) {
     return null;
   }
   const sections = [
-    { title: "Prior transcript", cards: cards.filter((card) => String(card.debugMetadata?.sourceType) === "saved_transcript" || card.category === "memory") },
-    { title: "PAS / past work", cards: cards.filter((card) => card.category === "work_memory" || String(card.debugMetadata?.sourceType) === "work_memory") },
-    { title: "Current public web", cards: cards.filter((card) => card.category === "web" || String(card.debugMetadata?.sourceType) === "brave_web") },
+    { title: "Prior transcript", cards: cards.filter((card) => card.sourceType === "saved_transcript" || card.sourceType === "session" || card.category === "memory") },
+    { title: "Work memory", cards: cards.filter((card) => isWorkMemoryCard(card)) },
+    { title: "Web", cards: cards.filter((card) => card.category === "web" || card.sourceType === "brave_web") },
     { title: "Suggested meeting contribution", cards: cards.filter((card) => card.category === "contribution") },
   ].filter((section) => section.cards.length > 0);
   if (sections.length === 0) {
@@ -2460,6 +2654,7 @@ function ContextCard({
   expanded,
   showDebugMetadata,
   onToggle,
+  onJumpToEvidence,
   onPin,
   onDismiss,
   onCopy,
@@ -2469,14 +2664,26 @@ function ContextCard({
   expanded: boolean;
   showDebugMetadata: boolean;
   onToggle: () => void;
+  onJumpToEvidence: () => void;
   onPin: () => void;
   onDismiss: () => void;
   onCopy: () => void;
 }) {
-  const hasNormalDetails = Boolean((card.sources && card.sources.length > 0) || (card.citations && card.citations.length > 0));
+  const hasEvidence = Boolean(card.evidenceQuote?.trim());
+  const hasSourceSegments = (card.sourceSegmentIds?.length ?? 0) > 0;
+  const hasNormalDetails = Boolean(
+    hasEvidence
+    || hasSourceSegments
+    || card.whyRelevant
+    || card.missingInfo
+    || (card.sources && card.sources.length > 0)
+    || (card.citations && card.citations.length > 0),
+  );
   const hasDebugDetails = showDebugMetadata && Boolean(card.rawText || card.debugMetadata);
   const hasDetails = hasNormalDetails || hasDebugDetails;
   const suggestion = card.suggestedSay ?? card.suggestedAsk;
+  const sourceLabel = card.sourceLabel ?? card.source;
+  const qualityLabel = card.qualityLabel ?? "";
   return (
     <article
       className={`context-card field-bubble ${compact ? "compact" : ""} ${card.provisional ? "provisional" : ""} ${confidenceClass(card)} ${card.category === "work" || card.category === "work_memory" ? "memory" : card.category}`}
@@ -2493,9 +2700,13 @@ function ContextCard({
         </div>
       </div>
       <h3>{card.title}</h3>
-      {card.source || card.date ? (
-        <p className="context-card-source">{[card.source, card.date].filter(Boolean).join(" / ")}</p>
-      ) : null}
+      <div className="context-card-meta">
+        {sourceLabel && <span className="source-chip">{sourceLabel}</span>}
+        {qualityLabel && <span className="quality-chip">{qualityLabel}</span>}
+        {card.owner && <span>Owner: {card.owner}</span>}
+        {card.dueDate && <span>Due: {card.dueDate}</span>}
+        {card.date && <span>{card.date}</span>}
+      </div>
       <p>{card.summary}</p>
       {suggestion && (
         <div className="suggestion-row">
@@ -2507,11 +2718,38 @@ function ContextCard({
       {card.whyRelevant && <p className="context-card-why">{card.whyRelevant}</p>}
       {hasDetails && (
         <>
-          <button className="link-button" onClick={onToggle}>
-            {expanded ? "Hide details" : "Show details"}
-          </button>
+          <div className="card-detail-actions">
+            <button className="link-button" onClick={onToggle}>
+              {expanded ? "Hide details" : hasEvidence ? "Evidence" : "Details"}
+            </button>
+            {hasSourceSegments && (
+              <button className="link-button" onClick={onJumpToEvidence}>
+                Jump to source{card.sourceSegmentIds!.length > 1 ? ` (${card.sourceSegmentIds!.length})` : ""}
+              </button>
+            )}
+          </div>
           {expanded && (
             <div className="field-details">
+              {hasEvidence && (
+                <blockquote className="evidence-quote" aria-label={`Evidence for ${card.title}`}>
+                  {card.evidenceQuote}
+                </blockquote>
+              )}
+              {hasSourceSegments && (
+                <div className="source-segment-list" aria-label={`Source segments for ${card.title}`}>
+                  {card.sourceSegmentIds!.slice(0, 6).map((segmentId) => (
+                    <button key={segmentId} type="button" className="source-segment-chip" onClick={onJumpToEvidence}>
+                      {segmentId}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {card.whyRelevant && (
+                <p className="detail-note"><strong>Why now:</strong> {card.whyRelevant}</p>
+              )}
+              {card.missingInfo && (
+                <p className="missing-info"><strong>Missing info:</strong> {card.missingInfo}</p>
+              )}
               {card.sources && card.sources.length > 0 && (
                 <div className="note-sources" aria-label={`Sources for ${card.title}`}>
                   {card.sources.map((source) => (
@@ -2581,9 +2819,19 @@ function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope
   const at = payloadTimeMs(payload.created_at ?? envelope.at) ?? Date.now();
   const sourceSegmentIds = parseStringList(payload.source_segment_ids);
   const sourceType = String(payload.source_type ?? "transcript");
+  const explicitlyRequested = Boolean(payload.explicitly_requested) || String(payload.card_key ?? "").startsWith("manual:");
   const cardKey = payload.card_key ? String(payload.card_key) : undefined;
   const suggestionSay = stringOrUndefined(payload.suggested_say);
   const suggestionAsk = stringOrUndefined(payload.suggested_ask);
+  const confidence = numberOrUndefined(payload.confidence);
+  const draftCard = {
+    sourceType,
+    sourceSegmentIds,
+    evidenceQuote: stringOrUndefined(payload.evidence_quote),
+    explicitlyRequested,
+    confidence,
+    category,
+  } as SidecarDisplayCard;
   return {
     id: `sidecar-${String(payload.id)}`,
     cardKey,
@@ -2591,12 +2839,19 @@ function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope
     title: readableTitle(title, categoryLabel(category)),
     summary: body,
     whyRelevant: stringOrUndefined(payload.why_now),
-    source: sourceLabel(sourceType),
+    source: sourceLabel(sourceType, explicitlyRequested),
+    sourceType,
+    sourceLabel: sourceLabel(sourceType, explicitlyRequested),
+    qualityLabel: qualityLabelForCard(draftCard),
     at,
-    score: numberOrUndefined(payload.confidence),
-    confidence: numberOrUndefined(payload.confidence),
+    score: confidence,
+    confidence,
     rawText: body,
     sourceSegmentIds,
+    evidenceQuote: stringOrUndefined(payload.evidence_quote),
+    owner: stringOrUndefined(payload.owner),
+    dueDate: stringOrUndefined(payload.due_date),
+    missingInfo: stringOrUndefined(payload.missing_info),
     suggestedSay: suggestionSay,
     suggestedAsk: suggestionAsk,
     priority: priorityFromValue(payload.priority),
@@ -2605,7 +2860,7 @@ function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope
     ephemeral: Boolean(payload.ephemeral),
     expiresAt: payloadTimeMs(payload.expires_at),
     provisional: Boolean(payload.provisional),
-    explicitlyRequested: Boolean(payload.explicitly_requested) || String(cardKey ?? "").startsWith("manual:"),
+    explicitlyRequested,
     debugMetadata: {
       sourceType,
       sourceId: payload.id,
@@ -2616,6 +2871,10 @@ function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope
       sanitizedQuery: payload.sanitized_query,
       freshness: payload.freshness,
       rawAudioRetained: payload.raw_audio_retained,
+      evidenceQuote: payload.evidence_quote,
+      owner: payload.owner,
+      dueDate: payload.due_date,
+      missingInfo: payload.missing_info,
     },
   };
 }
@@ -2654,10 +2913,21 @@ function typedTranscriptEvent(text: string): TranscriptEvent {
 
 function displayCardForNote(note: NoteCard, options: BackendItemOptions = {}): SidecarDisplayCard {
   const sourceSegmentIds = options.sourceSegmentIds ?? note.source_segment_ids;
+  const sourceType = note.source_type ?? "transcript";
+  const explicitlyRequested = options.origin === "manual";
   const category = note.ephemeral || note.source_type === "brave_web"
     ? "web"
     : sidecarCategoryFromPayload(["action", "decision", "question", "risk", "clarification", "contribution"].includes(note.kind) ? note.kind : "note");
   const at = payloadTimeMs(note.created_at) ?? Date.now();
+  const confidence = note.confidence;
+  const draftCard = {
+    sourceType,
+    sourceSegmentIds,
+    evidenceQuote: note.evidence_quote,
+    explicitlyRequested,
+    confidence,
+    category,
+  } as SidecarDisplayCard;
   return {
     id: `note-${note.id}-${options.origin ?? "live"}`,
     cardKey: `note:${category}:${note.title.toLowerCase().trim()}`,
@@ -2668,14 +2938,31 @@ function displayCardForNote(note: NoteCard, options: BackendItemOptions = {}): S
     at,
     rawText: note.body,
     sourceSegmentIds,
-    explicitlyRequested: options.origin === "manual",
-    priority: note.kind === "action" || note.kind === "decision" ? "high" : "normal",
+    evidenceQuote: note.evidence_quote,
+    owner: note.owner,
+    dueDate: note.due_date,
+    missingInfo: note.missing_info,
+    source: sourceLabel(sourceType, explicitlyRequested),
+    sourceType,
+    sourceLabel: sourceLabel(sourceType, explicitlyRequested),
+    qualityLabel: qualityLabelForCard(draftCard),
+    confidence,
+    score: confidence,
+    explicitlyRequested,
+    priority: priorityFromValue(note.priority ?? (note.kind === "action" || note.kind === "decision" ? "high" : "normal")),
+    suggestedSay: note.suggested_say,
+    suggestedAsk: note.suggested_ask,
     sources: note.sources,
+    citations: note.citations,
     debugMetadata: {
-      sourceType: note.source_type ?? note.kind,
+      sourceType,
       sourceId: note.id,
       backendLabel: note.kind,
       sourceSegmentIds,
+      evidenceQuote: note.evidence_quote,
+      owner: note.owner,
+      dueDate: note.due_date,
+      missingInfo: note.missing_info,
     },
   };
 }
@@ -2683,8 +2970,17 @@ function displayCardForNote(note: NoteCard, options: BackendItemOptions = {}): S
 function displayCardForRecall(hit: RecallHit, options: BackendItemOptions = {}): SidecarDisplayCard {
   const sourceSegmentIds = options.sourceSegmentIds ?? hit.source_segment_ids ?? [];
   const sourceType = hit.source_type;
+  const explicitlyRequested = options.origin === "manual" || Boolean(hit.explicitly_requested ?? hit.metadata.explicitly_requested);
   const title = readableTitle(String(hit.metadata.title ?? ""), "Relevant memory");
   const at = Date.now();
+  const confidence = hit.score;
+  const draftCard = {
+    sourceType,
+    sourceSegmentIds,
+    explicitlyRequested,
+    confidence,
+    category: "memory",
+  } as SidecarDisplayCard;
   return {
     id: `recall-${sourceType}-${hit.source_id}-${at}`,
     cardKey: `recall:${sourceType}:${hit.source_id}`,
@@ -2692,13 +2988,17 @@ function displayCardForRecall(hit: RecallHit, options: BackendItemOptions = {}):
     title,
     summary: hit.text,
     whyRelevant: recallReason(hit, options.origin),
-    source: sourceLabel(sourceType),
+    source: sourceLabel(sourceType, explicitlyRequested),
+    sourceType,
+    sourceLabel: sourceLabel(sourceType, explicitlyRequested),
+    qualityLabel: qualityLabelForCard(draftCard),
     at,
     score: hit.score,
+    confidence: hit.score,
     rawText: hit.text,
     sourceSegmentIds,
     pinned: Boolean(hit.pinned ?? hit.metadata.pinned),
-    explicitlyRequested: options.origin === "manual" || Boolean(hit.explicitly_requested ?? hit.metadata.explicitly_requested),
+    explicitlyRequested,
     priority: priorityFromValue(hit.priority ?? hit.metadata.priority),
     debugMetadata: {
       sourceType,
@@ -2713,7 +3013,16 @@ function displayCardForRecall(hit: RecallHit, options: BackendItemOptions = {}):
 
 function displayCardForWorkCard(card: WorkMemoryCard, options: BackendItemOptions = {}): SidecarDisplayCard {
   const sourceSegmentIds = options.sourceSegmentIds ?? [];
+  const sourceType = "work_memory_project";
+  const explicitlyRequested = options.origin === "manual";
   const at = Date.now();
+  const draftCard = {
+    sourceType,
+    sourceSegmentIds,
+    explicitlyRequested,
+    confidence: card.confidence,
+    category: "work_memory",
+  } as SidecarDisplayCard;
   return {
     id: `work-${card.project_id}-${at}`,
     cardKey: `work:${card.project_id}`,
@@ -2721,17 +3030,20 @@ function displayCardForWorkCard(card: WorkMemoryCard, options: BackendItemOption
     title: readableTitle(card.title, "Prior work"),
     summary: card.lesson || card.text,
     whyRelevant: card.reason ? `Similar pattern: ${card.reason}` : "Relevant prior work pattern.",
-    source: card.organization,
-    date: card.date_range,
+    source: sourceLabel(sourceType, explicitlyRequested),
+    sourceType,
+    sourceLabel: sourceLabel(sourceType, explicitlyRequested),
+    qualityLabel: qualityLabelForCard(draftCard),
+    date: [card.organization, card.date_range].filter(Boolean).join(" / "),
     at,
     score: card.score,
     rawText: card.text,
     citations: card.citations,
     sourceSegmentIds,
-    explicitlyRequested: options.origin === "manual",
+    explicitlyRequested,
     priority: card.score < 0.45 && options.origin !== "manual" ? "low" : card.score >= 0.72 || card.confidence >= 0.9 ? "high" : "normal",
     debugMetadata: {
-      sourceType: "work_memory_project",
+      sourceType,
       sourceId: card.project_id,
       score: card.score,
       confidence: card.confidence,
@@ -2821,6 +3133,9 @@ function readableTitle(value: string, fallback: string): string {
 }
 
 function noteReason(note: NoteCard, origin?: BackendItemOptions["origin"]): string {
+  if (note.why_now?.trim()) {
+    return note.why_now.trim();
+  }
   if (origin === "manual") {
     return "Returned for the typed search.";
   }
@@ -2844,11 +3159,8 @@ function recallReason(hit: RecallHit, origin?: BackendItemOptions["origin"]): st
   return "Retrieved because it overlaps with the recent transcript.";
 }
 
-function sourceLabel(sourceType: string): string {
-  if (sourceType === "file" || sourceType === "document_chunk") return "Prior notes";
-  if (sourceType === "session") return "Prior session";
-  if (sourceType === "work_memory_project") return "Work memory";
-  return "Local memory";
+function sourceLabel(sourceType: string, explicitlyRequested = false): string {
+  return displaySourceLabel(sourceType, explicitlyRequested);
 }
 
 function transcriptSourceFromPayload(value: unknown): TranscriptSource {
@@ -2943,6 +3255,16 @@ function noteFromPayload(value: unknown): NoteCard | null {
     ephemeral: Boolean(payload.ephemeral),
     source_type: payload.source_type ? String(payload.source_type) : undefined,
     sources: parseNoteSources(payload.sources),
+    evidence_quote: stringOrUndefined(payload.evidence_quote),
+    owner: stringOrUndefined(payload.owner),
+    due_date: stringOrUndefined(payload.due_date),
+    missing_info: stringOrUndefined(payload.missing_info),
+    confidence: numberOrUndefined(payload.confidence),
+    priority: payload.priority ? String(payload.priority) : undefined,
+    why_now: stringOrUndefined(payload.why_now),
+    suggested_say: stringOrUndefined(payload.suggested_say),
+    suggested_ask: stringOrUndefined(payload.suggested_ask),
+    citations: parseStringList(payload.citations),
   };
 }
 
@@ -3057,6 +3379,10 @@ function formatClock(value: number): string {
 
 function formatSeconds(value: number): string {
   return `${Number(value).toFixed(1)}s`;
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }
 
 function defaultApiBase(): string {

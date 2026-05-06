@@ -77,6 +77,16 @@ def test_devices_endpoint_reports_auto_selected_server_mic(monkeypatch, tmp_path
     assert "preferred_device_configured" not in payload
 
 
+def test_gpu_health_exposes_quality_gate_status(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BRAIN_SIDECAR_SIDECAR_QUALITY_GATE_ENABLED", "0")
+    with TestClient(create_app()) as client:
+        response = client.get("/api/health/gpu")
+
+    assert response.status_code == 200
+    assert response.json()["sidecar_quality_gate_enabled"] is False
+
+
 def test_browser_audio_websocket_is_disabled(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
     with TestClient(create_app()) as client:

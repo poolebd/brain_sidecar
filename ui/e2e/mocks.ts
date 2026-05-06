@@ -241,6 +241,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         dedupe_similarity_threshold: 0.88,
         web_context_enabled: true,
         web_context_configured: true,
+        sidecar_quality_gate_enabled: true,
         test_mode_enabled: testModeEnabled,
         test_audio_run_dir: "/tmp/brain-sidecar-tests",
       });

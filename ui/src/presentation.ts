@@ -37,12 +37,19 @@ export type SidecarDisplayCard = {
   summary: string;
   whyRelevant?: string;
   source?: string;
+  sourceType?: string;
+  sourceLabel?: string;
+  qualityLabel?: string;
   date?: string;
   rawText?: string;
   at: number;
   score?: number;
   confidence?: number;
   sourceSegmentIds?: string[];
+  evidenceQuote?: string;
+  owner?: string;
+  dueDate?: string;
+  missingInfo?: string;
   cardKey?: string;
   suggestedSay?: string;
   suggestedAsk?: string;
@@ -66,6 +73,18 @@ export type SidecarFilterOptions = {
 export type WorkCardBucket = "actions" | "decisions" | "questions" | "context";
 
 export type WorkCardGroups = Record<WorkCardBucket, SidecarDisplayCard[]>;
+
+export type MeetingOutputBucket = "actions" | "decisions" | "questions" | "risks" | "notes";
+
+export type MeetingOutputGroups = Record<MeetingOutputBucket, SidecarDisplayCard[]>;
+
+export type SidecarQualityMetrics = {
+  acceptedCurrentCount: number;
+  workMemoryCount: number;
+  manualCount: number;
+  sourceIdCoverage: number;
+  evidenceQuoteCoverage: number;
+};
 
 export type LiveFieldRow = {
   id: string;
@@ -138,6 +157,112 @@ export function groupWorkCards(cards: SidecarDisplayCard[]): WorkCardGroups {
   }
 
   return groups;
+}
+
+export function groupMeetingOutputCards(cards: SidecarDisplayCard[]): MeetingOutputGroups {
+  const groups: MeetingOutputGroups = {
+    actions: [],
+    decisions: [],
+    questions: [],
+    risks: [],
+    notes: [],
+  };
+
+  for (const card of cards) {
+    if (!isCurrentMeetingCard(card)) {
+      continue;
+    }
+    if (card.category === "action") {
+      groups.actions.push(card);
+    } else if (card.category === "decision") {
+      groups.decisions.push(card);
+    } else if (["question", "clarification"].includes(card.category)) {
+      groups.questions.push(card);
+    } else if (card.category === "risk") {
+      groups.risks.push(card);
+    } else {
+      groups.notes.push(card);
+    }
+  }
+
+  return groups;
+}
+
+export function isCurrentMeetingCard(card: SidecarDisplayCard): boolean {
+  const sourceType = card.sourceType ?? String(card.debugMetadata?.sourceType ?? "");
+  if (card.explicitlyRequested) {
+    return false;
+  }
+  return sourceType === "transcript" || sourceType === "model_fallback";
+}
+
+export function isWorkMemoryCard(card: SidecarDisplayCard): boolean {
+  const sourceType = card.sourceType ?? String(card.debugMetadata?.sourceType ?? "");
+  return card.category === "work_memory" || sourceType === "work_memory" || sourceType === "work_memory_project";
+}
+
+export function isManualCard(card: SidecarDisplayCard): boolean {
+  return Boolean(card.explicitlyRequested);
+}
+
+export function displaySourceLabel(sourceType: string, explicitlyRequested = false): string {
+  const normalized = sourceType.trim().toLowerCase();
+  let label = "Local memory";
+  if (normalized === "transcript" || normalized === "model_fallback") {
+    label = "Current meeting";
+  } else if (normalized === "work_memory" || normalized === "work_memory_project") {
+    label = "Work memory";
+  } else if (normalized === "saved_transcript" || normalized === "session") {
+    label = "Past transcript";
+  } else if (["local_file", "file", "document_chunk"].includes(normalized)) {
+    label = "Local file";
+  } else if (normalized === "brave_web" || normalized === "web") {
+    label = "Web";
+  }
+  return explicitlyRequested ? `Manual query / ${label}` : label;
+}
+
+export function qualityLabelForCard(card: SidecarDisplayCard): string {
+  if (isCurrentMeetingCard(card) && card.evidenceQuote && (card.sourceSegmentIds?.length ?? 0) > 0) {
+    return "Evidence-backed";
+  }
+  if (isWorkMemoryCard(card)) {
+    return "Memory context";
+  }
+  if (card.explicitlyRequested) {
+    return "Manual result";
+  }
+  if (typeof card.confidence === "number") {
+    return `${Math.round(card.confidence * 100)}% confidence`;
+  }
+  return "";
+}
+
+export function buildSidecarQualityMetrics(cards: SidecarDisplayCard[]): SidecarQualityMetrics {
+  const currentCards = cards.filter(isCurrentMeetingCard);
+  return {
+    acceptedCurrentCount: currentCards.length,
+    workMemoryCount: cards.filter(isWorkMemoryCard).length,
+    manualCount: cards.filter(isManualCard).length,
+    sourceIdCoverage: percentWith(currentCards, (card) => (card.sourceSegmentIds?.length ?? 0) > 0),
+    evidenceQuoteCoverage: percentWith(currentCards, (card) => Boolean(card.evidenceQuote?.trim())),
+  };
+}
+
+export function buildConsultingBriefMarkdown(cards: SidecarDisplayCard[], title = "Consulting Brief"): string {
+  const currentCards = cards.filter((card) => isCurrentMeetingCard(card) && !card.provisional);
+  const memoryCards = cards.filter((card) => isWorkMemoryCard(card) && !card.provisional);
+  const groups = groupMeetingOutputCards(currentCards);
+  const lines: string[] = [`# ${title}`, ""];
+
+  appendBriefSection(lines, "Actions", groups.actions);
+  appendBriefSection(lines, "Decisions / Instructions", groups.decisions);
+  appendBriefSection(lines, "Open Questions / Clarifications", groups.questions);
+  appendBriefSection(lines, "Risks", groups.risks);
+  appendBriefSection(lines, "Other Meeting Notes", groups.notes);
+  appendBriefSection(lines, "Relevant Work Memory", memoryCards, { memory: true });
+
+  return `${lines.join("\n").trim()}\n`;
 }
 
 export function buildLiveFieldRows(
@@ -327,6 +452,47 @@ function cardRank(card: SidecarDisplayCard): number {
     ? card.score * 100
     : 70;
   return override + category + relevance;
+}
+
+function percentWith(cards: SidecarDisplayCard[], predicate: (card: SidecarDisplayCard) => boolean): number {
+  if (cards.length === 0) {
+    return 1;
+  }
+  return Math.round((cards.filter(predicate).length / cards.length) * 1000) / 1000;
+}
+
+function appendBriefSection(
+  lines: string[],
+  heading: string,
+  cards: SidecarDisplayCard[],
+  options: { memory?: boolean } = {},
+): void {
+  lines.push(`## ${heading}`, "");
+  if (cards.length === 0) {
+    lines.push("- None", "");
+    return;
+  }
+  for (const card of cards) {
+    lines.push(`- **${card.title}**: ${card.summary}`);
+    const details = [
+      card.owner ? `Owner: ${card.owner}` : "",
+      card.dueDate ? `Due: ${card.dueDate}` : "",
+      card.missingInfo ? `Missing: ${card.missingInfo}` : "",
+    ].filter(Boolean);
+    if (details.length > 0) {
+      lines.push(`  - ${details.join(" · ")}`);
+    }
+    if (!options.memory && card.evidenceQuote) {
+      lines.push(`  - Evidence: "${card.evidenceQuote}"`);
+    }
+    if (!options.memory && (card.sourceSegmentIds?.length ?? 0) > 0) {
+      lines.push(`  - Source segments: ${card.sourceSegmentIds!.join(", ")}`);
+    }
+    if (options.memory && (card.citations?.length ?? 0) > 0) {
+      lines.push(`  - Citations: ${card.citations!.join("; ")}`);
+    }
+  }
+  lines.push("");
 }
 
 function areDuplicateCards(left: SidecarDisplayCard, right: SidecarDisplayCard): boolean {

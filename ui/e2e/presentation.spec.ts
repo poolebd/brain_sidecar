@@ -1,8 +1,12 @@
 import { expect, test } from "@playwright/test";
 import {
+  buildConsultingBriefMarkdown,
   buildLiveFieldRows,
   buildSidecarDisplayCards,
+  buildSidecarQualityMetrics,
+  displaySourceLabel,
   getTranscriptDisplayLabel,
+  groupMeetingOutputCards,
   groupWorkCards,
   type SidecarDisplayCard,
   type TranscriptEvent,
@@ -97,6 +101,84 @@ test("groups useful cards into daily work buckets", () => {
   expect(groups.decisions.map((item) => item.id)).toEqual(["decision"]);
   expect(groups.questions.map((item) => item.id)).toEqual(["question"]);
   expect(groups.context.map((item) => item.id)).toEqual(["topic", "memory", "web"]);
+});
+
+test("labels sidecar sources by source type instead of category", () => {
+  expect(displaySourceLabel("transcript")).toBe("Current meeting");
+  expect(displaySourceLabel("model_fallback")).toBe("Current meeting");
+  expect(displaySourceLabel("work_memory_project")).toBe("Work memory");
+  expect(displaySourceLabel("document_chunk")).toBe("Local file");
+  expect(displaySourceLabel("brave_web", true)).toBe("Manual query / Web");
+});
+
+test("groups current meeting output separately from work memory", () => {
+  const groups = groupMeetingOutputCards([
+    card("action", { category: "action", sourceType: "transcript" }),
+    card("decision", { category: "decision", sourceType: "transcript" }),
+    card("question", { category: "clarification", sourceType: "transcript" }),
+    card("risk", { category: "risk", sourceType: "transcript" }),
+    card("memory", { category: "work_memory", sourceType: "work_memory_project" }),
+  ]);
+
+  expect(groups.actions.map((item) => item.id)).toEqual(["action"]);
+  expect(groups.decisions.map((item) => item.id)).toEqual(["decision"]);
+  expect(groups.questions.map((item) => item.id)).toEqual(["question"]);
+  expect(groups.risks.map((item) => item.id)).toEqual(["risk"]);
+  expect(groups.notes.map((item) => item.id)).toEqual([]);
+});
+
+test("computes evidence coverage for current meeting cards", () => {
+  const metrics = buildSidecarQualityMetrics([
+    card("meeting-a", {
+      category: "action",
+      sourceType: "transcript",
+      sourceSegmentIds: ["seg-1"],
+      evidenceQuote: "Send the comments by Monday.",
+    }),
+    card("meeting-b", {
+      category: "question",
+      sourceType: "transcript",
+      sourceSegmentIds: [],
+      evidenceQuote: "",
+    }),
+    card("memory", { category: "work_memory", sourceType: "work_memory_project" }),
+    card("manual", { explicitlyRequested: true, sourceType: "saved_transcript" }),
+  ]);
+
+  expect(metrics.acceptedCurrentCount).toBe(2);
+  expect(metrics.workMemoryCount).toBe(1);
+  expect(metrics.manualCount).toBe(1);
+  expect(metrics.sourceIdCoverage).toBe(0.5);
+  expect(metrics.evidenceQuoteCoverage).toBe(0.5);
+});
+
+test("builds consulting brief with evidence and separated work memory", () => {
+  const markdown = buildConsultingBriefMarkdown([
+    card("action", {
+      category: "action",
+      title: "Send by Monday",
+      summary: "Send the Siemens comments by Monday.",
+      sourceType: "transcript",
+      sourceSegmentIds: ["seg-1"],
+      evidenceQuote: "four documents by Monday",
+      owner: "Kyle",
+      dueDate: "Monday",
+    }),
+    card("memory", {
+      category: "work_memory",
+      title: "Relay work distractor",
+      summary: "Past CT/PT relay settings work.",
+      sourceType: "work_memory_project",
+      citations: ["eval-memory:relay"],
+    }),
+  ]);
+
+  expect(markdown).toContain("## Actions");
+  expect(markdown).toContain("Evidence: \"four documents by Monday\"");
+  expect(markdown).toContain("Source segments: seg-1");
+  expect(markdown).toContain("## Relevant Work Memory");
+  expect(markdown).toContain("Relay work distractor");
+  expect(markdown.indexOf("Past CT/PT relay settings work.")).toBeGreaterThan(markdown.indexOf("## Relevant Work Memory"));
 });
 
 test("pairs sidecar cards to transcript rows by source segment", () => {
