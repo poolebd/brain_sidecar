@@ -1150,6 +1150,9 @@ export function App() {
       if (!event.isFinal && current.some((candidate) => transcriptFinalAlreadyCoversPartial(candidate, event))) {
         return current;
       }
+      if (!event.isFinal && transcriptWordCount(event.text) < 2) {
+        return current;
+      }
       const replacementIds = transcriptReplacementIds(event);
       const withoutSameId = current.filter((candidate) => !transcriptReplacementIds(candidate).some((id) => replacementIds.includes(id)));
       const reconciled = withoutSameId.filter((candidate) => {
@@ -3766,6 +3769,10 @@ function transcriptTextContains(left: string, right: string): boolean {
 
 function normalizeTranscriptText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").replace(/[.,!?;:"']/g, "").trim();
+}
+
+function transcriptWordCount(value: string): number {
+  return normalizeTranscriptText(value).split(" ").filter(Boolean).length;
 }
 
 function payloadTimeMs(value: unknown): number | undefined {

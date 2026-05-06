@@ -412,6 +412,22 @@ test("keeps showing newer streaming previews that overlap older finals", async (
   await emitSessionEvent(page, {
     type: "transcript_partial",
     payload: {
+      id: "stream-preview-single",
+      text: "newer",
+      start_s: 0.48,
+      end_s: 11.8,
+      is_final: false,
+      asr_model: "nemotron",
+      transcript_retention: "temporary",
+      raw_audio_retained: false,
+    },
+  });
+  const transcript = page.locator("#transcript");
+  await expect(transcript).not.toContainText("newer");
+
+  await emitSessionEvent(page, {
+    type: "transcript_partial",
+    payload: {
       id: "stream-preview-1",
       text: "newer phrase is arriving",
       start_s: 0.48,
@@ -423,7 +439,6 @@ test("keeps showing newer streaming previews that overlap older finals", async (
     },
   });
 
-  const transcript = page.locator("#transcript");
   await expect(transcript).toContainText("Earlier committed speech");
   await expect(page.getByLabel("Mic transcript item").filter({ hasText: "newer phrase is arriving" })).toContainText("Preview");
 

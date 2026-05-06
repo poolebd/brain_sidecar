@@ -27,6 +27,9 @@ NEMOTRON_INSTALL_HELP = (
     "`libsndfile1` and `ffmpeg`, then `pip install -e '.[nemotron]'` and "
     "`pip install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'`."
 )
+STREAMING_MIN_FINAL_WORDS = 4
+STREAMING_MIN_FINAL_SECONDS = 1.2
+STREAMING_MIN_PARTIAL_WORDS = 2
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,9 @@ class StablePrefixFinalizer:
         self._committed_words = 0
         self._stream_start_s: float | None = None
         self._committed_until_s: float | None = None
+        self._pending_final_words: list[str] = []
+        self._pending_final_start_s: float | None = None
+        self._pending_final_end_s: float | None = None
 
     def accept_text(
         self,
@@ -110,35 +116,34 @@ class StablePrefixFinalizer:
         commit_to = min(len(stable_words), max(0, len(words) - holdback_words))
         if commit_to > self._committed_words:
             final_words = stable_words[self._committed_words : commit_to]
-            final_text = " ".join(final_words).strip()
-            if final_text:
-                final_start_s = self._uncommitted_start_s(start_s)
+            if final_words:
+                if self._pending_final_start_s is None:
+                    self._pending_final_start_s = self._uncommitted_start_s(start_s)
+                final_start_s = self._pending_final_start_s
                 final_end_s = self._estimate_commit_end_s(
                     start_s=final_start_s,
                     end_s=end_s,
                     total_words=len(words),
                     commit_to=commit_to,
                 )
-                events.append(
-                    StreamingAsrEvent(
-                        kind="final",
-                        text=final_text,
-                        start_s=final_start_s,
-                        end_s=final_end_s,
-                        model=model,
-                    )
-                )
+                self._pending_final_words.extend(final_words)
+                self._pending_final_end_s = final_end_s
                 self._committed_words = commit_to
-                self._committed_until_s = final_end_s
+                final_event = self._maybe_emit_pending_final(model=model)
+                if final_event is not None:
+                    events.append(final_event)
         if self.partials_enabled and cleaned != self._last_text:
-            partial_text = self._uncommitted_text(cleaned)
-            if partial_text:
+            partial_text = self._preview_text(cleaned)
+            if self._should_emit_partial(partial_text):
+                partial_start_s = self._pending_final_start_s
+                if partial_start_s is None:
+                    partial_start_s = self._uncommitted_start_s(start_s)
                 events.append(
                     StreamingAsrEvent(
                         kind="partial",
                         text=partial_text,
-                        start_s=self._uncommitted_start_s(start_s),
-                        end_s=max(self._uncommitted_start_s(start_s), end_s),
+                        start_s=partial_start_s,
+                        end_s=max(partial_start_s, end_s),
                         model=model,
                     )
                 )
@@ -147,14 +152,15 @@ class StablePrefixFinalizer:
 
     def flush(self, *, final_offset_s: float | None, model: str) -> list[StreamingAsrEvent]:
         words = _words(self._last_text)
-        final_words = words[self._committed_words :]
+        final_words = [*self._pending_final_words, *words[self._committed_words :]]
         final_text = " ".join(final_words).strip()
         if not final_text:
             return []
         self._committed_words = len(words)
-        start_s = self._uncommitted_start_s(0.0)
+        start_s = self._pending_final_start_s if self._pending_final_start_s is not None else self._uncommitted_start_s(0.0)
         end_s = final_offset_s if final_offset_s is not None else start_s
         self._committed_until_s = max(start_s, end_s)
+        self._clear_pending_final()
         return [
             StreamingAsrEvent(
                 kind="final",
@@ -165,11 +171,11 @@ class StablePrefixFinalizer:
             )
         ]
 
-    def _uncommitted_text(self, text: str) -> str:
+    def _preview_text(self, text: str) -> str:
         words = _words(text)
-        if self._committed_words <= 0:
+        if self._committed_words <= 0 and not self._pending_final_words:
             return text
-        return " ".join(words[self._committed_words :]).strip() or text
+        return " ".join([*self._pending_final_words, *words[self._committed_words :]]).strip()
 
     def _uncommitted_start_s(self, fallback: float) -> float:
         if self._committed_until_s is not None:
@@ -181,6 +187,43 @@ class StablePrefixFinalizer:
         committed_delta = max(1, commit_to - self._committed_words)
         ratio = min(1.0, committed_delta / uncommitted_words)
         return max(start_s, start_s + ((end_s - start_s) * ratio))
+
+    def _maybe_emit_pending_final(self, *, model: str) -> StreamingAsrEvent | None:
+        if not self._pending_final_words or not self._pending_final_ready():
+            return None
+        text = " ".join(self._pending_final_words).strip()
+        start_s = self._pending_final_start_s if self._pending_final_start_s is not None else self._uncommitted_start_s(0.0)
+        end_s = self._pending_final_end_s if self._pending_final_end_s is not None else start_s
+        self._committed_until_s = max(start_s, end_s)
+        self._clear_pending_final()
+        return StreamingAsrEvent(
+            kind="final",
+            text=text,
+            start_s=start_s,
+            end_s=max(start_s, end_s),
+            model=model,
+        )
+
+    def _pending_final_ready(self) -> bool:
+        if len(self._pending_final_words) >= STREAMING_MIN_FINAL_WORDS:
+            return True
+        text = " ".join(self._pending_final_words).strip()
+        if text.endswith((".", "?", "!")):
+            return True
+        if self._pending_final_start_s is None or self._pending_final_end_s is None:
+            return False
+        return self._pending_final_end_s - self._pending_final_start_s >= STREAMING_MIN_FINAL_SECONDS
+
+    def _should_emit_partial(self, text: str) -> bool:
+        words = _words(text)
+        if len(words) >= STREAMING_MIN_PARTIAL_WORDS:
+            return True
+        return bool(text and text.endswith((".", "?", "!")))
+
+    def _clear_pending_final(self) -> None:
+        self._pending_final_words = []
+        self._pending_final_start_s = None
+        self._pending_final_end_s = None
 
 
 class NemotronStreamingTranscriber:
