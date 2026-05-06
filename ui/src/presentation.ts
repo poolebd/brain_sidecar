@@ -4,6 +4,8 @@ export type SpeakerRole = "user" | "other" | "unknown";
 export type TranscriptEvent = {
   id: string;
   segmentId?: string;
+  replacesSegmentId?: string;
+  sourceSegmentIds?: string[];
   text: string;
   at: number;
   source: TranscriptSource;
@@ -311,6 +313,9 @@ export function buildLiveFieldRows(
     rowByTranscriptKey.set(transcript.id, row);
     if (transcript.segmentId) {
       rowByTranscriptKey.set(transcript.segmentId, row);
+    }
+    for (const sourceSegmentId of transcript.sourceSegmentIds ?? []) {
+      rowByTranscriptKey.set(sourceSegmentId, row);
     }
   }
 

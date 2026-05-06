@@ -6,7 +6,13 @@ from pathlib import Path
 from brain_sidecar.config import Settings
 from brain_sidecar.core.audio import AudioCapture
 from brain_sidecar.core.dedupe import TranscriptDeduplicator
-from brain_sidecar.core.events import EVENT_SIDECAR_CARD, EVENT_TRANSCRIPT_FINAL, EVENT_TRANSCRIPT_PARTIAL, SidecarEvent
+from brain_sidecar.core.events import (
+    EVENT_AUDIO_STATUS,
+    EVENT_SIDECAR_CARD,
+    EVENT_TRANSCRIPT_FINAL,
+    EVENT_TRANSCRIPT_PARTIAL,
+    SidecarEvent,
+)
 from brain_sidecar.core.models import NoteCard, TranscriptSegment
 from brain_sidecar.core.notes import NoteSynthesisResult
 from brain_sidecar.core.session import ActiveSession, AudioWindow, SessionManager, normalize_mic_tuning, suggest_microphone_tuning
@@ -46,6 +52,27 @@ class FakeTranscriber:
                 )
             ],
         )
+
+
+class SequencedTranscriber:
+    model_size = "fake-asr"
+
+    def __init__(self, results: list[TranscriptionResult]) -> None:
+        self.results = results
+
+    async def load(self) -> None:
+        return None
+
+    async def transcribe_pcm16(
+        self,
+        pcm: bytes,
+        start_offset_s: float,
+        *,
+        initial_prompt: str | None = None,
+    ) -> TranscriptionResult:
+        if not self.results:
+            return TranscriptionResult(model="fake-asr", language="en", spans=[], audio_rms=0.0)
+        return self.results.pop(0)
 
 
 class StaticNotes:
@@ -121,6 +148,77 @@ def test_final_transcript_event_uses_authoritative_contract(event_loop, tmp_path
     assert event.payload["raw_audio_retained"] is False
     assert manager.storage.recent_segments(session.id)[0].text == "We should ask about rollback risk"
     assert manager.storage.recent_segments(session.id)[0].speaker_role == "unknown"
+
+
+def test_overlapping_cleaner_final_replaces_clipped_transcript_row(event_loop, tmp_path: Path) -> None:
+    manager = SessionManager(make_settings(tmp_path))
+    manager.transcriber = SequencedTranscriber([
+        TranscriptionResult(
+            model="fake-asr",
+            language="en",
+            audio_rms=0.02,
+            spans=[
+                TranscribedSpan(
+                    start_s=0.0,
+                    end_s=3.4,
+                    text="We should review the relay settings.",
+                )
+            ],
+        ),
+        TranscriptionResult(
+            model="fake-asr",
+            language="en",
+            audio_rms=0.02,
+            spans=[
+                TranscribedSpan(
+                    start_s=1.1,
+                    end_s=4.6,
+                    text="We should review the relay settings before Friday.",
+                )
+            ],
+        ),
+    ])  # type: ignore[assignment]
+    session = manager.storage.create_session("replacement")
+    manager._active[session.id] = active_session(session.id, save_transcript=True)
+
+    first_collector = event_loop.create_task(collect_event(manager, session.id, EVENT_TRANSCRIPT_FINAL))
+    event_loop.run_until_complete(manager._transcribe_window(session.id, AudioWindow(b"\0" * 64000, 0.0)))
+    first_event = event_loop.run_until_complete(asyncio.wait_for(first_collector, timeout=1.0))
+
+    second_collector = event_loop.create_task(collect_event(manager, session.id, EVENT_TRANSCRIPT_FINAL))
+    event_loop.run_until_complete(manager._transcribe_window(session.id, AudioWindow(b"\0" * 64000, 1.1)))
+    second_event = event_loop.run_until_complete(asyncio.wait_for(second_collector, timeout=1.0))
+
+    stored = manager.storage.recent_segments(session.id, limit=5)
+    assert len(stored) == 1
+    assert stored[0].text == "We should review the relay settings before Friday."
+    assert second_event.payload["id"] == first_event.payload["id"]
+    assert second_event.payload["replaces_segment_id"] == first_event.payload["id"]
+    assert second_event.payload["source_segment_ids"][0] == first_event.payload["id"]
+    assert len(manager._active[session.id].recent_segments) == 1
+    assert manager._active[session.id].final_segments_replaced == 1
+
+
+def test_empty_asr_windows_publish_capture_diagnostics(event_loop, tmp_path: Path) -> None:
+    manager = SessionManager(make_settings(tmp_path))
+    manager.transcriber = SequencedTranscriber([
+        TranscriptionResult(model="fake-asr", language=None, spans=[], audio_rms=0.0004),
+    ])  # type: ignore[assignment]
+    session = manager.storage.create_session("quiet")
+    active = active_session(session.id, save_transcript=True)
+    manager._active[session.id] = active
+
+    collector = event_loop.create_task(collect_event(manager, session.id, EVENT_AUDIO_STATUS))
+    batch = event_loop.run_until_complete(manager._transcribe_window(session.id, AudioWindow(b"\0" * 64000, 0.0)))
+    event = event_loop.run_until_complete(asyncio.wait_for(collector, timeout=1.0))
+
+    assert batch.segments == []
+    assert active.silent_windows == 1
+    assert active.asr_empty_windows == 1
+    assert event.payload["last_audio_rms"] == 0.0004
+    assert event.payload["silent_windows"] == 1
+    assert event.payload["asr_empty_windows"] == 1
+    assert manager.storage.recent_segments(session.id) == []
 
 
 def test_note_updates_also_publish_normalized_sidecar_cards(event_loop, tmp_path: Path) -> None:

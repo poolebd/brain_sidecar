@@ -160,11 +160,10 @@ Use **Listen** for temporary, listen-only meetings and **Record** only when the
 transcript should become future recall material. The main view is organized for
 a quick meeting glance:
 
-- Live Transcript shows final transcript lines and, when explicitly enabled,
-  gray provisional partials.
-- Contribution Lane shows the best current "say this," "ask this," risk,
-  follow-up, memory, work-memory, and web cards.
-- Meeting Output keeps the broader action/decision/question/risk/context buckets.
+- Live Field is the primary meeting surface: transcript lines stay paired with
+  any grounded sidecar cards that cite the current meeting.
+- Meeting Output keeps action/decision/question/risk cards, the compact
+  contract status, quiet quality state, and the post-call brief.
 - Tools keeps operational status, GPU details, indexing, and speaker identity
   controls away from the transcript.
 
@@ -211,7 +210,9 @@ contract:
   `partial_windows_skipped_queue`, `partial_windows_dropped_for_final`, and
   `partial_asr_duration_ms`.
 - `transcript_final`: authoritative transcript segment. It is persisted only
-  when the active session is in saved/recording mode.
+  when the active session is in saved/recording mode. Consolidated overlap
+  updates may include `replaces_segment_id` and `source_segment_ids` so clients
+  update the existing row instead of appending duplicate shards.
 - `note_update` and `recall_hit`: existing compatibility events consumed by the
   UI and external clients.
 - `sidecar_card`: normalized meeting-assistant card with category, title, body,
@@ -219,9 +220,10 @@ contract:
   `source_segment_ids`, `source_type`, sources/citations, `card_key`,
   ephemeral/expiry metadata, and `raw_audio_retained: false`.
 - `audio_status` and `gpu_status`: operational state such as queue depth,
-  dropped windows, preview metrics, event-drop counts, ASR settings, and GPU
-  pressure. SSE streams send heartbeats and keep a bounded replay buffer for
-  reconnects using `Last-Event-ID`.
+  dropped windows, preview metrics, `last_audio_rms`, `silent_windows`,
+  `asr_empty_windows`, `final_segments_replaced`, event-drop counts, ASR
+  settings, and GPU pressure. SSE streams send heartbeats and keep a bounded
+  replay buffer for reconnects using `Last-Event-ID`.
 
 Raw audio is never written to disk. Temporary/listen-only sessions do not store
 transcript text, note cards, embeddings, diarization rows, work-memory recall

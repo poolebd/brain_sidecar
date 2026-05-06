@@ -131,6 +131,7 @@ type TranscriptLine = {
   text: string;
   start_s: number;
   end_s: number;
+  source_segment_ids?: string[];
   asr_model?: string;
   created_at?: number;
 };
@@ -271,6 +272,10 @@ type GpuHealth = {
 type PipelineState = {
   queueDepth: number;
   droppedWindows: number;
+  lastAudioRms?: number;
+  silentWindows: number;
+  asrEmptyWindows: number;
+  finalSegmentsReplaced: number;
 };
 
 type SpeakerStatus = {
@@ -430,6 +435,7 @@ export function App() {
   const [audioSource, setAudioSource] = useState<AudioSource>(() => defaultAudioSource());
   const [micTuning, setMicTuning] = useState<MicTuning>(() => loadMicTuning());
   const [meetingFocus, setMeetingFocus] = useState<MeetingFocusState>(() => loadMeetingFocus());
+  const [meetingFocusExpanded, setMeetingFocusExpanded] = useState(false);
   const [activeMeetingContract, setActiveMeetingContract] = useState<MeetingContractPayload | null>(null);
   const [meetingDiagnostics, setMeetingDiagnostics] = useState<MeetingDiagnostics | null>(null);
   const [sessionRetention, setSessionRetention] = useState<SessionRetention>(() => {
@@ -447,7 +453,13 @@ export function App() {
   const [notes, setNotes] = useState<NoteCard[]>([]);
   const [recall, setRecall] = useState<RecallHit[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
-  const [pipeline, setPipeline] = useState<PipelineState>({ queueDepth: 0, droppedWindows: 0 });
+  const [pipeline, setPipeline] = useState<PipelineState>({
+    queueDepth: 0,
+    droppedWindows: 0,
+    silentWindows: 0,
+    asrEmptyWindows: 0,
+    finalSegmentsReplaced: 0,
+  });
   const [fixturePath, setFixturePath] = useState(DEFAULT_FIXTURE_AUDIO);
   const [testSourcePath, setTestSourcePath] = useState(DEFAULT_FIXTURE_AUDIO);
   const [testMaxSeconds, setTestMaxSeconds] = useState("");
@@ -496,6 +508,7 @@ export function App() {
   const followLiveRef = useRef(true);
   const micPlaybackUrlRef = useRef<string | null>(null);
   const evidenceHighlightTimerRef = useRef<number | null>(null);
+  const captureWarningRef = useRef("");
 
   useEffect(() => {
     refreshDevices();
@@ -525,6 +538,19 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(MEETING_FOCUS_STORAGE_KEY, JSON.stringify(meetingFocus));
   }, [meetingFocus]);
+
+  useEffect(() => {
+    if (!drawerOpen) {
+      return;
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setDrawerOpen(false);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [drawerOpen]);
 
   useEffect(() => {
     return () => {
@@ -705,16 +731,23 @@ export function App() {
     ? "Recording playback"
     : "Server mic";
   const sessionRetentionStatus = sessionRetention === "saved" ? "Saved transcript" : "Not saved";
+  const activeRetentionStatus = activeRetention === "saved" ? "Saved transcript" : "Not saved";
   const sessionRetentionDetail = sessionRetention === "saved"
     ? "Transcript text and notes will be available for future recall. Raw audio is not saved."
     : "Ephemeral: transcript text and notes stay on screen only. Raw audio is not saved.";
+  const captureStatusSummary = missingServerDevice
+    ? "No healthy server mic"
+    : `${captureModeLabel} · ${captureActive ? activeRetentionStatus : sessionRetentionStatus} · raw audio discarded`;
+  const headerQueueLabel = pipeline.queueDepth > 0 || captureActive || captureStarting
+    ? `Queue ${pipeline.queueDepth}`
+    : "";
   const contextEmptyTitle = captureStarting
     ? "Starting context"
     : captureActive
       ? activeRetention === "saved" ? "Recording context" : "Listening for context"
       : "Context standby";
   const contextEmptyBody = captureActive && currentMeetingCards.length === 0
-    ? "No grounded meeting cards yet. Sidecar is suppressing unsupported/noisy cards."
+    ? "No grounded cards yet. Unsupported/noisy cards are being suppressed."
     : captureActive || captureStarting
       ? "Actions, decisions, questions, and useful context will appear here."
       : "Start listening, record a transcript, or run a query.";
@@ -790,7 +823,14 @@ export function App() {
     setRecall([]);
     setWorkMemoryMatches([]);
     setErrors([]);
-    setPipeline({ queueDepth: 0, droppedWindows: 0 });
+    setPipeline({
+      queueDepth: 0,
+      droppedWindows: 0,
+      silentWindows: 0,
+      asrEmptyWindows: 0,
+      finalSegmentsReplaced: 0,
+    });
+    captureWarningRef.current = "";
     setActiveMeetingContract(null);
     setMeetingDiagnostics(null);
     setTranscriptEvents([]);
@@ -846,9 +886,24 @@ export function App() {
         setGpu((current) => ({ ...current, ...payload }));
       }
       setPipeline((current) => ({
+        ...current,
         queueDepth: Number(payload.queue_depth ?? current.queueDepth),
         droppedWindows: Number(payload.dropped_windows ?? current.droppedWindows),
+        lastAudioRms: numberOrUndefined(payload.last_audio_rms) ?? current.lastAudioRms,
+        silentWindows: Number(payload.silent_windows ?? current.silentWindows),
+        asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
+        finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
       }));
+      const captureWarning = captureWarningFromPayload(payload);
+      if (captureWarning && captureWarning.id !== captureWarningRef.current) {
+        captureWarningRef.current = captureWarning.id;
+        appendSystemLog({
+          level: "warning",
+          title: captureWarning.title,
+          message: captureWarning.message,
+          metadata: payload,
+        });
+      }
       if (nextStatus === "freeing_gpu") {
         appendSystemLog({
           level: "status",
@@ -883,6 +938,10 @@ export function App() {
         ...current,
         queueDepth: Number(payload.queue_depth ?? current.queueDepth),
         droppedWindows: Number(payload.dropped_windows ?? current.droppedWindows),
+        lastAudioRms: numberOrUndefined(payload.last_audio_rms) ?? current.lastAudioRms,
+        silentWindows: Number(payload.silent_windows ?? current.silentWindows),
+        asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
+        finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
       }));
       appendTranscriptEvent(transcriptEventFromPayload(payload, envelope));
     }
@@ -891,16 +950,22 @@ export function App() {
         ...current,
         queueDepth: Number(payload.queue_depth ?? current.queueDepth),
         droppedWindows: Number(payload.dropped_windows ?? current.droppedWindows),
+        lastAudioRms: numberOrUndefined(payload.last_audio_rms) ?? current.lastAudioRms,
+        silentWindows: Number(payload.silent_windows ?? current.silentWindows),
+        asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
+        finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
       }));
       const line = {
         id: String(payload.id),
         text: String(payload.text),
         start_s: Number(payload.start_s),
         end_s: Number(payload.end_s),
+        source_segment_ids: parseStringList(payload.source_segment_ids),
         asr_model: payload.asr_model ? String(payload.asr_model) : undefined,
         created_at: payload.created_at ? Number(payload.created_at) : undefined,
       };
-      setTranscript((current) => [...current, line]);
+      const replacesSegmentId = stringOrUndefined(payload.replaces_segment_id);
+      setTranscript((current) => replaceTranscriptLine(current, line, replacesSegmentId));
       appendTranscriptEvent(transcriptEventFromPayload(payload, envelope));
     }
     if (envelope.type === "sidecar_card") {
@@ -1013,7 +1078,8 @@ export function App() {
       if (!event.isFinal && current.some((candidate) => candidate.isFinal && transcriptEventsOverlap(candidate, event))) {
         return current;
       }
-      const withoutSameId = current.filter((candidate) => candidate.id !== event.id);
+      const replacementIds = transcriptReplacementIds(event);
+      const withoutSameId = current.filter((candidate) => !transcriptReplacementIds(candidate).some((id) => replacementIds.includes(id)));
       const reconciled = withoutSameId.filter((candidate) => {
         if (!transcriptEventsOverlap(candidate, event)) {
           return true;
@@ -1165,7 +1231,12 @@ export function App() {
       return;
     }
     const targets = Array.from(node.querySelectorAll<HTMLElement>("[data-transcript-id], [data-segment-id]"))
-      .filter((element) => ids.has(element.dataset.transcriptId ?? "") || ids.has(element.dataset.segmentId ?? ""));
+      .filter((element) => {
+        const sourceIds = (element.dataset.sourceSegmentIds ?? "").split(" ").filter(Boolean);
+        return ids.has(element.dataset.transcriptId ?? "")
+          || ids.has(element.dataset.segmentId ?? "")
+          || sourceIds.some((sourceId) => ids.has(sourceId));
+      });
     targets[0]?.scrollIntoView({ behavior: "smooth", block: "center" });
     setFollowState(false);
   }
@@ -1187,6 +1258,7 @@ export function App() {
     setActiveSessionRetention(retentionForStart);
     setActiveMeetingContract(contractForStart);
     setMeetingDiagnostics(null);
+    setMeetingFocusExpanded(false);
     setStatus("starting");
     setBriefVisible(false);
     appendSystemLog({
@@ -1670,14 +1742,8 @@ export function App() {
           <span className="brand-mark" aria-hidden="true" />
           <div>
             <strong>Brain Sidecar</strong>
-            <small>{webStatusLabel}</small>
+            <small>Local meeting cockpit</small>
           </div>
-        </div>
-        <div className="top-metrics" aria-label="Session metrics">
-          <Metric label="Transcript" value={String(transcript.length)} detail="heard lines" />
-          <Metric label="Notes" value={String(notes.length)} detail="cards" />
-          <Metric label="Recall" value={String(recall.length)} detail={workMemoryStatus ? `${workMemoryStatus.projects} work` : "hits"} />
-          <Metric label="Queue" value={String(pipeline.queueDepth)} detail={`beam ${gpu.asr_beam_size ?? "?"}`} />
         </div>
         <div className="top-actions">
           <span className={`status-pill ${statusTone}`} aria-label="Runtime status">
@@ -1687,7 +1753,16 @@ export function App() {
           <span className={`retention-pill ${activeRetention}`} aria-label="Session save mode status">
             {captureActive ? (activeRetention === "saved" ? "Recording" : "Listening") : sessionRetentionStatus}
           </span>
-          <button className="secondary" onClick={() => setDrawerOpen(true)}>Tools</button>
+          {headerQueueLabel && <span className="queue-pill" aria-label="Capture queue status">{headerQueueLabel}</span>}
+          <button
+            className="secondary tool-drawer-toggle"
+            type="button"
+            aria-controls="tools-drawer"
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen((value) => !value)}
+          >
+            Tools
+          </button>
           <button className="primary" onClick={() => start()} disabled={captureStartDisabled}>
             {captureButtonLabel}
           </button>
@@ -1705,46 +1780,32 @@ export function App() {
               <h1>Live field</h1>
             </div>
             <div className="field-toolbar-status">
+              <span>{transcript.length} heard</span>
+              <span>{currentMeetingCards.length} current</span>
               <span>{gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "GPU check"}</span>
-              <span>{streamingModeLabel}</span>
-              <span>{gpuFreeLabel}</span>
             </div>
           </div>
 
-          <section className="capture-strip" aria-label="Capture controls">
-            <div className="mode-control" role="group" aria-label="Session save mode">
-              <button
-                type="button"
-                aria-pressed={sessionRetention === "temporary"}
-                className={sessionRetention === "temporary" ? "active" : ""}
-                disabled={captureStarting || captureActive}
-                onClick={() => setSessionRetention("temporary")}
-              >
-                <span>Listen</span>
-                <small>Ephemeral</small>
-              </button>
-              <button
-                type="button"
-                aria-pressed={sessionRetention === "saved"}
-                className={sessionRetention === "saved" ? "active" : ""}
-                disabled={captureStarting || captureActive}
-                onClick={() => setSessionRetention("saved")}
-              >
-                <span>Record</span>
-                <small>Saved transcript</small>
-              </button>
-            </div>
-            <div className="capture-strip-summary" aria-label="Selected capture mode">
-              <strong>{captureModeLabel} · {captureActive ? (activeRetention === "saved" ? "Recording" : "Listening") : sessionRetentionStatus}</strong>
-              <span>{sessionRetentionDetail}</span>
-            </div>
-          </section>
+          <div className="cockpit-control-row">
+            <CaptureControlBar
+              retention={sessionRetention}
+              disabled={captureStarting || captureActive}
+              statusSummary={captureStatusSummary}
+              detail={sessionRetentionDetail}
+              warning={missingServerDevice ? serverMicStatus : ""}
+              onChange={setSessionRetention}
+            />
 
-          <MeetingFocusControl
-            value={meetingFocus}
-            disabled={captureStarting || captureActive}
-            onChange={setMeetingFocus}
-          />
+            <MeetingFocusControl
+              value={meetingFocus}
+              expanded={meetingFocusExpanded}
+              activeContract={activeMeetingContract}
+              captureActive={captureActive || captureStarting}
+              onChange={setMeetingFocus}
+              onEdit={() => setMeetingFocusExpanded(true)}
+              onDone={() => setMeetingFocusExpanded(false)}
+            />
+          </div>
 
           {errors.length > 0 && (
             <section className="errors" role="alert">
@@ -1772,6 +1833,7 @@ export function App() {
               onPin={togglePinnedCard}
               onDismiss={dismissCard}
               onCopy={copyCardSuggestion}
+              active={captureActive || captureStarting}
             />
           </div>
 
@@ -1810,8 +1872,8 @@ export function App() {
               <h1>Meeting Output</h1>
             </div>
             <div className="field-toolbar-status">
-              <span>{workMemoryLabel}</span>
               <span>{currentMeetingCards.length} current</span>
+              <span>{gpu.sidecar_quality_gate_enabled !== false ? "Quality gate on" : "Quality gate off"}</span>
             </div>
           </div>
           <ContractActiveBadge contract={activeMeetingContract} />
@@ -1822,6 +1884,7 @@ export function App() {
             qualityMetrics={qualityMetrics}
             meetingDiagnostics={meetingDiagnostics}
             qualityGateActive={gpu.sidecar_quality_gate_enabled !== false}
+            captureActive={captureActive || captureStarting}
             loading={manualQueryBusy}
             emptyTitle={contextEmptyTitle}
             emptyBody={contextEmptyBody}
@@ -1853,13 +1916,17 @@ export function App() {
           )}
         </section>
 
-        <aside className={`tool-drawer ${drawerOpen ? "open" : ""}`} aria-label="Tools drawer">
+        {drawerOpen && <div className="tool-drawer-scrim" aria-hidden="true" onClick={() => setDrawerOpen(false)} />}
+        <aside
+          id="tools-drawer"
+          className={`tool-drawer ${drawerOpen ? "open" : ""}`}
+          aria-label="Tools drawer"
+        >
           <div className="drawer-header">
             <div>
               <p className="label">Tools</p>
               <h2>Session controls</h2>
             </div>
-            <button className="secondary" onClick={() => setDrawerOpen(false)}>Close</button>
           </div>
 
           <section className="drawer-section" id="capture">
@@ -2324,6 +2391,9 @@ export function App() {
             </div>
             <div className="chip-row">
               <span className="chip">ASR {gpu.asr_primary_model ?? "medium.en"}</span>
+              <span className="chip">{streamingModeLabel}</span>
+              <span className="chip">{gpuFreeLabel}</span>
+              <span className="chip">{webStatusLabel}</span>
               <span className="chip">
                 window {formatSeconds(gpu.transcription_window_seconds ?? 5)} / overlap {formatSeconds(gpu.transcription_overlap_seconds ?? 0.75)}
               </span>
@@ -2391,23 +2461,124 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   );
 }
 
-function MeetingFocusControl({
-  value,
+function CaptureControlBar({
+  retention,
   disabled,
+  statusSummary,
+  detail,
+  warning,
   onChange,
 }: {
-  value: MeetingFocusState;
+  retention: SessionRetention;
   disabled: boolean;
-  onChange: (value: MeetingFocusState) => void;
+  statusSummary: string;
+  detail: string;
+  warning: string;
+  onChange: (value: SessionRetention) => void;
 }) {
   return (
-    <section className="meeting-focus-control" aria-label="Meeting Focus">
+    <section className={`capture-control-bar ${warning ? "warning" : ""}`} aria-label="Capture controls">
+      <div className="mode-control compact capture-mode-control" role="group" aria-label="Session save mode">
+        <button
+          type="button"
+          aria-pressed={retention === "temporary"}
+          className={retention === "temporary" ? "active" : ""}
+          disabled={disabled}
+          onClick={() => onChange("temporary")}
+        >
+          <span>Listen</span>
+          <small>Ephemeral</small>
+        </button>
+        <button
+          type="button"
+          aria-pressed={retention === "saved"}
+          className={retention === "saved" ? "active" : ""}
+          disabled={disabled}
+          onClick={() => onChange("saved")}
+        >
+          <span>Record</span>
+          <small>Saved transcript</small>
+        </button>
+      </div>
+      <div className="capture-control-summary" aria-label="Selected capture mode">
+        <strong>{statusSummary}</strong>
+        <span>{warning || detail}</span>
+      </div>
+    </section>
+  );
+}
+
+function MeetingFocusControl({
+  value,
+  expanded,
+  activeContract,
+  captureActive,
+  onChange,
+  onEdit,
+  onDone,
+}: {
+  value: MeetingFocusState;
+  expanded: boolean;
+  activeContract: MeetingContractPayload | null;
+  captureActive: boolean;
+  onChange: (value: MeetingFocusState) => void;
+  onEdit: () => void;
+  onDone: () => void;
+}) {
+  const summaryContract = captureActive && activeContract ? activeContract : buildMeetingContractPayload(value);
+  const reminderSummary = captureActive && activeContract
+    ? `${activeContract.reminders.length} ${pluralize("reminder", activeContract.reminders.length)}`
+    : summarizeMeetingReminders(value);
+  const goalSummary = captureActive && activeContract
+    ? compactContractGoal(activeContract.goal)
+    : compactFocusGoal(value.goal);
+  return (
+    <section className={`meeting-focus-control ${expanded ? "expanded" : ""}`} aria-label="Meeting Focus">
+      <div className="meeting-focus-bar">
+        <div className="meeting-focus-summary" aria-label="Meeting Focus summary">
+          <span>Focus</span>
+          <strong>{capitalize(summaryContract.mode)}</strong>
+          <span>{reminderSummary}</span>
+          <p>{goalSummary}</p>
+        </div>
+        <button
+          type="button"
+          className="secondary compact-button"
+          aria-expanded={expanded}
+          disabled={captureActive}
+          onClick={expanded ? onDone : onEdit}
+        >
+          {expanded ? "Done" : "Edit"}
+        </button>
+      </div>
+
+      {captureActive && (
+        <p className="meeting-focus-note">Active contract is locked for this session.</p>
+      )}
+
+      {expanded && !captureActive && (
+        <MeetingFocusEditor value={value} onChange={onChange} onDone={onDone} />
+      )}
+    </section>
+  );
+}
+
+function MeetingFocusEditor({
+  value,
+  onChange,
+  onDone,
+}: {
+  value: MeetingFocusState;
+  onChange: (value: MeetingFocusState) => void;
+  onDone: () => void;
+}) {
+  return (
+    <div className="meeting-focus-editor">
       <label className="field meeting-focus-goal">
         <span>Meeting Focus</span>
         <textarea
           aria-label="Meeting Focus goal"
           value={value.goal}
-          disabled={disabled}
           onChange={(event) => onChange({ ...value, goal: event.target.value })}
           placeholder="What should Sidecar help offload? owners, questions, risks, follow-ups..."
         />
@@ -2420,7 +2591,6 @@ function MeetingFocusControl({
               type="button"
               aria-pressed={value.mode === mode}
               className={value.mode === mode ? "active" : ""}
-              disabled={disabled}
               onClick={() => onChange({ ...value, mode })}
             >
               <span>{capitalize(mode)}</span>
@@ -2433,7 +2603,6 @@ function MeetingFocusControl({
               <input
                 type="checkbox"
                 checked={value.reminders[option.key]}
-                disabled={disabled}
                 onChange={(event) => onChange({
                   ...value,
                   reminders: { ...value.reminders, [option.key]: event.target.checked },
@@ -2443,8 +2612,11 @@ function MeetingFocusControl({
             </label>
           ))}
         </div>
+        <div className="meeting-focus-editor-actions">
+          <button type="button" className="primary subtle" onClick={onDone}>Done</button>
+        </div>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -2453,12 +2625,11 @@ function ContractActiveBadge({ contract }: { contract: MeetingContractPayload | 
     return null;
   }
   return (
-    <details className="contract-active-badge" aria-label="Contract active">
+    <details className="contract-badge contract-active-badge" aria-label="Contract active">
       <summary>
-        <span>Contract active</span>
-        <strong>{capitalize(contract.mode)}</strong>
+        <span>Contract active · {capitalize(contract.mode)} · {contract.reminders.length} {pluralize("reminder", contract.reminders.length)}</span>
       </summary>
-      <div>
+      <div className="contract-details">
         <p>{contract.goal}</p>
         <div className="chip-row">
           {contract.reminders.map((reminder) => <span key={reminder} className="chip">{reminder}</span>)}
@@ -2478,6 +2649,7 @@ function LiveFieldPane({
   onPin,
   onDismiss,
   onCopy,
+  active,
 }: {
   rows: LiveFieldRow[];
   expandedCards: Set<string>;
@@ -2488,9 +2660,16 @@ function LiveFieldPane({
   onPin: (card: SidecarDisplayCard) => void;
   onDismiss: (card: SidecarDisplayCard) => void;
   onCopy: (card: SidecarDisplayCard) => void;
+  active: boolean;
 }) {
   if (rows.length === 0) {
-    return <Empty title="Ready" body="Start listening or run a query." />;
+    return (
+      <div className="live-empty-hint" aria-label="Live field empty state">
+        {active
+          ? "Listening... grounded cards will appear when there is enough evidence."
+          : "Ready. Start listening or ask Sidecar."}
+      </div>
+    );
   }
   return (
     <>
@@ -2536,6 +2715,7 @@ function TranscriptBubble({ event, highlighted = false }: { event: TranscriptEve
       aria-label={`${label} transcript item`}
       data-transcript-id={event.id}
       data-segment-id={event.segmentId}
+      data-source-segment-ids={(event.sourceSegmentIds ?? []).join(" ")}
     >
       <div className="transcript-bubble-head">
         <span>{label}</span>
@@ -2550,7 +2730,9 @@ function TranscriptBubble({ event, highlighted = false }: { event: TranscriptEve
 }
 
 function transcriptHighlighted(event: TranscriptEvent, highlightedSourceIds: Set<string>): boolean {
-  return highlightedSourceIds.has(event.id) || Boolean(event.segmentId && highlightedSourceIds.has(event.segmentId));
+  return highlightedSourceIds.has(event.id)
+    || Boolean(event.segmentId && highlightedSourceIds.has(event.segmentId))
+    || (event.sourceSegmentIds ?? []).some((segmentId) => highlightedSourceIds.has(segmentId));
 }
 
 function SessionContextPane({
@@ -2560,6 +2742,7 @@ function SessionContextPane({
   qualityMetrics,
   meetingDiagnostics,
   qualityGateActive,
+  captureActive,
   loading,
   emptyTitle,
   emptyBody,
@@ -2583,6 +2766,7 @@ function SessionContextPane({
   qualityMetrics: ReturnType<typeof buildSidecarQualityMetrics>;
   meetingDiagnostics: MeetingDiagnostics | null;
   qualityGateActive: boolean;
+  captureActive: boolean;
   loading: boolean;
   emptyTitle: string;
   emptyBody: string;
@@ -2601,15 +2785,12 @@ function SessionContextPane({
   onCopy: (card: SidecarDisplayCard) => void;
 }) {
   const cardCount = MEETING_OUTPUT_SECTIONS.reduce((count, section) => count + groups[section.bucket].length, 0);
-  if (loading && cardCount === 0) {
-    return <Empty title="Searching" body="Looking for useful work context." />;
-  }
-  if (cardCount === 0 && rawCount > 0 && usefulCount === 0 && workMemoryCards.length === 0 && contextCards.length === 0 && manualCards.length === 0) {
-    return <ContextQuietEmpty title="No grounded meeting cards yet" body={emptyBody} />;
-  }
-  if (cardCount === 0 && workMemoryCards.length === 0 && contextCards.length === 0 && manualCards.length === 0) {
-    return <ContextQuietEmpty title={emptyTitle} body={emptyBody} />;
-  }
+  const visibleSections = MEETING_OUTPUT_SECTIONS.filter((section) => groups[section.bucket].length > 0);
+  const hasSupplementalCards = workMemoryCards.length > 0 || contextCards.length > 0 || manualCards.length > 0;
+  const quietTitle = captureActive && cardCount === 0 ? "Silent by design" : emptyTitle;
+  const quietBody = captureActive && cardCount === 0
+    ? "No grounded cards yet. Unsupported/noisy cards are being suppressed."
+    : emptyBody;
   return (
     <div className="context-card-list session-context-list scroll" aria-label="Meeting output">
       <QualityStrip
@@ -2620,32 +2801,36 @@ function SessionContextPane({
         showDebugMetadata={showDebugMetadata}
       />
 
-      {MEETING_OUTPUT_SECTIONS.map((section) => (
+      {loading && cardCount === 0 && !hasSupplementalCards && (
+        <ContextQuietEmpty title="Searching" body="Looking for useful work context." />
+      )}
+
+      {!loading && cardCount === 0 && !hasSupplementalCards && (
+        <ContextQuietEmpty title={quietTitle} body={quietBody} />
+      )}
+
+      {visibleSections.map((section) => (
         <section key={section.bucket} className="work-note-section meeting-output-section" aria-label={`${section.title} summary`}>
           <div className="work-note-section-head">
             <h2>{section.title}</h2>
             <span>{groups[section.bucket].length}</span>
           </div>
-          {groups[section.bucket].length === 0 ? (
-            <p className="work-note-empty">{section.empty}</p>
-          ) : (
-            <div className="context-preview-list">
-              {groups[section.bucket].map((card) => (
-                <ContextCard
-                  key={`meeting-${section.bucket}-${card.id}`}
-                  card={card}
-                  compact
-                  expanded={expandedCards.has(card.id)}
-                  showDebugMetadata={showDebugMetadata}
-                  onToggle={() => onToggle(card.id)}
-                  onJumpToEvidence={() => onJumpToEvidence(card)}
-                  onPin={() => onPin(card)}
-                  onDismiss={() => onDismiss(card)}
-                  onCopy={() => onCopy(card)}
-                />
-              ))}
-            </div>
-          )}
+          <div className="context-preview-list">
+            {groups[section.bucket].map((card) => (
+              <ContextCard
+                key={`meeting-${section.bucket}-${card.id}`}
+                card={card}
+                compact
+                expanded={expandedCards.has(card.id)}
+                showDebugMetadata={showDebugMetadata}
+                onToggle={() => onToggle(card.id)}
+                onJumpToEvidence={() => onJumpToEvidence(card)}
+                onPin={() => onPin(card)}
+                onDismiss={() => onDismiss(card)}
+                onCopy={() => onCopy(card)}
+              />
+            ))}
+          </div>
         </section>
       ))}
 
@@ -3058,6 +3243,8 @@ function transcriptEventFromPayload(payload: Record<string, unknown>, envelope: 
   return {
     id: `transcript-${String(payload.id)}`,
     segmentId: String(payload.id),
+    replacesSegmentId: stringOrUndefined(payload.replaces_segment_id),
+    sourceSegmentIds: parseStringList(payload.source_segment_ids),
     text: String(payload.text ?? ""),
     at,
     source,
@@ -3398,6 +3585,68 @@ function stringOrUndefined(value: unknown): string | undefined {
   return text ? text : undefined;
 }
 
+function replaceTranscriptLine(
+  current: TranscriptLine[],
+  line: TranscriptLine,
+  replacesSegmentId?: string,
+): TranscriptLine[] {
+  const replacementIds = [line.id, replacesSegmentId, ...(line.source_segment_ids ?? [])]
+    .filter((value): value is string => Boolean(value));
+  const index = current.findIndex((candidate) => (
+    replacementIds.includes(candidate.id)
+    || (candidate.source_segment_ids ?? []).some((segmentId) => replacementIds.includes(segmentId))
+  ));
+  if (index === -1) {
+    return [...current, line];
+  }
+  const next = [...current];
+  next[index] = line;
+  return next;
+}
+
+function transcriptReplacementIds(event: TranscriptEvent): string[] {
+  return [
+    event.id,
+    event.segmentId,
+    event.replacesSegmentId,
+    ...(event.sourceSegmentIds ?? []),
+  ].filter(Boolean) as string[];
+}
+
+function captureWarningFromPayload(payload: Record<string, unknown>): { id: string; title: string; message: string } | null {
+  const warning = isRecord(payload.capture_warning) ? payload.capture_warning : null;
+  const reason = warning ? String(warning.reason ?? "") : "";
+  if (reason) {
+    return {
+      id: `${reason}:${payload.silent_windows ?? 0}:${payload.asr_empty_windows ?? 0}`,
+      title: reason === "audio_too_quiet" ? "Capture is too quiet" : "ASR is not hearing speech",
+      message: String(warning?.message ?? "Capture is active, but ASR is not producing transcript text."),
+    };
+  }
+  const silentWindows = Number(payload.silent_windows ?? 0);
+  const emptyWindows = Number(payload.asr_empty_windows ?? 0);
+  if (silentWindows >= 3) {
+    return {
+      id: `audio_too_quiet:${silentWindows}`,
+      title: "Capture is too quiet",
+      message: `Recent audio windows are below the speech threshold. Last RMS: ${formatRms(payload.last_audio_rms)}.`,
+    };
+  }
+  if (emptyWindows >= 3) {
+    return {
+      id: `asr_no_spans:${emptyWindows}`,
+      title: "ASR is not hearing speech",
+      message: "Capture is active, but ASR has emitted no transcript spans for several windows.",
+    };
+  }
+  return null;
+}
+
+function formatRms(value: unknown): string {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(4) : "unknown";
+}
+
 function transcriptEventsOverlap(left: TranscriptEvent, right: TranscriptEvent): boolean {
   if (left.source !== "microphone" || right.source !== "microphone") {
     return false;
@@ -3566,6 +3815,51 @@ function formatSeconds(value: number): string {
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+function pluralize(label: string, count: number): string {
+  return count === 1 ? label : `${label}s`;
+}
+
+function compactFocusGoal(goal: string): string {
+  const trimmed = goal.trim();
+  return compactContractGoal(trimmed && trimmed !== DEFAULT_MEETING_GOAL
+    ? trimmed
+    : "Offload owners, questions, risks, follow-ups");
+}
+
+function compactContractGoal(goal: string): string {
+  const trimmed = goal.trim() || "Offload owners, questions, risks, follow-ups";
+  return trimmed.length > 96 ? `${trimmed.slice(0, 93).trim()}...` : trimmed;
+}
+
+function summarizeMeetingReminders(focus: MeetingFocusState): string {
+  const selected = MEETING_REMINDER_OPTIONS
+    .filter((option) => focus.reminders[option.key])
+    .map((option) => reminderShortLabel(option.label));
+  if (selected.length === 0) {
+    return "No reminders";
+  }
+  if (selected.length <= 3) {
+    return selected.join(", ");
+  }
+  return `${selected.length} reminders`;
+}
+
+function reminderShortLabel(label: string): string {
+  if (label === "Open questions") {
+    return "Questions";
+  }
+  if (label === "Risks/dependencies") {
+    return "Risks";
+  }
+  if (label === "Say-this contributions") {
+    return "Say-this";
+  }
+  if (label === "Post-call brief") {
+    return "Brief";
+  }
+  return label;
 }
 
 function defaultApiBase(): string {

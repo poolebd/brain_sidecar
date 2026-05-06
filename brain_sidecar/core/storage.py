@@ -1114,6 +1114,87 @@ class Storage:
             )
             self.conn.commit()
 
+    def upsert_transcript_segment(self, segment: TranscriptSegment, *, replaces_segment_id: str | None = None) -> None:
+        with self._lock:
+            target_id = replaces_segment_id or segment.id
+            updated = self.conn.execute(
+                """
+                update transcript_segments
+                set id = ?, start_s = ?, end_s = ?, text = ?, is_final = ?,
+                    created_at = ?, speaker_role = ?, speaker_label = ?,
+                    speaker_confidence = ?, speaker_match_reason = ?,
+                    speaker_low_confidence = ?
+                where session_id = ? and id = ?
+                """,
+                (
+                    segment.id,
+                    segment.start_s,
+                    segment.end_s,
+                    segment.text,
+                    1 if segment.is_final else 0,
+                    segment.created_at,
+                    segment.speaker_role,
+                    segment.speaker_label,
+                    segment.speaker_confidence,
+                    segment.speaker_match_reason,
+                    None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                    segment.session_id,
+                    target_id,
+                ),
+            )
+            if updated.rowcount == 0 and target_id != segment.id:
+                updated = self.conn.execute(
+                    """
+                    update transcript_segments
+                    set start_s = ?, end_s = ?, text = ?, is_final = ?,
+                        created_at = ?, speaker_role = ?, speaker_label = ?,
+                        speaker_confidence = ?, speaker_match_reason = ?,
+                        speaker_low_confidence = ?
+                    where session_id = ? and id = ?
+                    """,
+                    (
+                        segment.start_s,
+                        segment.end_s,
+                        segment.text,
+                        1 if segment.is_final else 0,
+                        segment.created_at,
+                        segment.speaker_role,
+                        segment.speaker_label,
+                        segment.speaker_confidence,
+                        segment.speaker_match_reason,
+                        None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                        segment.session_id,
+                        segment.id,
+                    ),
+                )
+            if updated.rowcount == 0:
+                self.conn.execute(
+                    """
+                    insert into transcript_segments
+                    (
+                      id, session_id, start_s, end_s, text, is_final, created_at,
+                      speaker_role, speaker_label, speaker_confidence,
+                      speaker_match_reason, speaker_low_confidence
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        segment.id,
+                        segment.session_id,
+                        segment.start_s,
+                        segment.end_s,
+                        segment.text,
+                        1 if segment.is_final else 0,
+                        segment.created_at,
+                        segment.speaker_role,
+                        segment.speaker_label,
+                        segment.speaker_confidence,
+                        segment.speaker_match_reason,
+                        None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                    ),
+                )
+            self.conn.commit()
+
     def recent_segments(self, session_id: str, limit: int = 12) -> list[TranscriptSegment]:
         rows = self.conn.execute(
             """

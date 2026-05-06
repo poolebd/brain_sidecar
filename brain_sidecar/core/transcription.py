@@ -27,6 +27,7 @@ class TranscriptionResult:
     model: str
     language: str | None
     spans: list[TranscribedSpan]
+    audio_rms: float | None = None
 
 
 class FasterWhisperTranscriber:
@@ -106,8 +107,9 @@ class FasterWhisperTranscriber:
             raise RuntimeError("Transcriber model is not loaded.")
 
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        if audio_rms(audio) < self.settings.asr_min_audio_rms:
-            return TranscriptionResult(model=self.model_size, language=None, spans=[])
+        rms = audio_rms(audio)
+        if rms < self.settings.asr_min_audio_rms:
+            return TranscriptionResult(model=self.model_size, language=None, spans=[], audio_rms=rms)
 
         segments, info = self._model.transcribe(
             audio,
@@ -144,6 +146,7 @@ class FasterWhisperTranscriber:
             model=self.model_size,
             language=getattr(info, "language", None),
             spans=spans,
+            audio_rms=rms,
         )
 
 

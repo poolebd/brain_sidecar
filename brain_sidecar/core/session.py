@@ -74,7 +74,7 @@ class ActiveSession:
     postprocess_queue: asyncio.Queue[SegmentBatch]
     tasks: list[asyncio.Task]
     deduper: TranscriptDeduplicator
-    note_consolidator: TranscriptFinalConsolidator | None = None
+    transcript_consolidator: TranscriptFinalConsolidator | None = None
     note_quality_gate: NoteQualityGate | None = None
     web_context_queue: asyncio.Queue[WebContextCandidate] | None = None
     audio_source: str = "server_device"
@@ -97,8 +97,12 @@ class ActiveSession:
     partial_windows_skipped_queue: int = 0
     partial_windows_dropped_for_final: int = 0
     partial_asr_duration_ms: float | None = None
+    last_audio_rms: float | None = None
+    silent_windows: int = 0
+    asr_empty_windows: int = 0
     note_segments: list[TranscriptSegment] = field(default_factory=list)
     final_segments_collapsed: int = 0
+    final_segments_replaced: int = 0
     final_segments_seen_for_notes: int = 0
     final_segments_suppressed_for_notes: int = 0
     meeting_contract: MeetingContract = field(default_factory=normalize_meeting_contract)
@@ -181,7 +185,7 @@ class SessionManager:
                     max_recent=self.settings.dedupe_recent_segments,
                     similarity_threshold=self.settings.dedupe_similarity_threshold,
                 ),
-                note_consolidator=TranscriptFinalConsolidator(max_recent=48),
+                transcript_consolidator=TranscriptFinalConsolidator(max_recent=48),
                 note_quality_gate=self._new_note_quality_gate(),
                 web_context_queue=web_context_queue,
                 audio_source=audio_source,
@@ -820,12 +824,15 @@ class SessionManager:
         finally:
             active.transcriber_busy = False
         asr_duration_ms = round((time.monotonic() - started_at) * 1000, 1)
+        active.last_audio_rms = result.audio_rms
+
+        if not result.spans:
+            await self._record_empty_asr_window(session_id, active, asr_duration_ms=asr_duration_ms)
+            return SegmentBatch(segments=[])
 
         segments: list[TranscriptSegment] = []
         refresh_notes = False
         for span in result.spans:
-            if not active.deduper.accept(span.text, span.start_s, span.end_s):
-                continue
             segment = TranscriptSegment(
                 id=new_id("seg"),
                 session_id=session_id,
@@ -833,6 +840,10 @@ class SessionManager:
                 end_s=span.end_s,
                 text=span.text,
             )
+            consolidator = self._transcript_consolidator_for(active)
+            if not consolidator.would_consolidate(segment):
+                if not active.deduper.accept(span.text, span.start_s, span.end_s):
+                    continue
             speaker_payload = self._speaker_payload_for_span(
                 active,
                 segment,
@@ -840,14 +851,29 @@ class SessionManager:
                 persist=active.save_transcript,
             )
             segment = _segment_with_speaker_payload(segment, speaker_payload)
-            active.recent_segments.append(segment)
-            active.recent_segments = active.recent_segments[-48:]
-            self._accept_note_evidence_segment(active, segment)
+            consolidation = consolidator.accept(segment)
+            if consolidation.segment is None:
+                active.final_segments_suppressed_for_notes += 1
+                self._sync_note_evidence_segments(active)
+                continue
+            if consolidation.collapsed:
+                active.final_segments_collapsed += 1
+                self._sync_note_evidence_segments(active)
+                if consolidation.suppressed:
+                    active.final_segments_suppressed_for_notes += 1
+                    continue
+                active.final_segments_replaced += 1
+            segment = consolidation.segment
+            replaces_segment_id = consolidation.replaced_segment_id if consolidation.collapsed else None
+            self._accept_transcript_segment(active, segment, replaces_segment_id=replaces_segment_id)
             if active.save_transcript:
-                self.storage.add_transcript_segment(segment)
+                self.storage.upsert_transcript_segment(segment, replaces_segment_id=replaces_segment_id)
             active.last_partial_text = ""
             segments.append(segment)
-            active.final_segment_count += 1
+            if consolidation.collapsed:
+                refresh_notes = True
+            else:
+                active.final_segment_count += 1
             if active.final_segment_count >= active.next_note_segment_count:
                 refresh_notes = True
                 active.next_note_segment_count += self.settings.notes_every_segments
@@ -862,6 +888,7 @@ class SessionManager:
                         is_final=True,
                         speaker_payload=speaker_payload,
                         asr_duration_ms=asr_duration_ms,
+                        replaces_segment_id=replaces_segment_id,
                     ),
                 )
             )
@@ -876,8 +903,9 @@ class SessionManager:
         is_final: bool,
         speaker_payload: dict,
         asr_duration_ms: float | None = None,
+        replaces_segment_id: str | None = None,
     ) -> dict:
-        return {
+        payload = {
             **segment.to_dict(),
             "is_final": is_final,
             "asr_model": asr_model,
@@ -891,6 +919,9 @@ class SessionManager:
             "raw_audio_retained": False,
             **speaker_payload,
         }
+        if replaces_segment_id:
+            payload["replaces_segment_id"] = replaces_segment_id
+        return payload
 
     def _pipeline_metrics(self, active: ActiveSession) -> dict:
         return {
@@ -901,11 +932,15 @@ class SessionManager:
             "partial_windows_skipped_queue": active.partial_windows_skipped_queue,
             "partial_windows_dropped_for_final": active.partial_windows_dropped_for_final,
             "partial_asr_duration_ms": active.partial_asr_duration_ms,
+            "last_audio_rms": active.last_audio_rms,
+            "silent_windows": active.silent_windows,
+            "asr_empty_windows": active.asr_empty_windows,
             "event_drops": self.bus.drop_count(active.id),
             "audio_source": active.audio_source,
             "selected_device_id": active.selected_device_id,
             "input_gain_db": active.input_gain_db,
             "final_segments_collapsed": active.final_segments_collapsed,
+            "final_segments_replaced": active.final_segments_replaced,
             "final_segments_seen_for_notes": active.final_segments_seen_for_notes,
             "final_segments_suppressed_for_notes": active.final_segments_suppressed_for_notes,
             "note_evidence_window_segments": len(active.note_segments),
@@ -917,16 +952,64 @@ class SessionManager:
             "meeting_diagnostics": active.meeting_diagnostics,
         }
 
-    def _accept_note_evidence_segment(self, active: ActiveSession, segment: TranscriptSegment) -> None:
+    async def _record_empty_asr_window(
+        self,
+        session_id: str,
+        active: ActiveSession,
+        *,
+        asr_duration_ms: float,
+    ) -> None:
+        active.asr_empty_windows += 1
+        if active.last_audio_rms is not None and active.last_audio_rms < self.settings.asr_min_audio_rms:
+            active.silent_windows += 1
+        extra: dict[str, object] = {"asr_duration_ms": asr_duration_ms}
+        warning = self._capture_warning(active)
+        if warning is not None:
+            extra["capture_warning"] = warning
+        await self._publish_audio_status(session_id, "listening", extra=extra)
+
+    def _capture_warning(self, active: ActiveSession) -> dict[str, object] | None:
+        if active.silent_windows >= 3 and (active.silent_windows <= 6 or active.silent_windows % 10 == 0):
+            return {
+                "reason": "audio_too_quiet",
+                "message": "Capture is active, but recent ASR windows are below the speech threshold.",
+            }
+        if active.asr_empty_windows >= 3 and (active.asr_empty_windows <= 6 or active.asr_empty_windows % 10 == 0):
+            return {
+                "reason": "asr_no_spans",
+                "message": "Capture is active, but ASR is not emitting transcript spans.",
+            }
+        return None
+
+    def _transcript_consolidator_for(self, active: ActiveSession) -> TranscriptFinalConsolidator:
+        if active.transcript_consolidator is None:
+            active.transcript_consolidator = TranscriptFinalConsolidator(max_recent=48)
+        return active.transcript_consolidator
+
+    def _accept_transcript_segment(
+        self,
+        active: ActiveSession,
+        segment: TranscriptSegment,
+        *,
+        replaces_segment_id: str | None = None,
+    ) -> None:
         active.final_segments_seen_for_notes += 1
-        if active.note_consolidator is None:
-            active.note_consolidator = TranscriptFinalConsolidator(max_recent=48)
-        result = active.note_consolidator.accept(segment)
-        if result.collapsed:
-            active.final_segments_collapsed += 1
-        if result.suppressed:
-            active.final_segments_suppressed_for_notes += 1
-        active.note_segments = active.note_consolidator.segments()[-48:]
+        replaced = False
+        replacement_ids = {segment.id}
+        if replaces_segment_id:
+            replacement_ids.add(replaces_segment_id)
+        for index, existing in enumerate(active.recent_segments):
+            if existing.id in replacement_ids:
+                active.recent_segments[index] = segment
+                replaced = True
+                break
+        if not replaced:
+            active.recent_segments.append(segment)
+        active.recent_segments = active.recent_segments[-48:]
+        self._sync_note_evidence_segments(active)
+
+    def _sync_note_evidence_segments(self, active: ActiveSession) -> None:
+        active.note_segments = self._transcript_consolidator_for(active).segments()[-48:]
 
     def _new_note_quality_gate(self) -> NoteQualityGate:
         return NoteQualityGate(

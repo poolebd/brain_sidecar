@@ -34,6 +34,21 @@ def test_preserves_raw_source_ids_for_consolidated_evidence() -> None:
     assert consolidated.source_segment_ids == ["seg_1", "seg_2"]
 
 
+def test_consolidated_segment_keeps_display_id_for_replacement() -> None:
+    consolidator = TranscriptFinalConsolidator(max_recent=8)
+
+    consolidator.accept(segment("seg_1", 0.0, 3.4, "We need to review the Siemens client agreement."))
+    result = consolidator.accept(
+        segment("seg_2", 1.1, 4.2, "We need to review the Siemens client agreement before answering.")
+    )
+
+    consolidated = consolidator.segments()[0]
+
+    assert result.replaced_segment_id == "seg_1"
+    assert consolidated.id == "seg_1"
+    assert consolidated.source_segment_ids == ["seg_1", "seg_2"]
+
+
 def test_does_not_merge_distinct_adjacent_topics() -> None:
     consolidator = TranscriptFinalConsolidator(max_recent=8)
 

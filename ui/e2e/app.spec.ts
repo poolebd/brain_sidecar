@@ -11,17 +11,33 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Live field" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Meeting Output" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "midnight");
+  await expect(page.getByLabel("Meeting Focus summary")).toContainText("Focus");
+  await expect(page.getByLabel("Meeting Focus goal")).toHaveCount(0);
+  await expect(page.getByLabel("Live field empty state")).toContainText("Ready. Start listening or ask Sidecar.");
+  const liveBox = await page.locator("#transcript").boundingBox();
+  expect(liveBox).not.toBeNull();
+  expect(liveBox!.y).toBeLessThan(220);
   await expect(page.getByRole("search")).toBeVisible();
-  await page.getByRole("button", { name: "Tools" }).click();
+  const toolsButton = page.getByRole("button", { name: "Tools" });
+  await expect(toolsButton).toHaveAttribute("aria-expanded", "false");
+  await toolsButton.click();
+  await expect(toolsButton).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByLabel("Audio source")).toHaveCount(0);
   await expect(page.getByLabel("USB microphone")).toHaveCount(0);
   await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
   await expect(page.getByLabel("Guided mic tuning")).toContainText("Auto Level");
+  await expect(page.getByLabel("Tools drawer").getByRole("button", { name: "Close" })).toHaveCount(0);
   await openDrawerRegion(page, "System");
   await expect(page.getByText("NVIDIA RTX 4090 · 6144/24576 MB")).toBeVisible();
   await expect(page.getByLabel("VRAM usage 25%")).toBeVisible();
   await expect(page.getByText("CUDA ready")).toBeVisible();
   await expect(page.getByLabel("Tools drawer").getByText("21 projects / 412 sources")).toBeVisible();
+  await toolsButton.click();
+  await expect(toolsButton).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByLabel("Tools drawer")).not.toBeVisible();
+  await toolsButton.click();
+  await page.keyboard.press("Escape");
+  await expect(toolsButton).toHaveAttribute("aria-expanded", "false");
 });
 
 test("clamps stale high mic boost and warns before capture", async ({ page }) => {
@@ -58,10 +74,21 @@ test("restores Meeting Focus controls from localStorage", async ({ page }) => {
   await page.reload();
 
   const focus = page.getByLabel("Meeting Focus");
+  await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Balanced");
+  await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Track owners for the outage review.");
+  await expect(focus.getByLabel("Meeting Focus goal")).toHaveCount(0);
+  await focus.getByRole("button", { name: "Edit" }).click();
   await expect(focus.getByLabel("Meeting Focus goal")).toHaveValue("Track owners for the outage review.");
   await expect(focus.getByRole("button", { name: "Balanced" })).toHaveAttribute("aria-pressed", "true");
   await expect(focus.getByLabel("Open questions")).not.toBeChecked();
   await expect(focus.getByLabel("Risks/dependencies")).toBeChecked();
+  await focus.getByLabel("Meeting Focus goal").fill("Track owners and risk decisions.");
+  await focus.getByRole("button", { name: "Assertive" }).click();
+  await focus.getByLabel("Open questions").check();
+  await focus.locator(".meeting-focus-editor").getByRole("button", { name: "Done" }).click();
+  await expect(focus.getByLabel("Meeting Focus goal")).toHaveCount(0);
+  await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Assertive");
+  await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Track owners and risk decisions.");
 
   const startRequest = page.waitForRequest((request) => (
     request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
@@ -69,14 +96,16 @@ test("restores Meeting Focus controls from localStorage", async ({ page }) => {
   await page.getByRole("button", { name: "Start Listening" }).click();
   const body = JSON.parse((await startRequest).postData() ?? "{}");
   expect(body.meeting_contract).toMatchObject({
-    goal: "Track owners for the outage review.",
-    mode: "balanced",
+    goal: "Track owners and risk decisions.",
+    mode: "assertive",
   });
   expect(body.meeting_contract.reminders).toEqual([
     "Track owners and ownership ambiguity.",
+    "Track open questions and clarifications.",
     "Track risks, dependencies, and blocked paths.",
     "Prepare a post-call brief with evidence.",
   ]);
+  await expect(focus.getByLabel("Meeting Focus goal")).toHaveCount(0);
 });
 
 test("shows active USB mic capture as in use instead of missing", async ({ page }) => {
@@ -127,7 +156,11 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   });
   await expect(page.getByLabel("Session save mode status")).toContainText("Listening");
   await expect(page.getByLabel("Contract active")).toContainText("Contract active");
-  await expect(page.getByLabel("Meeting Output")).toContainText("No grounded meeting cards yet. Sidecar is suppressing unsupported/noisy cards.");
+  const meetingOutput = page.getByRole("region", { name: "Meeting Output" });
+  await expect(meetingOutput).toContainText("Silent by design");
+  await expect(meetingOutput).toContainText("No grounded cards yet. Unsupported/noisy cards are being suppressed.");
+  await expect(meetingOutput).not.toContainText("No actions yet.");
+  await expect(page.getByLabel("Live field empty state")).toContainText("Listening... grounded cards will appear when there is enough evidence.");
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
 
   await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
@@ -150,7 +183,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
       end_s: 3.0,
       is_final: false,
       asr_model: "whisper-large-v3",
-      queue_depth: 1,
+      queue_depth: 2,
       transcript_retention: "temporary",
       raw_audio_retained: false,
     },
@@ -165,7 +198,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
       end_s: 3.2,
       is_final: false,
       asr_model: "whisper-large-v3",
-      queue_depth: 1,
+      queue_depth: 2,
       transcript_retention: "temporary",
       raw_audio_retained: false,
     },
@@ -185,6 +218,22 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
       raw_audio_retained: false,
     },
   });
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "line-1",
+      replaces_segment_id: "line-1",
+      source_segment_ids: ["line-1", "line-1b"],
+      text: "We need to follow up with the platform team tomorrow before the readiness check.",
+      start_s: 1.2,
+      end_s: 5.4,
+      asr_model: "whisper-large-v3",
+      queue_depth: 2,
+      final_segments_replaced: 1,
+      transcript_retention: "temporary",
+      raw_audio_retained: false,
+    },
+  });
 	  await emitSessionEvent(page, {
 	    type: "note_update",
 	    payload: {
@@ -192,7 +241,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
 	      kind: "action",
 	      title: "Platform follow-up",
 	      body: "Schedule a short sync about deployment readiness.",
-	      source_segment_ids: ["line-1"],
+	      source_segment_ids: ["line-1b"],
         evidence_quote: "follow up with the platform team tomorrow",
 	    },
 	  });
@@ -204,7 +253,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
 	      text: "A previous meeting mentioned deployment readiness risks.",
 	      score: 0.91,
 	      metadata: {},
-	      source_segment_ids: ["line-1"],
+	      source_segment_ids: ["line-1b"],
 	    },
 	  });
   await emitSessionEvent(page, {
@@ -219,7 +268,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
       why_now: "Recent speech mentioned platform follow-up and deployment readiness.",
       priority: "high",
       confidence: 0.92,
-      source_segment_ids: ["line-1"],
+      source_segment_ids: ["line-1b"],
       source_type: "transcript",
       evidence_quote: "follow up with the platform team tomorrow",
       card_key: "contribution:release-owner",
@@ -229,16 +278,17 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   });
 
   await expect(page.getByLabel("Runtime status")).toContainText("listening");
-  await expect(page.getByLabel("Transcript metric")).toContainText("1");
+  await expect(page.getByText("1 heard").first()).toBeVisible();
   await expect(page.locator("#transcript")).not.toContainText("Preview");
   const transcriptItem = page.getByLabel("Mic transcript item").filter({ hasText: "platform team tomorrow" });
-  await expect(transcriptItem).toBeVisible();
+  await expect(transcriptItem).toHaveCount(1);
+  await expect(transcriptItem).toContainText("before the readiness check");
   await expect(transcriptItem).not.toContainText("You");
   const liveRow = page.getByRole("article", { name: "Transcript and sidecar row" }).filter({ hasText: "platform team tomorrow" });
   await expect(liveRow.getByRole("heading", { name: "Platform follow-up" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Actions summary" })).toContainText("Platform follow-up");
-  await expect(page.getByRole("region", { name: "Decisions summary" })).toContainText("No decisions yet.");
-  await expect(page.getByRole("region", { name: "Questions / Clarifications summary" })).toContainText("No open questions yet.");
+  await expect(page.getByRole("region", { name: "Decisions summary" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Questions / Clarifications summary" })).toHaveCount(0);
   await expect(liveRow).toContainText("Name the release owner");
   await expect(liveRow).toContainText("It sounds like we should name one release owner");
   const contributionCard = liveRow.getByLabel("Say this context card").filter({ hasText: "Name the release owner" });
@@ -252,7 +302,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   await contextSection.getByText("Context / past transcript / web").click();
   await expect(contextSection).toContainText("A previous meeting mentioned deployment readiness risks.");
   await expect(page.locator("#transcript").getByText("A previous meeting mentioned deployment readiness risks.")).toHaveCount(0);
-  await expect(page.getByLabel("Queue metric")).toContainText("2");
+  await expect(page.getByLabel("Capture queue status")).toContainText("Queue 2");
   await expect(page.locator("#transcript")).not.toContainText("whisper-large-v3");
   await expect(page.locator("#transcript")).not.toContainText("score 0.91");
   await expect(page.locator("#transcript")).not.toContainText("previous-session");
@@ -501,7 +551,7 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
   await page.getByRole("button", { name: "Tools" }).click();
   await openDrawerRegion(page, "System");
   await page.getByLabel("Show debug metadata").check();
-  await page.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Tools" }).click();
   await contextSection.locator(".context-card").first().getByRole("button", { name: "Details" }).click();
   await expect(page.locator("#recall")).toContainText("source ID");
   await expect(page.locator("#recall")).toContainText(/debug-source-/);
@@ -687,7 +737,7 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
       queue_depth: 0,
     },
   });
-  await expect(page.getByLabel("Transcript metric")).toContainText("1");
+  await expect(page.getByText("1 heard").first()).toBeVisible();
 
   const reportRequest = page.waitForRequest((candidate) => (
     candidate.method() === "POST" && candidate.url().endsWith("/api/test-mode/runs/testrun-123/report")
@@ -770,7 +820,7 @@ test("uses mocked library and recall APIs", async ({ page }) => {
   await indexes.getByRole("button", { name: "Reindex Files" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
 
-  await page.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Tools" }).click();
   await page.getByPlaceholder("Ask Sidecar anything").fill("apollo rollout");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Prior transcript");

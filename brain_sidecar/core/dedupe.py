@@ -66,6 +66,9 @@ class TranscriptFinalConsolidator:
         self.max_recent = max(4, int(max_recent))
         self._segments: list[TranscriptSegment] = []
 
+    def would_consolidate(self, segment: TranscriptSegment) -> bool:
+        return any(should_consolidate(segment, existing) for existing in reversed(self._segments))
+
     def accept(self, segment: TranscriptSegment) -> TranscriptConsolidationResult:
         normalized = normalize_for_dedupe(segment.text)
         if not normalized:
@@ -169,7 +172,7 @@ def merge_transcript_segments(existing: TranscriptSegment, candidate: Transcript
         text = chosen.text
     source_ids = dedupe_source_ids([*source_ids_for(existing), *source_ids_for(candidate)])
     return TranscriptSegment(
-        id=chosen.id,
+        id=existing.id,
         session_id=existing.session_id,
         start_s=min(existing.start_s, candidate.start_s),
         end_s=max(existing.end_s, candidate.end_s),

@@ -32,6 +32,34 @@ def test_storage_persists_text_artifacts_only(tmp_path: Path) -> None:
     assert not list(tmp_path.glob("*.pcm"))
 
 
+def test_storage_upserts_consolidated_transcript_without_duplicate_rows(tmp_path: Path) -> None:
+    storage = Storage(tmp_path)
+    storage.connect()
+    session = storage.create_session("upsert")
+    first = TranscriptSegment(
+        id="seg_1",
+        session_id=session.id,
+        start_s=0.0,
+        end_s=3.0,
+        text="review the relay settings",
+    )
+    replacement = TranscriptSegment(
+        id="seg_1",
+        session_id=session.id,
+        start_s=0.0,
+        end_s=4.2,
+        text="review the relay settings before Friday",
+    )
+
+    storage.add_transcript_segment(first)
+    storage.upsert_transcript_segment(replacement, replaces_segment_id="seg_1")
+
+    segments = storage.recent_segments(session.id, limit=5)
+    assert len(segments) == 1
+    assert segments[0].text == "review the relay settings before Friday"
+    assert segments[0].end_s == 4.2
+
+
 def test_storage_uses_wal_busy_timeout_and_speaker_migration(tmp_path: Path) -> None:
     storage = Storage(tmp_path)
     storage.connect()
