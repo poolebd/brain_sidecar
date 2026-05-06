@@ -87,6 +87,30 @@ def test_gpu_health_exposes_quality_gate_status(monkeypatch, tmp_path: Path) -> 
     assert response.json()["sidecar_quality_gate_enabled"] is False
 
 
+def test_gpu_health_exposes_split_ollama_hosts(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_HOST", "http://127.0.0.1:11434")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_HOST", "http://192.168.86.219:11434")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_EMBED_HOST", "http://127.0.0.1:11434")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE", "10m")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE", "0")
+    monkeypatch.setattr(
+        "brain_sidecar.core.ollama.OllamaClient.host_reachable",
+        lambda _self, host: host == "http://127.0.0.1:11434",
+    )
+    with TestClient(create_app()) as client:
+        response = client.get("/api/health/gpu")
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["ollama_chat_host"] == "http://192.168.86.219:11434"
+    assert payload["ollama_embed_host"] == "http://127.0.0.1:11434"
+    assert payload["ollama_chat_reachable"] is False
+    assert payload["ollama_embed_reachable"] is True
+    assert payload["ollama_chat_keep_alive"] == "10m"
+    assert payload["ollama_embed_keep_alive"] == "0"
+
+
 def test_browser_audio_websocket_is_disabled(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
     with TestClient(create_app()) as client:

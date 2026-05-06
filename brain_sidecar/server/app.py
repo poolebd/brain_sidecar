@@ -156,6 +156,16 @@ def _meeting_contract_payload(contract: MeetingContractRequest | None) -> dict[s
     return normalize_meeting_contract(payload).to_dict()
 
 
+async def _ollama_reachability(manager: SessionManager, chat_host: str, embed_host: str) -> tuple[bool, bool]:
+    if chat_host == embed_host:
+        reachable = await asyncio.to_thread(manager.ollama.host_reachable, chat_host)
+        return reachable, reachable
+    chat_task = asyncio.to_thread(manager.ollama.host_reachable, chat_host)
+    embed_task = asyncio.to_thread(manager.ollama.host_reachable, embed_host)
+    chat_reachable, embed_reachable = await asyncio.gather(chat_task, embed_task)
+    return bool(chat_reachable), bool(embed_reachable)
+
+
 def create_app() -> FastAPI:
     settings = load_settings()
     manager = SessionManager(settings)
@@ -242,7 +252,17 @@ def create_app() -> FastAPI:
         status["dedupe_similarity_threshold"] = settings.dedupe_similarity_threshold
         status["ollama_chat_model"] = settings.ollama_chat_model
         status["ollama_embed_model"] = settings.ollama_embed_model
+        status["ollama_host"] = settings.ollama_host
+        status["ollama_chat_host"] = settings.ollama_chat_host or settings.ollama_host
+        status["ollama_embed_host"] = settings.ollama_embed_host or settings.ollama_host
         status["ollama_keep_alive"] = settings.ollama_keep_alive
+        status["ollama_chat_keep_alive"] = settings.ollama_chat_keep_alive or settings.ollama_keep_alive
+        status["ollama_embed_keep_alive"] = settings.ollama_embed_keep_alive or settings.ollama_keep_alive
+        status["ollama_chat_reachable"], status["ollama_embed_reachable"] = await _ollama_reachability(
+            app.state.manager,
+            status["ollama_chat_host"],
+            status["ollama_embed_host"],
+        )
         status["web_context_enabled"] = settings.web_context_enabled
         status["web_context_configured"] = bool(settings.brave_search_api_key.strip())
         status["recall_min_score"] = settings.recall_min_score

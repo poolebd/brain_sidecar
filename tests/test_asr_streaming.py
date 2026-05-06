@@ -192,6 +192,36 @@ def test_stable_prefix_finalizer_emits_partials_and_nonduplicated_finals() -> No
     assert [event.text for event in flushed] == ["settings"]
 
 
+def test_stable_prefix_finalizer_advances_uncommitted_timing() -> None:
+    finalizer = StablePrefixFinalizer(stable_chunks=2, partials_enabled=True)
+
+    finalizer.accept_text("Confirm the relay", start_s=0.0, end_s=0.56, model="fake")
+    second = finalizer.accept_text("Confirm the relay settings", start_s=0.56, end_s=1.12, model="fake")
+    third = finalizer.accept_text(
+        "Confirm the relay settings are correct",
+        start_s=1.12,
+        end_s=1.68,
+        model="fake",
+    )
+    flushed = finalizer.flush(final_offset_s=2.0, model="fake")
+
+    second_final = next(event for event in second if event.kind == "final")
+    second_partial = next(event for event in second if event.kind == "partial")
+    third_final = next(event for event in third if event.kind == "final")
+    third_partial = next(event for event in third if event.kind == "partial")
+
+    assert second_final.start_s == pytest.approx(0.0)
+    assert second_final.end_s > second_final.start_s
+    assert second_partial.text == "settings"
+    assert second_partial.start_s == pytest.approx(second_final.end_s)
+    assert third_final.text == "settings"
+    assert third_final.start_s == pytest.approx(second_final.end_s)
+    assert third_partial.text == "are correct"
+    assert third_partial.start_s == pytest.approx(third_final.end_s)
+    assert flushed[0].text == "are correct"
+    assert flushed[0].start_s == pytest.approx(third_final.end_s)
+
+
 def test_nemotron_load_failure_is_actionable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("brain_sidecar.core.nemotron_streaming.prepare_asr_gpu", lambda _settings: None)
     original_import = builtins.__import__

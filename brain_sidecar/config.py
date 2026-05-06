@@ -55,6 +55,10 @@ class Settings:
     ollama_host: str
     ollama_chat_model: str
     ollama_embed_model: str
+    ollama_chat_host: str = ""
+    ollama_embed_host: str = ""
+    ollama_chat_keep_alive: str = ""
+    ollama_embed_keep_alive: str = ""
     asr_backend: str = ASR_BACKEND_NEMOTRON_STREAMING
     nemotron_model_id: str = "nvidia/nemotron-speech-streaming-en-0.6b"
     nemotron_chunk_ms: int = 160
@@ -121,6 +125,8 @@ def load_settings() -> Settings:
     _load_dotenv()
     cwd_runtime = Path.cwd() / "runtime"
     asr_backend = validate_asr_backend(_env("BRAIN_SIDECAR_ASR_BACKEND", ASR_BACKEND_NEMOTRON_STREAMING))
+    ollama_host = _env("BRAIN_SIDECAR_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+    ollama_keep_alive = _env("BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE", "10m")
     transcription_window_seconds = max(
         1.0,
         float(_env("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")),
@@ -136,9 +142,13 @@ def load_settings() -> Settings:
         asr_primary_model=_env("BRAIN_SIDECAR_ASR_PRIMARY_MODEL", "medium.en"),
         asr_fallback_model=_env("BRAIN_SIDECAR_ASR_FALLBACK_MODEL", "small.en"),
         asr_compute_type=_env("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "float16"),
-        ollama_host=_env("BRAIN_SIDECAR_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/"),
+        ollama_host=ollama_host,
         ollama_chat_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", "phi3:mini"),
         ollama_embed_model=_env("BRAIN_SIDECAR_OLLAMA_EMBED_MODEL", "embeddinggemma"),
+        ollama_chat_host=_env("BRAIN_SIDECAR_OLLAMA_CHAT_HOST", ollama_host).rstrip("/"),
+        ollama_embed_host=_env("BRAIN_SIDECAR_OLLAMA_EMBED_HOST", ollama_host).rstrip("/"),
+        ollama_chat_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE", ollama_keep_alive),
+        ollama_embed_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE", ollama_keep_alive),
         asr_backend=asr_backend,
         nemotron_model_id=_env("BRAIN_SIDECAR_NEMOTRON_MODEL_ID", "nvidia/nemotron-speech-streaming-en-0.6b"),
         nemotron_chunk_ms=validate_nemotron_chunk_ms(int(_env("BRAIN_SIDECAR_NEMOTRON_CHUNK_MS", "160"))),
@@ -217,7 +227,7 @@ def load_settings() -> Settings:
         speaker_identity_label=_env("BRAIN_SIDECAR_SPEAKER_IDENTITY_LABEL", "BP"),
         speaker_retain_raw_enrollment_audio=_env_bool("BRAIN_SIDECAR_SPEAKER_RETAIN_RAW_ENROLLMENT_AUDIO", False),
         disable_live_embeddings=_env_bool("BRAIN_SIDECAR_DISABLE_LIVE_EMBEDDINGS", False),
-        ollama_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE", "10m"),
+        ollama_keep_alive=ollama_keep_alive,
         web_context_enabled=_env_bool("BRAIN_SIDECAR_WEB_CONTEXT_ENABLED", False),
         brave_search_api_key=_env("BRAIN_SIDECAR_BRAVE_SEARCH_API_KEY", ""),
         web_context_min_interval_seconds=max(

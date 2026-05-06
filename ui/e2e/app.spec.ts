@@ -61,6 +61,8 @@ test("shows Nemotron streaming ASR status compactly", async ({ page }) => {
   await expect(system).toContainText("ASR Nemotron Streaming");
   await expect(system).toContainText("Stream 160 ms");
   await expect(system).toContainText("Nemotron loaded");
+  await expect(system).toContainText("Chat llama3.1 @ 192.168.86.219");
+  await expect(system).toContainText("Embed embeddinggemma @ local");
 });
 
 test("clamps stale high mic boost and warns before capture", async ({ page }) => {
@@ -334,6 +336,113 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   expect(transcriptBox).not.toBeNull();
   expect(backendBox).not.toBeNull();
   expect(backendBox!.x).toBeGreaterThan(transcriptBox!.x);
+});
+
+test("auto-scrolls the live field as transcript and sidecar rows grow", async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 700 });
+  await page.getByRole("button", { name: "Start Listening" }).click();
+  await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
+    "http://127.0.0.1:8765/api/sessions/session-123/events",
+  );
+
+  for (let index = 0; index < 30; index += 1) {
+    await emitSessionEvent(page, {
+      type: "transcript_final",
+      payload: {
+        id: `scroll-line-${index}`,
+        text: `Live auto-scroll test line ${index} with enough words to create a real transcript bubble.`,
+        start_s: index,
+        end_s: index + 0.8,
+        asr_model: "nemotron",
+        transcript_retention: "temporary",
+        raw_audio_retained: false,
+      },
+    });
+  }
+
+  const liveField = page.locator("#transcript");
+  await expect(liveField).toContainText("Live auto-scroll test line 29");
+  await expect.poll(() => liveField.evaluate((element) => (
+    element.scrollHeight - element.scrollTop - element.clientHeight
+  ))).toBeLessThan(8);
+
+  await emitSessionEvent(page, {
+    type: "sidecar_card",
+    payload: {
+      id: "scroll-card",
+      session_id: "session-123",
+      category: "action",
+      title: "Late context card",
+      body: "This card arrives after the transcript row and should not leave the live field stuck above the bottom.",
+      suggested_say: "Let's keep this visible at the bottom.",
+      why_now: "It belongs to the newest transcript row.",
+      priority: "high",
+      confidence: 0.88,
+      source_segment_ids: ["scroll-line-29"],
+      source_type: "transcript",
+      evidence_quote: "Live auto-scroll test line 29",
+      raw_audio_retained: false,
+    },
+  });
+
+  await expect(liveField).toContainText("Late context card");
+  await expect.poll(() => liveField.evaluate((element) => (
+    element.scrollHeight - element.scrollTop - element.clientHeight
+  ))).toBeLessThan(8);
+});
+
+test("keeps showing newer streaming previews that overlap older finals", async ({ page }) => {
+  await page.getByRole("button", { name: "Start Listening" }).click();
+  await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
+    "http://127.0.0.1:8765/api/sessions/session-123/events",
+  );
+
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "stream-final-1",
+      text: "Earlier committed speech is already visible.",
+      start_s: 0.0,
+      end_s: 4.0,
+      asr_model: "nemotron",
+      transcript_retention: "temporary",
+      raw_audio_retained: false,
+    },
+  });
+  await emitSessionEvent(page, {
+    type: "transcript_partial",
+    payload: {
+      id: "stream-preview-1",
+      text: "newer phrase is arriving",
+      start_s: 0.48,
+      end_s: 12.0,
+      is_final: false,
+      asr_model: "nemotron",
+      transcript_retention: "temporary",
+      raw_audio_retained: false,
+    },
+  });
+
+  const transcript = page.locator("#transcript");
+  await expect(transcript).toContainText("Earlier committed speech");
+  await expect(page.getByLabel("Mic transcript item").filter({ hasText: "newer phrase is arriving" })).toContainText("Preview");
+
+  await emitSessionEvent(page, {
+    type: "transcript_partial",
+    payload: {
+      id: "stream-preview-2",
+      text: "newer phrase is still moving",
+      start_s: 0.48,
+      end_s: 12.4,
+      is_final: false,
+      asr_model: "nemotron",
+      transcript_retention: "temporary",
+      raw_audio_retained: false,
+    },
+  });
+
+  await expect(page.getByLabel("Mic transcript item").filter({ hasText: "newer phrase is still moving" })).toContainText("Preview");
+  await expect(transcript).not.toContainText("newer phrase is arriving");
 });
 
 test("makes saved transcript recording an explicit capture mode", async ({ page }) => {

@@ -62,6 +62,25 @@ def test_load_settings_reads_repo_dotenv_without_overriding_exports(monkeypatch,
     assert settings.asr_vad_min_silence_ms == 275
 
 
+def test_ollama_split_host_env_overrides(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_HOST", "http://127.0.0.1:11434/")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_HOST", "http://192.168.86.219:11434/")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_EMBED_HOST", "http://127.0.0.1:11434/")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE", "10m")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE", "15m")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE", "0")
+
+    settings = load_settings()
+
+    assert settings.ollama_host == "http://127.0.0.1:11434"
+    assert settings.ollama_chat_host == "http://192.168.86.219:11434"
+    assert settings.ollama_embed_host == "http://127.0.0.1:11434"
+    assert settings.ollama_keep_alive == "10m"
+    assert settings.ollama_chat_keep_alive == "15m"
+    assert settings.ollama_embed_keep_alive == "0"
+
+
 def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     monkeypatch.setenv("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250")

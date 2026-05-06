@@ -120,7 +120,12 @@ Useful knobs:
 - `BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB`: free VRAM target before loading the selected ASR backend, default `3500`.
 - `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before ASR load when VRAM is tight, default `true`.
 - `BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS`: wait budget after unloading Ollama, default `10`.
-- `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`: Ollama `keep_alive` sent by app chat/embed calls, default `10m` so the smaller chat model can stay warm beside ASR.
+- `BRAIN_SIDECAR_OLLAMA_HOST`: default Ollama host used when split hosts are unset, default `http://127.0.0.1:11434`.
+- `BRAIN_SIDECAR_OLLAMA_CHAT_HOST`: Ollama host for note/card synthesis. Set this to a LAN laptop, for example `http://192.168.86.219:11434`, to keep Phi off the ASR GPU.
+- `BRAIN_SIDECAR_OLLAMA_EMBED_HOST`: Ollama host for recall embeddings, default local.
+- `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`: fallback Ollama `keep_alive`, default `10m`.
+- `BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE`: chat-specific keepalive, default follows `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`.
+- `BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE`: embedding-specific keepalive, set to `0` during live ASR if embeddings run on the ASR GPU.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_TIMEOUT_SECONDS`: local note/card synthesis timeout, default `20`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_TIMEOUT_SECONDS`: local embedding timeout, default `12`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE`: number of pending audio windows before stale windows are dropped, default `8`.
@@ -351,6 +356,31 @@ python scripts/test_nemotron_streaming.py runtime/test-audio/osr-us-female-harva
 If Nemotron or model loading fails, session start fails visibly with the
 dependency or model-access error. Switch `BRAIN_SIDECAR_ASR_BACKEND=faster_whisper`
 to return to the windowed ASR path.
+
+## Split Ollama Over LAN
+
+For best live-call stability on a single desktop GPU, keep Nemotron on the
+desktop and run the chat model on another machine. On the laptop, expose Ollama
+on the LAN:
+
+```bash
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+ollama pull phi3:mini
+```
+
+Then point chat synthesis at the laptop while keeping local embeddings small and
+ephemeral:
+
+```bash
+BRAIN_SIDECAR_OLLAMA_CHAT_HOST=http://192.168.86.219:11434
+BRAIN_SIDECAR_OLLAMA_CHAT_MODEL=phi3:mini
+BRAIN_SIDECAR_OLLAMA_EMBED_HOST=http://127.0.0.1:11434
+BRAIN_SIDECAR_OLLAMA_EMBED_MODEL=embeddinggemma
+BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE=0
+```
+
+`/api/health/gpu` reports the chat/embed hosts and reachability so the System
+panel can show whether the laptop model is online.
 
 ## Tests
 

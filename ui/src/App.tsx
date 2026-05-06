@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import {
   buildLiveFieldRows,
@@ -260,7 +260,14 @@ type GpuHealth = {
   transcription_overlap_seconds?: number;
   ollama_gpu_models?: string[];
   ollama_chat_model?: string;
+  ollama_embed_model?: string;
+  ollama_chat_host?: string;
+  ollama_embed_host?: string;
+  ollama_chat_reachable?: boolean;
+  ollama_embed_reachable?: boolean;
   ollama_keep_alive?: string;
+  ollama_chat_keep_alive?: string;
+  ollama_embed_keep_alive?: string;
   asr_beam_size?: number;
   transcription_queue_size?: number;
   partial_transcripts_enabled?: boolean;
@@ -523,6 +530,7 @@ export function App() {
   const testSessionIdRef = useRef<string | null>(null);
   const eventSeqRef = useRef(0);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const liveEndRef = useRef<HTMLDivElement | null>(null);
   const followLiveRef = useRef(true);
   const micPlaybackUrlRef = useRef<string | null>(null);
   const evidenceHighlightTimerRef = useRef<number | null>(null);
@@ -584,13 +592,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!followLiveRef.current) {
-      return;
-    }
-    window.requestAnimationFrame(() => scrollFieldToLive("auto"));
-  }, [transcriptEvents]);
-
-  useEffect(() => {
     if (speakerBusy !== "recording") {
       return;
     }
@@ -641,6 +642,24 @@ export function App() {
     () => buildLiveFieldRows(transcriptEvents, liveCards),
     [transcriptEvents, liveCards],
   );
+  const liveFieldScrollKey = useMemo(
+    () => liveFieldRows.map((row) => (
+      `${row.id}:${row.transcript?.id ?? ""}:${row.cards.map((card) => `${card.id}:${expandedContextCards.has(card.id) ? "open" : "closed"}`).join(",")}`
+    )).join("|"),
+    [expandedContextCards, liveFieldRows],
+  );
+  useLayoutEffect(() => {
+    if (!followLiveRef.current) {
+      return;
+    }
+    scrollFieldToLive("auto");
+    const timer = window.setTimeout(() => {
+      if (followLiveRef.current) {
+        scrollFieldToLive("auto");
+      }
+    }, 40);
+    return () => window.clearTimeout(timer);
+  }, [liveFieldScrollKey]);
   const visibleMeetingCards = showAllContext
     ? currentMeetingCards
     : currentMeetingCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
@@ -678,6 +697,14 @@ export function App() {
   const webStatusLabel = gpu.web_context_enabled
     ? gpu.web_context_configured ? "web ready" : "web key missing"
     : "web off";
+  const ollamaChatHostLabel = formatOllamaHostLabel(gpu.ollama_chat_host);
+  const ollamaEmbedHostLabel = formatOllamaHostLabel(gpu.ollama_embed_host);
+  const ollamaChatReachabilityLabel = gpu.ollama_chat_reachable == null
+    ? "chat check"
+    : gpu.ollama_chat_reachable ? "chat ready" : "chat offline";
+  const ollamaEmbedReachabilityLabel = gpu.ollama_embed_reachable == null
+    ? "embed check"
+    : gpu.ollama_embed_reachable ? "embed ready" : "embed offline";
   const speakerEnrollmentLabel = speakerStatus?.profile.display_name ?? "BP";
   const speakerStatusLabel = !speakerStatus
     ? "loading"
@@ -1120,7 +1147,7 @@ export function App() {
 
   function appendTranscriptEvent(event: TranscriptEvent) {
     setTranscriptEvents((current) => {
-      if (!event.isFinal && current.some((candidate) => candidate.isFinal && transcriptEventsOverlap(candidate, event))) {
+      if (!event.isFinal && current.some((candidate) => transcriptFinalAlreadyCoversPartial(candidate, event))) {
         return current;
       }
       const replacementIds = transcriptReplacementIds(event);
@@ -1128,6 +1155,9 @@ export function App() {
       const reconciled = withoutSameId.filter((candidate) => {
         if (!transcriptEventsOverlap(candidate, event)) {
           return true;
+        }
+        if (event.isFinal) {
+          return candidate.isFinal;
         }
         return candidate.isFinal;
       });
@@ -1240,7 +1270,11 @@ export function App() {
   function scrollFieldToLive(behavior: ScrollBehavior = "auto") {
     const node = transcriptScrollRef.current;
     if (!node) return;
-    node.scrollTo({ top: node.scrollHeight, behavior });
+    const end = liveEndRef.current;
+    if (end) {
+      end.scrollIntoView({ behavior, block: "end" });
+    }
+    node.scrollTo({ top: Math.max(0, node.scrollHeight - node.clientHeight), behavior });
     setFollowState(true);
   }
 
@@ -1880,6 +1914,7 @@ export function App() {
               onCopy={copyCardSuggestion}
               active={captureActive || captureStarting}
             />
+            <div className="live-field-end" ref={liveEndRef} aria-hidden="true" />
           </div>
 
           {!followLive && (
@@ -2449,13 +2484,17 @@ export function App() {
               <span className="chip">
                 window {formatSeconds(gpu.transcription_window_seconds ?? 5)} / overlap {formatSeconds(gpu.transcription_overlap_seconds ?? 0.75)}
               </span>
-              <span className="chip">Ollama {gpu.ollama_chat_model ?? "phi3:mini"}</span>
+              <span className="chip">Chat {gpu.ollama_chat_model ?? "phi3:mini"} @ {ollamaChatHostLabel}</span>
+              <span className={gpu.ollama_chat_reachable === false ? "chip warning" : "chip"}>{ollamaChatReachabilityLabel}</span>
+              <span className="chip">Embed {gpu.ollama_embed_model ?? "embeddinggemma"} @ {ollamaEmbedHostLabel}</span>
+              <span className={gpu.ollama_embed_reachable === false ? "chip warning" : "chip"}>{ollamaEmbedReachabilityLabel}</span>
               {(gpu.ollama_gpu_models ?? []).length === 0 ? (
                 <span className="chip muted">Ollama idle</span>
               ) : (
                 gpu.ollama_gpu_models?.map((model) => <span key={model} className="chip">{model}</span>)
               )}
-              <span className="chip">keep {gpu.ollama_keep_alive ?? "10m"}</span>
+              <span className="chip">keep chat {gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "10m"}</span>
+              <span className="chip">keep embed {gpu.ollama_embed_keep_alive ?? gpu.ollama_keep_alive ?? "10m"}</span>
               <span className="chip">dedupe {gpu.dedupe_similarity_threshold ?? "?"}</span>
             </div>
             <label className="field">
@@ -3713,6 +3752,22 @@ function transcriptEventsOverlap(left: TranscriptEvent, right: TranscriptEvent):
   return Math.max(left.startedAt, right.startedAt) <= Math.min(left.endedAt, right.endedAt);
 }
 
+function transcriptFinalAlreadyCoversPartial(candidate: TranscriptEvent, event: TranscriptEvent): boolean {
+  return candidate.isFinal
+    && transcriptEventsOverlap(candidate, event)
+    && transcriptTextContains(candidate.text, event.text);
+}
+
+function transcriptTextContains(left: string, right: string): boolean {
+  const leftText = normalizeTranscriptText(left);
+  const rightText = normalizeTranscriptText(right);
+  return Boolean(leftText && rightText && leftText.includes(rightText));
+}
+
+function normalizeTranscriptText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").replace(/[.,!?;:"']/g, "").trim();
+}
+
 function payloadTimeMs(value: unknown): number | undefined {
   if (value === undefined || value === null || value === "") {
     return undefined;
@@ -3867,6 +3922,21 @@ function formatClock(value: number): string {
 
 function formatSeconds(value: number): string {
   return `${Number(value).toFixed(1)}s`;
+}
+
+function formatOllamaHostLabel(host?: string): string {
+  if (!host) {
+    return "local";
+  }
+  try {
+    const url = new URL(host);
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+      return "local";
+    }
+    return url.port && url.port !== "11434" ? `${url.hostname}:${url.port}` : url.hostname;
+  } catch {
+    return host.replace(/^https?:\/\//, "").replace(/\/$/, "") || "local";
+  }
 }
 
 function formatPercent(value: number): string {

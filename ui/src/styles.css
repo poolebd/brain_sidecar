@@ -724,6 +724,11 @@ time {
   padding: 0.85rem;
 }
 
+.live-field-end {
+  height: 1px;
+  width: 100%;
+}
+
 .context-card-list {
   flex: 1 1 auto;
 }

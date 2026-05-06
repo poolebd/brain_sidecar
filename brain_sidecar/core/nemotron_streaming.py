@@ -86,6 +86,7 @@ class StablePrefixFinalizer:
         self._last_text = ""
         self._committed_words = 0
         self._stream_start_s: float | None = None
+        self._committed_until_s: float | None = None
 
     def accept_text(
         self,
@@ -100,34 +101,47 @@ class StablePrefixFinalizer:
             return []
         if self._stream_start_s is None:
             self._stream_start_s = start_s
+        if self._committed_until_s is None:
+            self._committed_until_s = self._stream_start_s
         events: list[StreamingAsrEvent] = []
-        if self.partials_enabled and cleaned != self._last_text:
-            events.append(
-                StreamingAsrEvent(
-                    kind="partial",
-                    text=self._uncommitted_text(cleaned),
-                    start_s=self._uncommitted_start_s(start_s),
-                    end_s=end_s,
-                    model=model,
-                )
-            )
+        words = _words(cleaned)
         stable_words = _common_prefix_words(self._last_text, cleaned)
         holdback_words = max(0, self.stable_chunks - 1)
-        commit_to = min(len(stable_words), max(0, len(_words(cleaned)) - holdback_words))
+        commit_to = min(len(stable_words), max(0, len(words) - holdback_words))
         if commit_to > self._committed_words:
             final_words = stable_words[self._committed_words : commit_to]
             final_text = " ".join(final_words).strip()
             if final_text:
+                final_start_s = self._uncommitted_start_s(start_s)
+                final_end_s = self._estimate_commit_end_s(
+                    start_s=final_start_s,
+                    end_s=end_s,
+                    total_words=len(words),
+                    commit_to=commit_to,
+                )
                 events.append(
                     StreamingAsrEvent(
                         kind="final",
                         text=final_text,
-                        start_s=self._uncommitted_start_s(start_s),
-                        end_s=end_s,
+                        start_s=final_start_s,
+                        end_s=final_end_s,
                         model=model,
                     )
                 )
                 self._committed_words = commit_to
+                self._committed_until_s = final_end_s
+        if self.partials_enabled and cleaned != self._last_text:
+            partial_text = self._uncommitted_text(cleaned)
+            if partial_text:
+                events.append(
+                    StreamingAsrEvent(
+                        kind="partial",
+                        text=partial_text,
+                        start_s=self._uncommitted_start_s(start_s),
+                        end_s=max(self._uncommitted_start_s(start_s), end_s),
+                        model=model,
+                    )
+                )
         self._last_text = cleaned
         return [event for event in events if event.text.strip()]
 
@@ -138,13 +152,15 @@ class StablePrefixFinalizer:
         if not final_text:
             return []
         self._committed_words = len(words)
-        end_s = final_offset_s if final_offset_s is not None else self._uncommitted_start_s(0.0)
+        start_s = self._uncommitted_start_s(0.0)
+        end_s = final_offset_s if final_offset_s is not None else start_s
+        self._committed_until_s = max(start_s, end_s)
         return [
             StreamingAsrEvent(
                 kind="final",
                 text=final_text,
-                start_s=self._uncommitted_start_s(0.0),
-                end_s=max(self._uncommitted_start_s(0.0), end_s),
+                start_s=start_s,
+                end_s=max(start_s, end_s),
                 model=model,
             )
         ]
@@ -156,7 +172,15 @@ class StablePrefixFinalizer:
         return " ".join(words[self._committed_words :]).strip() or text
 
     def _uncommitted_start_s(self, fallback: float) -> float:
+        if self._committed_until_s is not None:
+            return self._committed_until_s
         return self._stream_start_s if self._stream_start_s is not None else fallback
+
+    def _estimate_commit_end_s(self, *, start_s: float, end_s: float, total_words: int, commit_to: int) -> float:
+        uncommitted_words = max(1, total_words - self._committed_words)
+        committed_delta = max(1, commit_to - self._committed_words)
+        ratio = min(1.0, committed_delta / uncommitted_words)
+        return max(start_s, start_s + ((end_s - start_s) * ratio))
 
 
 class NemotronStreamingTranscriber:

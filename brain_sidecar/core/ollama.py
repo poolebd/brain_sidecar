@@ -23,12 +23,14 @@ class OllamaClient:
             ],
             "stream": False,
         }
-        if self.settings.ollama_keep_alive:
-            payload["keep_alive"] = self.settings.ollama_keep_alive
+        keep_alive = self._chat_keep_alive()
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
         if format_json:
             payload["format"] = "json"
         response = await asyncio.to_thread(
             self._post_json_with_timeout,
+            self._chat_host(),
             "/api/chat",
             payload,
             self.settings.ollama_chat_timeout_seconds,
@@ -37,10 +39,12 @@ class OllamaClient:
 
     async def embed(self, inputs: list[str]) -> list[list[float]]:
         payload: dict[str, Any] = {"model": self.settings.ollama_embed_model, "input": inputs}
-        if self.settings.ollama_keep_alive:
-            payload["keep_alive"] = self.settings.ollama_keep_alive
+        keep_alive = self._embed_keep_alive()
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
         response = await asyncio.to_thread(
             self._post_json_with_timeout,
+            self._embed_host(),
             "/api/embed",
             payload,
             self.settings.ollama_embed_timeout_seconds,
@@ -51,10 +55,28 @@ class OllamaClient:
             return [response["embedding"]]
         raise RuntimeError("Ollama embed response did not include embeddings.")
 
-    def _post_json(self, path: str, payload: dict[str, Any], timeout_s: float | None = None) -> dict[str, Any]:
+    def host_reachable(self, host: str, *, timeout_s: float = 0.35) -> bool:
+        host = host.rstrip("/")
+        if not host:
+            return False
+        request = urllib.request.Request(host, method="HEAD")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_s) as response:
+                return 200 <= int(response.status) < 500
+        except Exception:
+            return False
+
+    def _post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        timeout_s: float | None = None,
+        host: str | None = None,
+    ) -> dict[str, Any]:
+        host = (host or self.settings.ollama_host).rstrip("/")
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
-            f"{self.settings.ollama_host}{path}",
+            f"{host}{path}",
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -63,11 +85,29 @@ class OllamaClient:
             with urllib.request.urlopen(request, timeout=timeout_s or self.timeout_s) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Ollama request failed for {path}: {exc}") from exc
+            raise RuntimeError(f"Ollama request failed for {host}{path}: {exc}") from exc
 
-    def _post_json_with_timeout(self, path: str, payload: dict[str, Any], timeout_s: float) -> dict[str, Any]:
+    def _post_json_with_timeout(
+        self,
+        host: str,
+        path: str,
+        payload: dict[str, Any],
+        timeout_s: float,
+    ) -> dict[str, Any]:
         try:
-            return self._post_json(path, payload, timeout_s)
+            return self._post_json(path, payload, timeout_s, host)
         except TypeError:
             # Test doubles and older callers may override _post_json(path, payload).
             return self._post_json(path, payload)  # type: ignore[misc]
+
+    def _chat_host(self) -> str:
+        return (getattr(self.settings, "ollama_chat_host", "") or self.settings.ollama_host).rstrip("/")
+
+    def _embed_host(self) -> str:
+        return (getattr(self.settings, "ollama_embed_host", "") or self.settings.ollama_host).rstrip("/")
+
+    def _chat_keep_alive(self) -> str:
+        return getattr(self.settings, "ollama_chat_keep_alive", "") or self.settings.ollama_keep_alive
+
+    def _embed_keep_alive(self) -> str:
+        return getattr(self.settings, "ollama_embed_keep_alive", "") or self.settings.ollama_keep_alive
