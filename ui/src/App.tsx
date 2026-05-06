@@ -242,6 +242,14 @@ type GpuHealth = {
   gpu_processes?: { pid: number; process_name: string; used_memory_mb: number }[];
   asr_cuda_available?: boolean;
   asr_cuda_error?: string;
+  asr_backend?: string;
+  asr_streaming_supported?: boolean;
+  asr_streaming_chunk_ms?: number | null;
+  nemotron_model_id?: string;
+  nemotron_loaded?: boolean;
+  asr_model?: string | null;
+  asr_dtype?: string;
+  asr_backend_error?: string | null;
   asr_primary_model?: string;
   asr_fallback_model?: string;
   asr_min_free_vram_mb?: number;
@@ -258,6 +266,8 @@ type GpuHealth = {
   partial_transcripts_enabled?: boolean;
   partial_window_seconds?: number;
   partial_min_interval_seconds?: number;
+  streaming_partials_enabled?: boolean;
+  streaming_stable_final_chunks?: number;
   speaker_enrollment_sample_seconds?: number;
   speaker_identity_label?: string;
   speaker_retain_raw_enrollment_audio?: boolean;
@@ -276,6 +286,11 @@ type PipelineState = {
   silentWindows: number;
   asrEmptyWindows: number;
   finalSegmentsReplaced: number;
+  streamingPartialCount: number;
+  streamingFinalCount: number;
+  streamingFlushCount: number;
+  streamingLatencyMs?: number;
+  streamingRealtimeFactor?: number;
 };
 
 type SpeakerStatus = {
@@ -459,6 +474,9 @@ export function App() {
     silentWindows: 0,
     asrEmptyWindows: 0,
     finalSegmentsReplaced: 0,
+    streamingPartialCount: 0,
+    streamingFinalCount: 0,
+    streamingFlushCount: 0,
   });
   const [fixturePath, setFixturePath] = useState(DEFAULT_FIXTURE_AUDIO);
   const [testSourcePath, setTestSourcePath] = useState(DEFAULT_FIXTURE_AUDIO);
@@ -569,9 +587,7 @@ export function App() {
     if (!followLiveRef.current) {
       return;
     }
-    const latestEvent = transcriptEvents[transcriptEvents.length - 1];
-    const behavior: ScrollBehavior = latestEvent && !latestEvent.isFinal ? "auto" : "smooth";
-    window.requestAnimationFrame(() => scrollFieldToLive(behavior));
+    window.requestAnimationFrame(() => scrollFieldToLive("auto"));
   }, [transcriptEvents]);
 
   useEffect(() => {
@@ -644,9 +660,20 @@ export function App() {
   const workMemoryLabel = workMemoryStatus
     ? `${workMemoryStatus.projects} projects / ${workMemoryStatus.sources} sources`
     : "not indexed";
-  const streamingModeLabel = gpu.partial_transcripts_enabled
-    ? `Preview ${formatSeconds(gpu.partial_window_seconds ?? 0)}`
-    : `Final ${formatSeconds(gpu.transcription_window_seconds ?? 0)}`;
+  const asrBackendLabel = gpu.asr_backend === "nemotron_streaming"
+    ? "Nemotron Streaming"
+    : "Faster-Whisper";
+  const asrModelLabel = gpu.asr_backend === "nemotron_streaming"
+    ? gpu.nemotron_model_id ?? gpu.asr_model ?? "nemotron"
+    : gpu.asr_model ?? gpu.asr_primary_model ?? "medium.en";
+  const streamingModeLabel = gpu.asr_backend === "nemotron_streaming"
+    ? `Stream ${Number(gpu.asr_streaming_chunk_ms ?? 0)} ms`
+    : gpu.partial_transcripts_enabled
+      ? `Preview ${formatSeconds(gpu.partial_window_seconds ?? 0)}`
+      : `Final ${formatSeconds(gpu.transcription_window_seconds ?? 0)}`;
+  const streamingMetricLabel = pipeline.streamingLatencyMs != null
+    ? `${pipeline.streamingLatencyMs.toFixed(0)} ms${pipeline.streamingRealtimeFactor != null ? ` / ${pipeline.streamingRealtimeFactor.toFixed(2)}x` : ""}`
+    : "stream idle";
   const testModeVisible = Boolean(gpu.test_mode_enabled);
   const webStatusLabel = gpu.web_context_enabled
     ? gpu.web_context_configured ? "web ready" : "web key missing"
@@ -829,6 +856,9 @@ export function App() {
       silentWindows: 0,
       asrEmptyWindows: 0,
       finalSegmentsReplaced: 0,
+      streamingPartialCount: 0,
+      streamingFinalCount: 0,
+      streamingFlushCount: 0,
     });
     captureWarningRef.current = "";
     setActiveMeetingContract(null);
@@ -893,6 +923,11 @@ export function App() {
         silentWindows: Number(payload.silent_windows ?? current.silentWindows),
         asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
         finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
+        streamingPartialCount: Number(payload.asr_streaming_partial_count ?? current.streamingPartialCount),
+        streamingFinalCount: Number(payload.asr_streaming_final_count ?? current.streamingFinalCount),
+        streamingFlushCount: Number(payload.asr_streaming_flush_count ?? current.streamingFlushCount),
+        streamingLatencyMs: numberOrUndefined(payload.asr_streaming_latency_ms) ?? current.streamingLatencyMs,
+        streamingRealtimeFactor: numberOrUndefined(payload.asr_streaming_realtime_factor) ?? current.streamingRealtimeFactor,
       }));
       const captureWarning = captureWarningFromPayload(payload);
       if (captureWarning && captureWarning.id !== captureWarningRef.current) {
@@ -908,7 +943,7 @@ export function App() {
         appendSystemLog({
           level: "status",
           title: "Freeing GPU for ASR",
-          message: `Stopping GPU-resident Ollama models before Faster-Whisper loads. Free VRAM: ${payload.memory_free_mb ?? "unknown"} MB.`,
+          message: `Stopping GPU-resident Ollama models before ${asrBackendNameFromPayload(payload)} loads. Free VRAM: ${payload.memory_free_mb ?? "unknown"} MB.`,
           metadata: payload,
         });
       }
@@ -916,7 +951,7 @@ export function App() {
         appendSystemLog({
           level: "status",
           title: "Loading ASR",
-          message: `Faster-Whisper is loading on CUDA. Target free VRAM: ${payload.asr_min_free_vram_mb ?? "unknown"} MB.`,
+          message: `${asrBackendNameFromPayload(payload)} is loading on CUDA. Target free VRAM: ${payload.asr_min_free_vram_mb ?? "unknown"} MB.`,
           metadata: payload,
         });
       }
@@ -942,6 +977,11 @@ export function App() {
         silentWindows: Number(payload.silent_windows ?? current.silentWindows),
         asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
         finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
+        streamingPartialCount: Number(payload.asr_streaming_partial_count ?? current.streamingPartialCount),
+        streamingFinalCount: Number(payload.asr_streaming_final_count ?? current.streamingFinalCount),
+        streamingFlushCount: Number(payload.asr_streaming_flush_count ?? current.streamingFlushCount),
+        streamingLatencyMs: numberOrUndefined(payload.asr_streaming_latency_ms) ?? current.streamingLatencyMs,
+        streamingRealtimeFactor: numberOrUndefined(payload.asr_streaming_realtime_factor) ?? current.streamingRealtimeFactor,
       }));
       appendTranscriptEvent(transcriptEventFromPayload(payload, envelope));
     }
@@ -954,6 +994,11 @@ export function App() {
         silentWindows: Number(payload.silent_windows ?? current.silentWindows),
         asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
         finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
+        streamingPartialCount: Number(payload.asr_streaming_partial_count ?? current.streamingPartialCount),
+        streamingFinalCount: Number(payload.asr_streaming_final_count ?? current.streamingFinalCount),
+        streamingFlushCount: Number(payload.asr_streaming_flush_count ?? current.streamingFlushCount),
+        streamingLatencyMs: numberOrUndefined(payload.asr_streaming_latency_ms) ?? current.streamingLatencyMs,
+        streamingRealtimeFactor: numberOrUndefined(payload.asr_streaming_realtime_factor) ?? current.streamingRealtimeFactor,
       }));
       const line = {
         id: String(payload.id),
@@ -2390,8 +2435,15 @@ export function App() {
               <span style={{ width: `${vramPercent}%` }} />
             </div>
             <div className="chip-row">
-              <span className="chip">ASR {gpu.asr_primary_model ?? "medium.en"}</span>
+              <span className="chip">ASR {asrBackendLabel}</span>
+              <span className="chip">{asrModelLabel}</span>
               <span className="chip">{streamingModeLabel}</span>
+              {gpu.asr_backend === "nemotron_streaming" && (
+                <>
+                  <span className="chip">{streamingMetricLabel}</span>
+                  <span className="chip">{gpu.nemotron_loaded ? "Nemotron loaded" : "Nemotron cold"}</span>
+                </>
+              )}
               <span className="chip">{gpuFreeLabel}</span>
               <span className="chip">{webStatusLabel}</span>
               <span className="chip">
@@ -3583,6 +3635,10 @@ function safeRatio(value: unknown): number {
 function stringOrUndefined(value: unknown): string | undefined {
   const text = String(value ?? "").trim();
   return text ? text : undefined;
+}
+
+function asrBackendNameFromPayload(payload: Record<string, unknown>): string {
+  return String(payload.asr_backend ?? "") === "nemotron_streaming" ? "Nemotron Streaming" : "Faster-Whisper";
 }
 
 function replaceTranscriptLine(

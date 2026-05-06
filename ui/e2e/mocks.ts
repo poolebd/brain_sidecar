@@ -61,6 +61,7 @@ type MockDeviceResponse = {
 type MockApiOptions = {
   testModeEnabled?: boolean;
   devicesResponse?: MockDeviceResponse;
+  gpuHealthResponse?: Record<string, unknown>;
 };
 
 export const mockDevices: MockDevice[] = [
@@ -217,6 +218,16 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         gpu_pressure: "ok",
         gpu_processes: [],
         asr_cuda_available: true,
+        asr_backend: "faster_whisper",
+        asr_streaming_supported: false,
+        asr_streaming_chunk_ms: null,
+        nemotron_model_id: "nvidia/nemotron-speech-streaming-en-0.6b",
+        nemotron_loaded: false,
+        asr_model: "medium.en",
+        asr_dtype: "float16",
+        asr_backend_error: null,
+        asr_primary_model: "medium.en",
+        asr_fallback_model: "small.en",
         asr_min_free_vram_mb: 3500,
         asr_unload_ollama_on_start: true,
         ollama_gpu_models: ["llama3.1"],
@@ -235,6 +246,8 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         partial_transcripts_enabled: true,
         partial_window_seconds: 2.0,
         partial_min_interval_seconds: 2.0,
+        streaming_partials_enabled: true,
+        streaming_stable_final_chunks: 3,
         speaker_enrollment_sample_seconds: 8,
         speaker_identity_label: "BP",
         speaker_retain_raw_enrollment_audio: false,
@@ -244,6 +257,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         sidecar_quality_gate_enabled: true,
         test_mode_enabled: testModeEnabled,
         test_audio_run_dir: "/tmp/brain-sidecar-tests",
+        ...(options.gpuHealthResponse ?? {}),
       });
       return;
     }

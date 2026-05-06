@@ -4,36 +4,22 @@ import asyncio
 import hashlib
 import re
 import threading
-from dataclasses import dataclass
 
 import numpy as np
 
 from brain_sidecar.config import Settings
+from brain_sidecar.core.asr import ASR_BACKEND_FASTER_WHISPER, TranscribedSpan, TranscriptionResult
 from brain_sidecar.core.gpu import cuda_out_of_memory, prepare_asr_gpu
 
 
-@dataclass(frozen=True)
-class TranscribedSpan:
-    start_s: float
-    end_s: float
-    text: str
-    avg_logprob: float | None = None
-    compression_ratio: float | None = None
-    no_speech_prob: float | None = None
-
-
-@dataclass(frozen=True)
-class TranscriptionResult:
-    model: str
-    language: str | None
-    spans: list[TranscribedSpan]
-    audio_rms: float | None = None
-
-
 class FasterWhisperTranscriber:
+    backend_name = ASR_BACKEND_FASTER_WHISPER
+    streaming_supported = False
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.model_size: str | None = None
+        self.last_error: str | None = None
         self._model = None
         self._load_lock = threading.Lock()
 
@@ -66,6 +52,7 @@ class FasterWhisperTranscriber:
                 break
 
             joined = "; ".join(errors)
+            self.last_error = joined
             raise RuntimeError(
                 "Could not load a CUDA Faster-Whisper model. "
                 f"Tried primary and fallback, unloading GPU-resident Ollama models when needed: {joined}"
@@ -81,8 +68,10 @@ class FasterWhisperTranscriber:
                     compute_type=self.settings.asr_compute_type,
                 )
                 self.model_size = model_size
+                self.last_error = None
                 return []
             except Exception as exc:
+                self.last_error = str(exc)
                 errors.append(f"{model_size}: {exc}")
         return errors
 

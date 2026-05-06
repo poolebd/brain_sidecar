@@ -40,6 +40,29 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(toolsButton).toHaveAttribute("aria-expanded", "false");
 });
 
+test("shows Nemotron streaming ASR status compactly", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, {
+    gpuHealthResponse: {
+      asr_backend: "nemotron_streaming",
+      asr_streaming_supported: true,
+      asr_streaming_chunk_ms: 160,
+      nemotron_model_id: "nvidia/nemotron-speech-streaming-en-0.6b",
+      nemotron_loaded: true,
+      asr_model: "nvidia/nemotron-speech-streaming-en-0.6b",
+      asr_dtype: "float32",
+    },
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Tools" }).click();
+  await openDrawerRegion(page, "System");
+
+  const system = page.getByRole("region", { name: "System" });
+  await expect(system).toContainText("ASR Nemotron Streaming");
+  await expect(system).toContainText("Stream 160 ms");
+  await expect(system).toContainText("Nemotron loaded");
+});
+
 test("clamps stale high mic boost and warns before capture", async ({ page }) => {
   await page.evaluate(() => {
     window.localStorage.setItem("brain-sidecar-mic-tuning-v1", JSON.stringify({

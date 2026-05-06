@@ -20,6 +20,12 @@ gpu = [
   "nvidia-cublas-cu12",
   "nvidia-cudnn-cu12==9.*",
 ]
+nemotron = [
+  "Cython>=3.0.0",
+  "packaging>=24.0",
+  "torch>=2.3.0",
+  "huggingface-hub>=0.24.0",
+]
 speaker = [
   "torch>=2.3.0",
   "torchaudio>=2.3.0",
