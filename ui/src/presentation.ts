@@ -86,6 +86,12 @@ export type SidecarQualityMetrics = {
   evidenceQuoteCoverage: number;
 };
 
+export type MeetingContractBrief = {
+  goal: string;
+  mode: "quiet" | "balanced" | "assertive";
+  reminders: string[];
+};
+
 export type LiveFieldRow = {
   id: string;
   at: number;
@@ -249,18 +255,34 @@ export function buildSidecarQualityMetrics(cards: SidecarDisplayCard[]): Sidecar
   };
 }
 
-export function buildConsultingBriefMarkdown(cards: SidecarDisplayCard[], title = "Consulting Brief"): string {
+export function buildConsultingBriefMarkdown(
+  cards: SidecarDisplayCard[],
+  title = "Consulting Brief",
+  contract?: MeetingContractBrief | null,
+): string {
   const currentCards = cards.filter((card) => isCurrentMeetingCard(card) && !card.provisional);
   const memoryCards = cards.filter((card) => isWorkMemoryCard(card) && !card.provisional);
+  const contextCards = cards.filter((card) => (
+    !isCurrentMeetingCard(card)
+    && !isWorkMemoryCard(card)
+    && !isManualCard(card)
+    && !card.provisional
+  ));
+  const manualCards = cards.filter((card) => isManualCard(card) && !card.provisional);
   const groups = groupMeetingOutputCards(currentCards);
   const lines: string[] = [`# ${title}`, ""];
 
+  appendContractSection(lines, contract);
   appendBriefSection(lines, "Actions", groups.actions);
   appendBriefSection(lines, "Decisions / Instructions", groups.decisions);
   appendBriefSection(lines, "Open Questions / Clarifications", groups.questions);
   appendBriefSection(lines, "Risks", groups.risks);
+  appendSuggestedLanguageSection(lines, currentCards);
   appendBriefSection(lines, "Other Meeting Notes", groups.notes);
   appendBriefSection(lines, "Relevant Work Memory", memoryCards, { memory: true });
+  appendBriefSection(lines, "Past / Web Context", contextCards, { memory: true });
+  appendBriefSection(lines, "Manual Query Results", manualCards, { memory: true });
+  appendEvidenceIndex(lines, currentCards);
 
   return `${lines.join("\n").trim()}\n`;
 }
@@ -459,6 +481,52 @@ function percentWith(cards: SidecarDisplayCard[], predicate: (card: SidecarDispl
     return 1;
   }
   return Math.round((cards.filter(predicate).length / cards.length) * 1000) / 1000;
+}
+
+function appendContractSection(lines: string[], contract?: MeetingContractBrief | null): void {
+  lines.push("## Meeting Goal", "");
+  lines.push(contract?.goal ? contract.goal : "- None", "");
+  lines.push("## Contract Reminders", "");
+  if (!contract?.reminders.length) {
+    lines.push("- None", "");
+    return;
+  }
+  lines.push(`- Mode: ${contract.mode}`);
+  for (const reminder of contract.reminders) {
+    lines.push(`- ${reminder}`);
+  }
+  lines.push("");
+}
+
+function appendSuggestedLanguageSection(lines: string[], cards: SidecarDisplayCard[]): void {
+  const suggestions = cards.filter((card) => card.suggestedSay || card.suggestedAsk);
+  lines.push("## Suggested Follow-up Language", "");
+  if (suggestions.length === 0) {
+    lines.push("- None", "");
+    return;
+  }
+  for (const card of suggestions) {
+    const label = card.suggestedAsk ? "Ask" : "Say";
+    lines.push(`- **${card.title}** (${label}): ${card.suggestedAsk ?? card.suggestedSay}`);
+  }
+  lines.push("");
+}
+
+function appendEvidenceIndex(lines: string[], cards: SidecarDisplayCard[]): void {
+  const evidenceCards = cards.filter((card) => card.evidenceQuote || (card.sourceSegmentIds?.length ?? 0) > 0);
+  lines.push("## Evidence Index", "");
+  if (evidenceCards.length === 0) {
+    lines.push("- None", "");
+    return;
+  }
+  for (const card of evidenceCards) {
+    const sourceIds = card.sourceSegmentIds?.length ? ` [${card.sourceSegmentIds.join(", ")}]` : "";
+    lines.push(`- **${card.title}**${sourceIds}`);
+    if (card.evidenceQuote) {
+      lines.push(`  - Evidence: "${card.evidenceQuote}"`);
+    }
+  }
+  lines.push("");
 }
 
 function appendBriefSection(

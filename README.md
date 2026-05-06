@@ -164,7 +164,7 @@ a quick meeting glance:
   gray provisional partials.
 - Contribution Lane shows the best current "say this," "ask this," risk,
   follow-up, memory, work-memory, and web cards.
-- Work Notes keeps the broader action/decision/question/context buckets.
+- Meeting Output keeps the broader action/decision/question/risk/context buckets.
 - Tools keeps operational status, GPU details, indexing, and speaker identity
   controls away from the transcript.
 
@@ -184,6 +184,20 @@ Siemens, NERC, GBA, and reviewer variants only help evidence matching; they do
 not rewrite displayed transcript text or create card facts. Work-memory cards
 may appear separately as reminders, but they are not fed back into current-note
 evidence.
+
+### Meeting-Only Dross Contract
+
+Each started session carries a local, session-level Meeting Focus contract. It is
+meant only to offload meeting obligations for BP: owners, questions, risks,
+follow-ups, useful "say this" contributions, and the post-call brief. The latest
+browser preference is kept in localStorage so it can prefill the next session,
+but the normalized contract is not written to SQLite or recall indexes.
+
+The contract does not loosen evidence rules. Current-meeting cards still need
+current transcript source IDs and a supported evidence quote. Recall, work
+memory, and web results remain reminders or context only; they cannot become
+current-meeting facts unless the current transcript independently supports them.
+Raw audio is never stored.
 
 ## Event Contract
 

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from brain_sidecar.config import load_settings
 from brain_sidecar.core.devices import list_audio_devices
 from brain_sidecar.core.gpu import read_gpu_status
+from brain_sidecar.core.meeting_contract import normalize_meeting_contract
 from brain_sidecar.core.session import SessionManager
 from brain_sidecar.core.test_mode import TestModeService
 
@@ -44,12 +45,19 @@ class MicTuningRequest(BaseModel):
     speech_sensitivity: Literal["quiet", "normal", "noisy"] = "normal"
 
 
+class MeetingContractRequest(BaseModel):
+    goal: str | None = None
+    mode: Literal["quiet", "balanced", "assertive"] = "quiet"
+    reminders: list[str] = Field(default_factory=list)
+
+
 class StartSessionRequest(BaseModel):
     device_id: str | None = None
     fixture_wav: str | None = None
     audio_source: str | None = None
     save_transcript: bool = True
     mic_tuning: MicTuningRequest | None = None
+    meeting_contract: MeetingContractRequest | None = None
 
 
 class LibraryRootRequest(BaseModel):
@@ -139,6 +147,13 @@ def _mic_tuning_payload(tuning: MicTuningRequest | None) -> dict[str, object] | 
     if hasattr(tuning, "model_dump"):
         return tuning.model_dump()
     return tuning.dict()
+
+
+def _meeting_contract_payload(contract: MeetingContractRequest | None) -> dict[str, object]:
+    if contract is None:
+        return normalize_meeting_contract().to_dict()
+    payload = contract.model_dump() if hasattr(contract, "model_dump") else contract.dict()
+    return normalize_meeting_contract(payload).to_dict()
 
 
 def create_app() -> FastAPI:
@@ -318,6 +333,7 @@ def create_app() -> FastAPI:
                 audio_source=audio_source,
                 save_transcript=request.save_transcript,
                 mic_tuning=_mic_tuning_payload(request.mic_tuning),
+                meeting_contract=_meeting_contract_payload(request.meeting_contract),
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -327,6 +343,7 @@ def create_app() -> FastAPI:
             "audio_source": audio_source,
             "save_transcript": request.save_transcript,
             "raw_audio_retained": False,
+            "meeting_contract": _meeting_contract_payload(request.meeting_contract),
         }
 
     @app.websocket("/api/sessions/{session_id}/audio-stream")

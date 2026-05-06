@@ -151,6 +151,9 @@ def test_note_updates_also_publish_normalized_sidecar_cards(event_loop, tmp_path
     assert event.payload["source_type"] == "transcript"
     assert event.payload["ephemeral"] is True
     assert event.payload["raw_audio_retained"] is False
+    assert active.meeting_diagnostics["generated_candidate_count"] == 1
+    assert active.meeting_diagnostics["accepted_count"] == 1
+    assert active.meeting_diagnostics["suppressed_count"] == 0
 
 
 async def collect_event(manager: SessionManager, session_id: str, event_type: str) -> SidecarEvent:

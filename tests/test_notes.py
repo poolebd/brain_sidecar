@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from brain_sidecar.core.models import TranscriptSegment
+from brain_sidecar.core.meeting_contract import MeetingContract
 from brain_sidecar.core.note_quality import NoteQualityGate
 from brain_sidecar.core.notes import NoteSynthesizer, heuristic_project_review_cards
 
@@ -58,6 +59,27 @@ def test_note_synthesizer_preserves_source_ids_and_prompts_for_sidecar_tone(even
     assert "meeting-intelligence assistant" in ollama.system
     assert "suggested_say" in ollama.user
     assert "decision" in ollama.user
+
+
+def test_note_synthesizer_includes_meeting_contract_prompt_block(event_loop) -> None:
+    ollama = RecordingOllama()
+    synthesizer = NoteSynthesizer(ollama)  # type: ignore[arg-type]
+    segments = [
+        TranscriptSegment(
+            id="seg_1",
+            session_id="ses_1",
+            start_s=0.0,
+            end_s=2.0,
+            text="We are discussing the owner for a risk review.",
+        )
+    ]
+    contract = MeetingContract(goal="Track owners and risks.", mode="assertive", reminders=["Owners", "Risks"])
+
+    event_loop.run_until_complete(synthesizer.synthesize("ses_1", segments, [], meeting_contract=contract))
+
+    assert "Meeting-only Dross contract" in ollama.user
+    assert "Track owners and risks." in ollama.user
+    assert "Mode: assertive" in ollama.user
 
 
 def test_note_synthesizer_falls_back_when_llm_times_out(event_loop) -> None:

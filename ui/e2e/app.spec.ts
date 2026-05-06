@@ -41,6 +41,44 @@ test("clamps stale high mic boost and warns before capture", async ({ page }) =>
   await expect(drawer.getByLabel("Guided mic tuning")).toContainText("High boost can clip");
 });
 
+test("restores Meeting Focus controls from localStorage", async ({ page }) => {
+  await page.evaluate(() => {
+    window.localStorage.setItem("brain-sidecar-meeting-focus-v1", JSON.stringify({
+      goal: "Track owners for the outage review.",
+      mode: "balanced",
+      reminders: {
+        owners: true,
+        questions: false,
+        risks: true,
+        contributions: false,
+        brief: true,
+      },
+    }));
+  });
+  await page.reload();
+
+  const focus = page.getByLabel("Meeting Focus");
+  await expect(focus.getByLabel("Meeting Focus goal")).toHaveValue("Track owners for the outage review.");
+  await expect(focus.getByRole("button", { name: "Balanced" })).toHaveAttribute("aria-pressed", "true");
+  await expect(focus.getByLabel("Open questions")).not.toBeChecked();
+  await expect(focus.getByLabel("Risks/dependencies")).toBeChecked();
+
+  const startRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
+  ));
+  await page.getByRole("button", { name: "Start Listening" }).click();
+  const body = JSON.parse((await startRequest).postData() ?? "{}");
+  expect(body.meeting_contract).toMatchObject({
+    goal: "Track owners for the outage review.",
+    mode: "balanced",
+  });
+  expect(body.meeting_contract.reminders).toEqual([
+    "Track owners and ownership ambiguity.",
+    "Track risks, dependencies, and blocked paths.",
+    "Prepare a post-call brief with evidence.",
+  ]);
+});
+
 test("shows active USB mic capture as in use instead of missing", async ({ page }) => {
   await page.unroute("http://127.0.0.1:8765/api/**");
   await mockApi(page, {
@@ -71,7 +109,8 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
 
   await page.getByRole("button", { name: "Start Listening" }).click();
   const request = await startRequest;
-  expect(JSON.parse(request.postData() ?? "{}")).toMatchObject({
+  const requestBody = JSON.parse(request.postData() ?? "{}");
+  expect(requestBody).toMatchObject({
     device_id: null,
     audio_source: "server_device",
     save_transcript: false,
@@ -81,7 +120,14 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
       speech_sensitivity: "normal",
     },
   });
+  expect(requestBody.meeting_contract).toMatchObject({
+    mode: "quiet",
+    goal: expect.stringContaining("Offload meeting obligations"),
+    reminders: expect.arrayContaining(["Track owners and ownership ambiguity."]),
+  });
   await expect(page.getByLabel("Session save mode status")).toContainText("Listening");
+  await expect(page.getByLabel("Contract active")).toContainText("Contract active");
+  await expect(page.getByLabel("Meeting Output")).toContainText("No grounded meeting cards yet. Sidecar is suppressing unsupported/noisy cards.");
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
 
   await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
@@ -539,6 +585,10 @@ test("shows copyable post-call brief from evidence-backed cards", async ({ page 
   await page.getByRole("button", { name: "Stop" }).click();
   const brief = page.getByLabel("Consulting brief");
   await expect(brief).toBeVisible();
+  await expect(brief).toContainText("## Meeting Goal");
+  await expect(brief).toContainText("## Contract Reminders");
+  await expect(brief).toContainText("## Suggested Follow-up Language");
+  await expect(brief).toContainText("## Evidence Index");
   await expect(brief).toContainText("Evidence: \"Send the Siemens comments by Monday.\"");
   await expect(brief).toContainText("## Relevant Work Memory");
   await brief.getByRole("button", { name: "Copy Markdown" }).click();

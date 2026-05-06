@@ -4,6 +4,8 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from brain_sidecar.core.meeting_agents import MemoryBoundaryAgent, deterministic_meeting_cards
+from brain_sidecar.core.meeting_contract import MeetingContract, contract_prompt_block
 from brain_sidecar.core.models import NoteCard, SearchHit, SidecarCard, TranscriptSegment, compact_text, new_id
 from brain_sidecar.core.ollama import OllamaClient
 from brain_sidecar.core.sidecar_cards import create_sidecar_card, note_card_key
@@ -33,6 +35,7 @@ class NoteSynthesizer:
         session_id: str,
         recent_segments: list[TranscriptSegment],
         recall_hits: list[SearchHit],
+        meeting_contract: MeetingContract | None = None,
     ) -> NoteSynthesisResult:
         if not recent_segments:
             return NoteSynthesisResult(notes=[])
@@ -52,7 +55,10 @@ class NoteSynthesizer:
             "Do not invent facts, do not restate the transcript, and do not imply BP promised "
             "something unless speaker_role=user with adequate confidence. If evidence is weak, return no cards."
         )
+        contract_block = contract_prompt_block(meeting_contract)
         user = f"""
+{contract_block}
+
 Transcript:
 {transcript}
 
@@ -104,6 +110,7 @@ Return JSON only:
         try:
             content = await self.ollama.chat(system, user, format_json=True)
             cards = parse_meeting_cards(content, session_id=session_id, recent_segments=recent_segments)
+            cards = MemoryBoundaryAgent().filter_current_meeting_cards(cards, recent_segments, recall_hits)
             if heuristic_cards:
                 cards = merge_cards(cards, heuristic_cards)
         except Exception:
@@ -200,86 +207,7 @@ def parse_meeting_cards(
 
 def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSegment]) -> list[SidecarCard]:
     cards: list[SidecarCard] = heuristic_project_review_cards(session_id, recent_segments)
-    for segment in recent_segments[-4:]:
-        text = segment.text.strip()
-        if not text:
-            continue
-        lower = text.lower()
-        commitment = re.search(r"\b(i'll|i will|i can|i'm going to|i am going to|let me)\b", lower)
-        if commitment and is_bp_speaker(segment):
-            cards.append(
-                create_sidecar_card(
-                    session_id=session_id,
-                    category="action",
-                    title="BP follow-up",
-                    body=f"BP appears to own this follow-up: {compact_text(text, limit=220)}",
-                    suggested_say="I'll own that follow-up and confirm the next step.",
-                    why_now="Speaker identity labels this commitment as BP with enough confidence.",
-                    priority="high",
-                    confidence=max(0.74, float(segment.speaker_confidence or 0.0)),
-                    source_segment_ids=[segment.id],
-                    source_type="transcript",
-                    card_key=f"action:bp:{segment.id}",
-                    ephemeral=True,
-                    evidence_quote=compact_text(text, limit=260),
-                    owner="BP",
-                )
-            )
-        elif commitment and segment.speaker_role == "other":
-            cards.append(
-                create_sidecar_card(
-                    session_id=session_id,
-                    category="clarification",
-                    title="Confirm owner",
-                    body="Another speaker used first-person commitment language; do not assign this to BP without confirmation.",
-                    suggested_ask="Can we confirm who owns that follow-up?",
-                    why_now="Speaker identity indicates the commitment came from someone other than BP.",
-                    priority="normal",
-                    confidence=0.68,
-                    source_segment_ids=[segment.id],
-                    source_type="transcript",
-                    card_key=f"clarify:owner:{segment.id}",
-                    ephemeral=True,
-                    evidence_quote=compact_text(text, limit=260),
-                )
-            )
-        elif commitment:
-            cards.append(
-                create_sidecar_card(
-                    session_id=session_id,
-                    category="clarification",
-                    title="Owner unclear",
-                    body="A follow-up may have been promised, but the speaker was unknown or low confidence.",
-                    suggested_ask="Who should own that follow-up?",
-                    why_now="Speaker identity is not confident enough to assign the action to BP.",
-                    priority="normal",
-                    confidence=0.52,
-                    source_segment_ids=[segment.id],
-                    source_type="transcript",
-                    card_key=f"clarify:unknown-owner:{segment.id}",
-                    ephemeral=True,
-                    evidence_quote=compact_text(text, limit=260),
-                )
-            )
-    risk_text = " ".join(segment.text for segment in recent_segments[-4:]).lower()
-    if any(term in risk_text for term in ["risk", "rollback", "blocked", "deadline", "dependency"]):
-        cards.append(
-            create_sidecar_card(
-                session_id=session_id,
-                category="risk",
-                title="Watch the risk",
-                body="Recent speech points to a risk or dependency that may need an owner or mitigation.",
-                suggested_ask="What would make this plan fail, and who owns that mitigation?",
-                why_now="Risk language appeared in the latest transcript window.",
-                priority="high",
-                confidence=0.64,
-                source_segment_ids=[segment.id for segment in recent_segments[-4:]],
-                source_type="transcript",
-                card_key="risk:recent-window",
-                ephemeral=True,
-                evidence_quote=compact_text(" ".join(segment.text for segment in recent_segments[-4:]), limit=260),
-            )
-        )
+    cards.extend(deterministic_meeting_cards(session_id, recent_segments))
     return cards[:5]
 
 
@@ -575,14 +503,6 @@ def is_echo_card(title: object, body: object, suggested_say: object, suggested_a
 
 def normalize_for_echo(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text.lower())).strip()
-
-
-def is_bp_speaker(segment: TranscriptSegment) -> bool:
-    return (
-        segment.speaker_role == "user"
-        and not segment.speaker_low_confidence
-        and (segment.speaker_confidence is None or segment.speaker_confidence >= 0.82)
-    )
 
 
 def merge_cards(primary: list[SidecarCard], secondary: list[SidecarCard]) -> list[SidecarCard]:

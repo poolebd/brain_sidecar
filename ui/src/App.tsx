@@ -33,7 +33,17 @@ const THEME_STORAGE_KEY = "brain-sidecar-theme-v2";
 const DEBUG_METADATA_STORAGE_KEY = "brain-sidecar-debug-metadata-v1";
 const SESSION_RETENTION_STORAGE_KEY = "brain-sidecar-session-retention-v1";
 const MIC_TUNING_STORAGE_KEY = "brain-sidecar-mic-tuning-v1";
+const MEETING_FOCUS_STORAGE_KEY = "brain-sidecar-meeting-focus-v1";
 const DEFAULT_CONTEXT_CARD_LIMIT = 3;
+const DEFAULT_MEETING_GOAL = "Offload meeting obligations, questions, risks, follow-ups, useful context, and post-call synthesis for BP.";
+
+const MEETING_REMINDER_OPTIONS = [
+  { key: "owners", label: "Owners", reminder: "Track owners and ownership ambiguity." },
+  { key: "questions", label: "Open questions", reminder: "Track open questions and clarifications." },
+  { key: "risks", label: "Risks/dependencies", reminder: "Track risks, dependencies, and blocked paths." },
+  { key: "contributions", label: "Say-this contributions", reminder: "Suggest concise say-this contributions only when grounded." },
+  { key: "brief", label: "Post-call brief", reminder: "Prepare a post-call brief with evidence." },
+] as const;
 
 const MEETING_OUTPUT_SECTIONS: { bucket: MeetingOutputBucket; title: string; empty: string }[] = [
   { bucket: "actions", title: "Actions", empty: "No actions yet." },
@@ -78,11 +88,34 @@ type DeviceListResponse = {
 };
 
 type SpeechSensitivity = "quiet" | "normal" | "noisy";
+type MeetingMode = "quiet" | "balanced" | "assertive";
+type MeetingReminderKey = typeof MEETING_REMINDER_OPTIONS[number]["key"];
 
 type MicTuning = {
   auto_level: boolean;
   input_gain_db: number;
   speech_sensitivity: SpeechSensitivity;
+};
+
+type MeetingFocusState = {
+  goal: string;
+  mode: MeetingMode;
+  reminders: Record<MeetingReminderKey, boolean>;
+};
+
+type MeetingContractPayload = {
+  goal: string;
+  mode: MeetingMode;
+  reminders: string[];
+};
+
+type MeetingDiagnostics = {
+  generated_candidate_count: number;
+  accepted_count: number;
+  suppressed_count: number;
+  top_suppression_reasons: { reason: string; count: number }[];
+  evidence_quote_coverage: number;
+  source_id_coverage: number;
 };
 
 type EventEnvelope = {
@@ -396,6 +429,9 @@ export function App() {
   const [deviceNotice, setDeviceNotice] = useState("");
   const [audioSource, setAudioSource] = useState<AudioSource>(() => defaultAudioSource());
   const [micTuning, setMicTuning] = useState<MicTuning>(() => loadMicTuning());
+  const [meetingFocus, setMeetingFocus] = useState<MeetingFocusState>(() => loadMeetingFocus());
+  const [activeMeetingContract, setActiveMeetingContract] = useState<MeetingContractPayload | null>(null);
+  const [meetingDiagnostics, setMeetingDiagnostics] = useState<MeetingDiagnostics | null>(null);
   const [sessionRetention, setSessionRetention] = useState<SessionRetention>(() => {
     if (typeof window === "undefined") {
       return "temporary";
@@ -487,6 +523,10 @@ export function App() {
   }, [micTuning]);
 
   useEffect(() => {
+    window.localStorage.setItem(MEETING_FOCUS_STORAGE_KEY, JSON.stringify(meetingFocus));
+  }, [meetingFocus]);
+
+  useEffect(() => {
     return () => {
       eventSourceRef.current?.close();
       speakerEventSourceRef.current?.close();
@@ -571,8 +611,8 @@ export function App() {
   const meetingOutputGroups = useMemo(() => groupMeetingOutputCards(visibleMeetingCards), [visibleMeetingCards]);
   const qualityMetrics = useMemo(() => buildSidecarQualityMetrics(usefulContextCards), [usefulContextCards]);
   const consultingBriefMarkdown = useMemo(
-    () => buildConsultingBriefMarkdown(usefulContextCards, "Consulting Brief"),
-    [usefulContextCards],
+    () => buildConsultingBriefMarkdown(usefulContextCards, "Consulting Brief", activeMeetingContract ?? undefined),
+    [activeMeetingContract, usefulContextCards],
   );
 
   const workMemoryLabel = workMemoryStatus
@@ -673,9 +713,11 @@ export function App() {
     : captureActive
       ? activeRetention === "saved" ? "Recording context" : "Listening for context"
       : "Context standby";
-  const contextEmptyBody = captureActive || captureStarting
-    ? "Actions, decisions, questions, and useful context will appear here."
-    : "Start listening, record a transcript, or run a query.";
+  const contextEmptyBody = captureActive && currentMeetingCards.length === 0
+    ? "No grounded meeting cards yet. Sidecar is suppressing unsupported/noisy cards."
+    : captureActive || captureStarting
+      ? "Actions, decisions, questions, and useful context will appear here."
+      : "Start listening, record a transcript, or run a query.";
   const captureIdleButtonLabel = audioSource === "fixture"
     ? "Start Playback"
     : sessionRetention === "saved"
@@ -749,6 +791,8 @@ export function App() {
     setWorkMemoryMatches([]);
     setErrors([]);
     setPipeline({ queueDepth: 0, droppedWindows: 0 });
+    setActiveMeetingContract(null);
+    setMeetingDiagnostics(null);
     setTranscriptEvents([]);
     setSidecarCards([]);
     setDismissedCardKeys(new Set());
@@ -797,6 +841,7 @@ export function App() {
     if (envelope.type === "audio_status") {
       const nextStatus = String(payload.status ?? "listening");
       setStatus(nextStatus);
+      syncMeetingStatusFromPayload(payload);
       if ("memory_free_mb" in payload || "gpu_pressure" in payload || "ollama_gpu_models" in payload) {
         setGpu((current) => ({ ...current, ...payload }));
       }
@@ -830,6 +875,7 @@ export function App() {
       }
     }
     if (envelope.type === "gpu_status") {
+      syncMeetingStatusFromPayload(payload);
       setGpu((current) => ({ ...current, ...payload }));
     }
     if (envelope.type === "transcript_partial") {
@@ -900,6 +946,17 @@ export function App() {
         message,
         metadata: payload,
       });
+    }
+  }
+
+  function syncMeetingStatusFromPayload(payload: Record<string, unknown>) {
+    const nextContract = meetingContractFromPayload(payload.meeting_contract);
+    if (nextContract) {
+      setActiveMeetingContract(nextContract);
+    }
+    const nextDiagnostics = meetingDiagnosticsFromPayload(payload.meeting_diagnostics);
+    if (nextDiagnostics) {
+      setMeetingDiagnostics(nextDiagnostics);
     }
   }
 
@@ -1126,7 +1183,10 @@ export function App() {
     const fixtureWav = options.fixtureWav
       ?? (selectedSource === "fixture" && fixturePath.trim() ? fixturePath.trim() : null);
     const retentionForStart = sessionRetention;
+    const contractForStart = buildMeetingContractPayload(meetingFocus);
     setActiveSessionRetention(retentionForStart);
+    setActiveMeetingContract(contractForStart);
+    setMeetingDiagnostics(null);
     setStatus("starting");
     setBriefVisible(false);
     appendSystemLog({
@@ -1145,6 +1205,7 @@ export function App() {
         audio_source: fixtureWav ? "fixture" : "server_device",
         save_transcript: retentionForStart === "saved",
         mic_tuning: micTuning,
+        meeting_contract: contractForStart,
       }),
     });
     if (!response.ok) {
@@ -1154,6 +1215,7 @@ export function App() {
         setTestBusy("");
       }
       setActiveSessionRetention(null);
+      setActiveMeetingContract(null);
       setErrors((current) => [payload.detail ?? "Start failed", ...current]);
       appendSystemLog({
         level: "error",
@@ -1162,6 +1224,11 @@ export function App() {
         metadata: payload,
       });
       return false;
+    }
+    const startPayload = await response.json().catch(() => null);
+    const normalizedContract = meetingContractFromPayload(startPayload?.meeting_contract);
+    if (normalizedContract) {
+      setActiveMeetingContract(normalizedContract);
     }
     if (options.testRun) {
       testStartedAtRef.current = new Date().toISOString();
@@ -1673,6 +1740,12 @@ export function App() {
             </div>
           </section>
 
+          <MeetingFocusControl
+            value={meetingFocus}
+            disabled={captureStarting || captureActive}
+            onChange={setMeetingFocus}
+          />
+
           {errors.length > 0 && (
             <section className="errors" role="alert">
               {errors.map((error, index) => (
@@ -1741,11 +1814,13 @@ export function App() {
               <span>{currentMeetingCards.length} current</span>
             </div>
           </div>
+          <ContractActiveBadge contract={activeMeetingContract} />
           <SessionContextPane
             groups={meetingOutputGroups}
             usefulCount={currentMeetingCards.length}
             rawCount={sidecarCards.length}
             qualityMetrics={qualityMetrics}
+            meetingDiagnostics={meetingDiagnostics}
             qualityGateActive={gpu.sidecar_quality_gate_enabled !== false}
             loading={manualQueryBusy}
             emptyTitle={contextEmptyTitle}
@@ -2316,6 +2391,83 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   );
 }
 
+function MeetingFocusControl({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: MeetingFocusState;
+  disabled: boolean;
+  onChange: (value: MeetingFocusState) => void;
+}) {
+  return (
+    <section className="meeting-focus-control" aria-label="Meeting Focus">
+      <label className="field meeting-focus-goal">
+        <span>Meeting Focus</span>
+        <textarea
+          aria-label="Meeting Focus goal"
+          value={value.goal}
+          disabled={disabled}
+          onChange={(event) => onChange({ ...value, goal: event.target.value })}
+          placeholder="What should Sidecar help offload? owners, questions, risks, follow-ups..."
+        />
+      </label>
+      <div className="meeting-focus-options">
+        <div className="mode-control compact meeting-mode-control" role="group" aria-label="Meeting focus mode">
+          {(["quiet", "balanced", "assertive"] as MeetingMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={value.mode === mode}
+              className={value.mode === mode ? "active" : ""}
+              disabled={disabled}
+              onClick={() => onChange({ ...value, mode })}
+            >
+              <span>{capitalize(mode)}</span>
+            </button>
+          ))}
+        </div>
+        <div className="meeting-reminder-grid" aria-label="Meeting focus reminders">
+          {MEETING_REMINDER_OPTIONS.map((option) => (
+            <label key={option.key} className="toggle-row">
+              <input
+                type="checkbox"
+                checked={value.reminders[option.key]}
+                disabled={disabled}
+                onChange={(event) => onChange({
+                  ...value,
+                  reminders: { ...value.reminders, [option.key]: event.target.checked },
+                })}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ContractActiveBadge({ contract }: { contract: MeetingContractPayload | null }) {
+  if (!contract) {
+    return null;
+  }
+  return (
+    <details className="contract-active-badge" aria-label="Contract active">
+      <summary>
+        <span>Contract active</span>
+        <strong>{capitalize(contract.mode)}</strong>
+      </summary>
+      <div>
+        <p>{contract.goal}</p>
+        <div className="chip-row">
+          {contract.reminders.map((reminder) => <span key={reminder} className="chip">{reminder}</span>)}
+        </div>
+      </div>
+    </details>
+  );
+}
+
 function LiveFieldPane({
   rows,
   expandedCards,
@@ -2406,6 +2558,7 @@ function SessionContextPane({
   usefulCount,
   rawCount,
   qualityMetrics,
+  meetingDiagnostics,
   qualityGateActive,
   loading,
   emptyTitle,
@@ -2428,6 +2581,7 @@ function SessionContextPane({
   usefulCount: number;
   rawCount: number;
   qualityMetrics: ReturnType<typeof buildSidecarQualityMetrics>;
+  meetingDiagnostics: MeetingDiagnostics | null;
   qualityGateActive: boolean;
   loading: boolean;
   emptyTitle: string;
@@ -2451,14 +2605,20 @@ function SessionContextPane({
     return <Empty title="Searching" body="Looking for useful work context." />;
   }
   if (cardCount === 0 && rawCount > 0 && usefulCount === 0 && workMemoryCards.length === 0 && contextCards.length === 0 && manualCards.length === 0) {
-    return <ContextQuietEmpty title="No useful context yet" body="Recent backend hits were echoes, duplicates, or too weak to show." />;
+    return <ContextQuietEmpty title="No grounded meeting cards yet" body={emptyBody} />;
   }
   if (cardCount === 0 && workMemoryCards.length === 0 && contextCards.length === 0 && manualCards.length === 0) {
     return <ContextQuietEmpty title={emptyTitle} body={emptyBody} />;
   }
   return (
     <div className="context-card-list session-context-list scroll" aria-label="Meeting output">
-      <QualityStrip metrics={qualityMetrics} rawCount={rawCount} qualityGateActive={qualityGateActive} />
+      <QualityStrip
+        metrics={qualityMetrics}
+        diagnostics={meetingDiagnostics}
+        rawCount={rawCount}
+        qualityGateActive={qualityGateActive}
+        showDebugMetadata={showDebugMetadata}
+      />
 
       {MEETING_OUTPUT_SECTIONS.map((section) => (
         <section key={section.bucket} className="work-note-section meeting-output-section" aria-label={`${section.title} summary`}>
@@ -2575,22 +2735,35 @@ function SessionContextPane({
 
 function QualityStrip({
   metrics,
+  diagnostics,
   rawCount,
   qualityGateActive,
+  showDebugMetadata,
 }: {
   metrics: ReturnType<typeof buildSidecarQualityMetrics>;
+  diagnostics: MeetingDiagnostics | null;
   rawCount: number;
   qualityGateActive: boolean;
+  showDebugMetadata: boolean;
 }) {
   return (
     <section className="quality-strip" aria-label="Sidecar quality status">
       <span><strong>{metrics.acceptedCurrentCount}</strong> current</span>
       <span><strong>{metrics.workMemoryCount}</strong> memory</span>
       <span><strong>{metrics.manualCount}</strong> manual</span>
+      {diagnostics && (
+        <>
+          <span><strong>{diagnostics.generated_candidate_count}</strong> generated</span>
+          <span><strong>{diagnostics.suppressed_count}</strong> suppressed</span>
+        </>
+      )}
       <span><strong>{formatPercent(metrics.evidenceQuoteCoverage)}</strong> evidence</span>
       <span><strong>{formatPercent(metrics.sourceIdCoverage)}</strong> sources</span>
       <span>{qualityGateActive ? "Quality gate active" : "Quality gate off"}</span>
       <span className="quiet">{rawCount} raw</span>
+      {showDebugMetadata && diagnostics?.top_suppression_reasons.length ? (
+        <span className="quiet">Reasons: {diagnostics.top_suppression_reasons.map((item) => `${item.reason} ${item.count}`).join("; ")}</span>
+      ) : null}
     </section>
   );
 }
@@ -3210,6 +3383,16 @@ function numberOrUndefined(value: unknown): number | undefined {
   return Number.isFinite(number) ? number : undefined;
 }
 
+function safeInteger(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.round(number)) : 0;
+}
+
+function safeRatio(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : 0;
+}
+
 function stringOrUndefined(value: unknown): string | undefined {
   const text = String(value ?? "").trim();
   return text ? text : undefined;
@@ -3414,6 +3597,17 @@ function defaultMicTuning(): MicTuning {
   };
 }
 
+function defaultMeetingFocus(): MeetingFocusState {
+  return {
+    goal: "",
+    mode: "quiet",
+    reminders: MEETING_REMINDER_OPTIONS.reduce((result, option) => ({
+      ...result,
+      [option.key]: true,
+    }), {} as Record<MeetingReminderKey, boolean>),
+  };
+}
+
 function loadMicTuning(): MicTuning {
   if (typeof window === "undefined") {
     return defaultMicTuning();
@@ -3426,6 +3620,18 @@ function loadMicTuning(): MicTuning {
   }
 }
 
+function loadMeetingFocus(): MeetingFocusState {
+  if (typeof window === "undefined") {
+    return defaultMeetingFocus();
+  }
+  try {
+    const stored = window.localStorage.getItem(MEETING_FOCUS_STORAGE_KEY);
+    return normalizeMeetingFocus(stored ? JSON.parse(stored) : undefined);
+  } catch {
+    return defaultMeetingFocus();
+  }
+}
+
 function normalizeMicTuning(value?: Partial<MicTuning> | null): MicTuning {
   const sensitivity = value?.speech_sensitivity;
   const inputGain = Number(value?.input_gain_db ?? 0);
@@ -3433,6 +3639,68 @@ function normalizeMicTuning(value?: Partial<MicTuning> | null): MicTuning {
     auto_level: value?.auto_level ?? true,
     input_gain_db: Math.max(-12, Math.min(12, Number.isFinite(inputGain) ? inputGain : 0)),
     speech_sensitivity: sensitivity === "quiet" || sensitivity === "noisy" ? sensitivity : "normal",
+  };
+}
+
+function normalizeMeetingFocus(value?: Partial<MeetingFocusState> | null): MeetingFocusState {
+  const fallback = defaultMeetingFocus();
+  const mode = value?.mode === "balanced" || value?.mode === "assertive" ? value.mode : "quiet";
+  const reminders = { ...fallback.reminders };
+  if (value?.reminders && typeof value.reminders === "object") {
+    for (const option of MEETING_REMINDER_OPTIONS) {
+      reminders[option.key] = value.reminders[option.key] !== false;
+    }
+  }
+  return {
+    goal: String(value?.goal ?? "").slice(0, 420),
+    mode,
+    reminders,
+  };
+}
+
+function buildMeetingContractPayload(focus: MeetingFocusState): MeetingContractPayload {
+  const reminders = MEETING_REMINDER_OPTIONS
+    .filter((option) => focus.reminders[option.key])
+    .map((option) => option.reminder);
+  return {
+    goal: focus.goal.trim() || DEFAULT_MEETING_GOAL,
+    mode: focus.mode,
+    reminders,
+  };
+}
+
+function meetingContractFromPayload(value: unknown): MeetingContractPayload | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const mode = String(value.mode ?? "quiet").toLowerCase();
+  return {
+    goal: String(value.goal ?? DEFAULT_MEETING_GOAL).trim() || DEFAULT_MEETING_GOAL,
+    mode: mode === "balanced" || mode === "assertive" ? mode : "quiet",
+    reminders: parseStringList(value.reminders),
+  };
+}
+
+function meetingDiagnosticsFromPayload(value: unknown): MeetingDiagnostics | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const reasons = Array.isArray(value.top_suppression_reasons)
+    ? value.top_suppression_reasons
+      .filter(isRecord)
+      .map((item) => ({
+        reason: String(item.reason ?? ""),
+        count: Number(item.count ?? 0),
+      }))
+      .filter((item) => item.reason && Number.isFinite(item.count))
+    : [];
+  return {
+    generated_candidate_count: safeInteger(value.generated_candidate_count),
+    accepted_count: safeInteger(value.accepted_count),
+    suppressed_count: safeInteger(value.suppressed_count),
+    top_suppression_reasons: reasons,
+    evidence_quote_coverage: safeRatio(value.evidence_quote_coverage),
+    source_id_coverage: safeRatio(value.source_id_coverage),
   };
 }
 

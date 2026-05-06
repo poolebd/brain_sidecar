@@ -152,7 +152,7 @@ test("computes evidence coverage for current meeting cards", () => {
   expect(metrics.evidenceQuoteCoverage).toBe(0.5);
 });
 
-test("builds consulting brief with evidence and separated work memory", () => {
+test("builds consulting brief with evidence, contract, and separated work memory", () => {
   const markdown = buildConsultingBriefMarkdown([
     card("action", {
       category: "action",
@@ -163,6 +163,7 @@ test("builds consulting brief with evidence and separated work memory", () => {
       evidenceQuote: "four documents by Monday",
       owner: "Kyle",
       dueDate: "Monday",
+      suggestedSay: "I will send the comments by Monday.",
     }),
     card("memory", {
       category: "work_memory",
@@ -171,10 +172,21 @@ test("builds consulting brief with evidence and separated work memory", () => {
       sourceType: "work_memory_project",
       citations: ["eval-memory:relay"],
     }),
-  ]);
+  ], "Consulting Brief", {
+    goal: "Track owners and risks.",
+    mode: "quiet",
+    reminders: ["Owners", "Post-call brief"],
+  });
 
+  expect(markdown).toContain("## Meeting Goal");
+  expect(markdown).toContain("Track owners and risks.");
+  expect(markdown).toContain("## Contract Reminders");
+  expect(markdown).toContain("Owners");
   expect(markdown).toContain("## Actions");
+  expect(markdown).toContain("## Suggested Follow-up Language");
+  expect(markdown).toContain("I will send the comments by Monday.");
   expect(markdown).toContain("Evidence: \"four documents by Monday\"");
+  expect(markdown).toContain("## Evidence Index");
   expect(markdown).toContain("Source segments: seg-1");
   expect(markdown).toContain("## Relevant Work Memory");
   expect(markdown).toContain("Relay work distractor");

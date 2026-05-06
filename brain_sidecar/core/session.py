@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import inspect
 import time
 import wave
 from dataclasses import dataclass, field, replace
@@ -26,6 +27,8 @@ from brain_sidecar.core.events import (
     SidecarEvent,
 )
 from brain_sidecar.core.gpu import GpuStatus, prepare_asr_gpu, read_gpu_status
+from brain_sidecar.core.meeting_agents import ContractCriticAgent, diagnostics_for_cards
+from brain_sidecar.core.meeting_contract import MeetingContract, normalize_meeting_contract
 from brain_sidecar.core.models import SidecarCard, TranscriptSegment, new_id
 from brain_sidecar.core.note_quality import NoteQualityGate
 from brain_sidecar.core.notes import NoteSynthesizer, note_from_sidecar
@@ -98,6 +101,10 @@ class ActiveSession:
     final_segments_collapsed: int = 0
     final_segments_seen_for_notes: int = 0
     final_segments_suppressed_for_notes: int = 0
+    meeting_contract: MeetingContract = field(default_factory=normalize_meeting_contract)
+    meeting_diagnostics: dict[str, object] = field(
+        default_factory=lambda: diagnostics_for_cards([], accepted_count=0, suppressed_count=0).to_dict()
+    )
 
 
 class SessionManager:
@@ -144,10 +151,12 @@ class SessionManager:
         audio_source: str = "server_device",
         save_transcript: bool = True,
         mic_tuning: dict[str, object] | None = None,
+        meeting_contract: object | None = None,
     ) -> None:
         async with self._lock:
             if session_id in self._active:
                 return
+            normalized_contract = normalize_meeting_contract(meeting_contract)
             if self.transcriber.model_size is None:
                 await self._publish_asr_start_status(session_id)
                 await asyncio.to_thread(prepare_asr_gpu, self.settings)
@@ -180,6 +189,7 @@ class SessionManager:
                 input_gain_db=capture.input_gain_db if isinstance(capture, FFmpegAudioCapture) else 0.0,
                 save_transcript=save_transcript,
                 next_note_segment_count=self.settings.notes_every_segments,
+                meeting_contract=normalized_contract,
             )
             self._active[session_id] = active
             active.tasks = [
@@ -211,6 +221,7 @@ class SessionManager:
                     "input_gain_db": active.input_gain_db,
                     "save_transcript": active.save_transcript,
                     "raw_audio_retained": False,
+                    **self._meeting_status(active),
                 },
             )
         )
@@ -241,6 +252,7 @@ class SessionManager:
                     "ollama_gpu_models": gpu_status.ollama_gpu_models,
                     "asr_min_free_vram_mb": self.settings.asr_min_free_vram_mb,
                     **(self._pipeline_metrics(active) if active is not None else {}),
+                    **(self._meeting_status(active) if active is not None else {}),
                     **(extra or {}),
                 },
             )
@@ -277,6 +289,7 @@ class SessionManager:
                     "save_transcript": active.save_transcript,
                     "dropped_windows": active.dropped_windows,
                     **self._pipeline_metrics(active),
+                    **self._meeting_status(active),
                 },
             )
         )
@@ -593,12 +606,18 @@ class SessionManager:
         partial_bytes = int(bytes_per_second * self.settings.partial_window_seconds)
         total_bytes = 0
         buffer = bytearray()
+        active = self._active.get(session_id)
 
         await self.bus.publish(
             SidecarEvent(
                 type=EVENT_AUDIO_STATUS,
                 session_id=session_id,
-                payload={"status": "listening", "raw_audio_retained": False},
+                payload={
+                    "status": "listening",
+                    "raw_audio_retained": False,
+                    **(self._pipeline_metrics(active) if active is not None else {}),
+                    **(self._meeting_status(active) if active is not None else {}),
+                },
             )
         )
 
@@ -674,6 +693,7 @@ class SessionManager:
                                 "dropped_windows": active.dropped_windows,
                                 "queue_depth": queue.qsize(),
                                 **self._pipeline_metrics(active),
+                                **self._meeting_status(active),
                             },
                         )
                     )
@@ -891,6 +911,12 @@ class SessionManager:
             "note_evidence_window_segments": len(active.note_segments),
         }
 
+    def _meeting_status(self, active: ActiveSession) -> dict[str, object]:
+        return {
+            "meeting_contract": active.meeting_contract.to_dict(),
+            "meeting_diagnostics": active.meeting_diagnostics,
+        }
+
     def _accept_note_evidence_segment(self, active: ActiveSession, segment: TranscriptSegment) -> None:
         active.final_segments_seen_for_notes += 1
         if active.note_consolidator is None:
@@ -1048,7 +1074,13 @@ class SessionManager:
             await self._publish_error(session_id, f"Work memory recall skipped: {exc}", fatal=False)
 
         try:
-            result = await self.notes.synthesize(session_id, recent_segments, note_context_hits)
+            synthesize_params = inspect.signature(self.notes.synthesize).parameters
+            synthesize_kwargs = (
+                {"meeting_contract": active.meeting_contract}
+                if active is not None and "meeting_contract" in synthesize_params
+                else {}
+            )
+            result = await self.notes.synthesize(session_id, recent_segments, note_context_hits, **synthesize_kwargs)
         except Exception as exc:
             await self._publish_error(session_id, f"Note synthesis failed: {exc}")
             return
@@ -1094,23 +1126,28 @@ class SessionManager:
         evidence_segments: list[TranscriptSegment],
     ) -> list[SidecarCard]:
         if not cards:
+            if active is not None:
+                active.meeting_diagnostics = diagnostics_for_cards([], accepted_count=0, suppressed_count=0).to_dict()
             return []
         if not self.settings.sidecar_quality_gate_enabled or active is None:
-            return cards[: self.settings.sidecar_max_cards_per_generation_pass]
+            accepted = cards[: self.settings.sidecar_max_cards_per_generation_pass]
+            if active is not None:
+                active.meeting_diagnostics = diagnostics_for_cards(
+                    cards,
+                    accepted_count=len(accepted),
+                    suppressed_count=max(0, len(cards) - len(accepted)),
+                ).to_dict()
+            return accepted
         gate = self._note_quality_gate_for(active)
         speaker_status = self.speaker_identity.status()
-        accepted: list[SidecarCard] = []
-        for card in cards:
-            decision = gate.evaluate(card, evidence_segments, speaker_status)
-            if decision.action != "accept":
-                continue
-            if decision.priority_override:
-                card = replace(card, priority=decision.priority_override)
-            gate.remember_accepted(card, evidence_segments)
-            accepted.append(card)
-            if len(accepted) >= self.settings.sidecar_max_cards_per_generation_pass:
-                break
-        return accepted
+        review = ContractCriticAgent(gate).review(
+            cards,
+            evidence_segments,
+            speaker_status,
+            max_cards=self.settings.sidecar_max_cards_per_generation_pass,
+        )
+        active.meeting_diagnostics = review.diagnostics.to_dict()
+        return review.accepted_cards
 
     async def _publish_sidecar_card(self, card: SidecarCard) -> None:
         await self.bus.publish(

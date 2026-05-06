@@ -505,6 +505,54 @@ time {
   overflow-wrap: anywhere;
 }
 
+.meeting-focus-control {
+  background: color-mix(in srgb, var(--surface) 70%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(18rem, 0.95fr) minmax(18rem, 1fr);
+  padding: 0.65rem;
+}
+
+.meeting-focus-goal textarea {
+  min-height: 5.2rem;
+}
+
+.meeting-focus-options {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.meeting-mode-control {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.meeting-mode-control button {
+  min-height: 2.55rem;
+  text-align: center;
+}
+
+.meeting-reminder-grid {
+  display: grid;
+  gap: 0.42rem 0.65rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.meeting-reminder-grid .toggle-row {
+  background: color-mix(in srgb, var(--surface-2) 70%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+}
+
+.meeting-reminder-grid span {
+  overflow-wrap: anywhere;
+}
+
 .label {
   margin: 0 0 0.3rem;
 }
@@ -1220,6 +1268,51 @@ time {
 
 .quality-strip .quiet {
   color: var(--text-subtle);
+}
+
+.contract-active-badge {
+  background: color-mix(in srgb, var(--surface) 74%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.58rem 0.65rem;
+}
+
+.contract-active-badge summary {
+  align-items: center;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.82rem;
+  font-weight: 850;
+  gap: 0.6rem;
+  justify-content: space-between;
+  list-style: none;
+}
+
+.contract-active-badge summary::-webkit-details-marker {
+  display: none;
+}
+
+.contract-active-badge summary strong {
+  background: color-mix(in srgb, var(--accent-soft) 64%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 52%, var(--border));
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.72rem;
+  padding: 0.18rem 0.48rem;
+}
+
+.contract-active-badge > div {
+  display: grid;
+  gap: 0.55rem;
+  padding-top: 0.62rem;
+}
+
+.contract-active-badge p {
+  color: var(--text-muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
+  margin: 0;
 }
 
 .meeting-output-section .context-preview-list,
@@ -2221,7 +2314,9 @@ time {
   .test-mode-grid,
   .path-picker,
   .memory-overview,
-  .capture-strip {
+  .capture-strip,
+  .meeting-focus-control,
+  .meeting-reminder-grid {
     grid-template-columns: 1fr;
   }
 
