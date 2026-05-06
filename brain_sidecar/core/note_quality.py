@@ -301,6 +301,9 @@ def evidence_segment_map(segments: list[TranscriptSegment]) -> dict[str, Transcr
 
 def normalized_fingerprint(card: SidecarCard, evidence_segments: list[TranscriptSegment]) -> str:
     output_text = " ".join([card.title, card.body, card.suggested_ask or "", card.suggested_say or ""])
+    normalized_output = normalize_for_evidence_match(output_text)
+    if card.category == "clarification" and "review path" in normalized_output:
+        return "|".join([card.category, "review path", "clarify", ""])
     entities = "-".join(important_terms(output_text)[:6])
     verb = core_action_verb(output_text)
     title = normalize_for_evidence_match(card.title)

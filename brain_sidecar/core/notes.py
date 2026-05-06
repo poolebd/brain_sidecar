@@ -8,6 +8,15 @@ from brain_sidecar.core.models import NoteCard, SearchHit, SidecarCard, Transcri
 from brain_sidecar.core.ollama import OllamaClient
 from brain_sidecar.core.sidecar_cards import create_sidecar_card, note_card_key
 
+REVIEW_PATH_NAMES = ("greg", "sunil", "kyle")
+REVIEW_PATH_CUE_RE = re.compile(
+    r"\b("
+    r"under review|review from|came for review|for review|reviewer|focal point|"
+    r"review\s+(?:all\s+)?(?:four\s+)?documents?|documents?\s+(?:which\s+)?(?:came\s+)?for review"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class NoteSynthesisResult:
@@ -338,19 +347,19 @@ def heuristic_project_review_cards(session_id: str, recent_segments: list[Transc
                 priority="normal",
             )
         )
-    names = [name for name in ["greg", "sunil", "kyle"] if name in clean]
-    if len(names) >= 2 and ("review" in clean or "reviewer" in clean or "focal point" in clean or "drive" in clean):
-        selected = select_evidence_segments(recent_segments, [*names, "review", "reviewer", "focal point", "drive"])
-        title_names = " / ".join(name.title() for name in names[:3])
-        body_names = " and ".join(name.title() for name in names[:3])
+    selected = select_review_path_segments(recent_segments)
+    names = names_in_segments(selected)
+    if len(names) >= 2:
+        body_names = ", ".join(name.title() for name in names[:-1])
+        body_names = f"{body_names}, or {names[-1].title()}" if len(names) > 2 else " or ".join(name.title() for name in names)
         cards.append(
             heuristic_card(
                 session_id,
                 selected,
                 category="clarification",
-                title=f"{title_names} review path",
-                body=f"Coordinate with {body_names} on the review path.",
-                evidence_hint=names[0],
+                title="Review path",
+                body=f"Clarify the review path with {body_names}.",
+                evidence_hint=review_path_evidence_hint(selected),
                 priority="normal",
             )
         )
@@ -398,6 +407,54 @@ def select_evidence_segments(segments: list[TranscriptSegment], terms: list[str]
         neighbors = segments[max(0, index - 1) : min(len(segments), index + 2)]
         selected = dedupe_segments([*selected, *neighbors])
     return selected[:4]
+
+
+def select_review_path_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+    selected: list[TranscriptSegment] = []
+    for index, segment in enumerate(segments):
+        text = segment.text.lower()
+        has_name = any(name in text for name in REVIEW_PATH_NAMES)
+        has_cue = bool(REVIEW_PATH_CUE_RE.search(text))
+        if has_name and has_cue:
+            selected.append(segment)
+            continue
+        if has_name and nearby_has_review_cue(segments, index):
+            selected.append(segment)
+            continue
+        if has_cue and nearby_has_review_name(segments, index):
+            selected.append(segment)
+    return dedupe_segments(selected)[:4]
+
+
+def nearby_has_review_cue(segments: list[TranscriptSegment], index: int) -> bool:
+    for neighbor in segments[max(0, index - 1) : min(len(segments), index + 2)]:
+        if REVIEW_PATH_CUE_RE.search(neighbor.text):
+            return True
+    return False
+
+
+def nearby_has_review_name(segments: list[TranscriptSegment], index: int) -> bool:
+    for neighbor in segments[max(0, index - 1) : min(len(segments), index + 2)]:
+        text = neighbor.text.lower()
+        if any(name in text for name in REVIEW_PATH_NAMES):
+            return True
+    return False
+
+
+def names_in_segments(segments: list[TranscriptSegment]) -> list[str]:
+    names: list[str] = []
+    combined = " ".join(segment.text.lower() for segment in segments)
+    for name in REVIEW_PATH_NAMES:
+        if name in combined:
+            names.append(name)
+    return names
+
+
+def review_path_evidence_hint(segments: list[TranscriptSegment]) -> str:
+    for hint in ["under review", "focal point", "reviewer", "for review", "review"]:
+        if any(hint in segment.text.lower() for segment in segments):
+            return hint
+    return "review"
 
 
 def evidence_quote_for(segments: list[TranscriptSegment], hint: str) -> str:

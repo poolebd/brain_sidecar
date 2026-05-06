@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from brain_sidecar.core.models import TranscriptSegment
 from brain_sidecar.core.note_quality import NoteQualityGate
-from brain_sidecar.core.notes import NoteSynthesizer
+from brain_sidecar.core.notes import NoteSynthesizer, heuristic_project_review_cards
 
 
 class FailingOllama:
@@ -193,3 +193,51 @@ def test_project_review_heuristics_pass_quality_gate(event_loop) -> None:
     assert any(card.title == "Siemens document review" and decision.action == "accept" for card, decision in zip(result.sidecar_cards, decisions))
     assert any(card.title == "RFI log review" and decision.action == "accept" for card, decision in zip(result.sidecar_cards, decisions))
     assert any(card.title == "Send by Monday" and decision.action == "accept" for card, decision in zip(result.sidecar_cards, decisions))
+
+
+def test_review_path_heuristic_uses_stable_title_for_supported_reviewer_evidence() -> None:
+    segments = [
+        TranscriptSegment(
+            id="seg_greg",
+            session_id="ses_1",
+            start_s=0.0,
+            end_s=2.0,
+            text="The Siemens document is under review from Greg.",
+        ),
+        TranscriptSegment(
+            id="seg_sunil",
+            session_id="ses_1",
+            start_s=2.1,
+            end_s=4.0,
+            text="Sunil is the focal point for that review.",
+        ),
+    ]
+
+    cards = heuristic_project_review_cards("ses_1", segments)
+    review_path_card = next(card for card in cards if card.title == "Review path")
+
+    assert "under review" in review_path_card.evidence_quote
+    assert not any(" / " in card.title and "review path" in card.title.lower() for card in cards)
+
+
+def test_review_path_heuristic_does_not_treat_drive_as_review_signal() -> None:
+    segments = [
+        TranscriptSegment(
+            id="seg_names",
+            session_id="ses_1",
+            start_s=0.0,
+            end_s=2.0,
+            text="Kyle and Greg understand the skills involved.",
+        ),
+        TranscriptSegment(
+            id="seg_drive",
+            session_id="ses_1",
+            start_s=2.1,
+            end_s=4.0,
+            text="Can you drive that, Greg?",
+        ),
+    ]
+
+    cards = heuristic_project_review_cards("ses_1", segments)
+
+    assert not any(card.title == "Review path" for card in cards)
