@@ -26,13 +26,16 @@ def read_pcm16_wav(path: Path) -> tuple[bytes, float]:
 
 
 async def main() -> int:
-    parser = argparse.ArgumentParser(description="Smoke test Brain Sidecar's optional Nemotron streaming ASR backend.")
+    parser = argparse.ArgumentParser(description="Smoke test Brain Sidecar's Nemotron streaming ASR backend.")
     parser.add_argument("wav", nargs="?", type=Path, default=DEFAULT_WAV)
     args = parser.parse_args()
 
     settings = load_settings()
     if settings.asr_backend != ASR_BACKEND_NEMOTRON_STREAMING:
-        raise RuntimeError("Set BRAIN_SIDECAR_ASR_BACKEND=nemotron_streaming before running this smoke test.")
+        raise RuntimeError(
+            "Nemotron smoke test requires BRAIN_SIDECAR_ASR_BACKEND=nemotron_streaming; "
+            "unset the override or set it to nemotron_streaming."
+        )
 
     pcm, duration_s = read_pcm16_wav(args.wav)
     chunk_bytes = int(settings.audio_sample_rate * 2 * (settings.nemotron_chunk_ms / 1000))

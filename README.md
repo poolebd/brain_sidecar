@@ -7,7 +7,7 @@ headless and event-driven so a desktop GUI can reuse the same engine later.
 ## What v1 Does
 
 - Captures a USB mic through `ffmpeg`.
-- Transcribes locally with Faster-Whisper on CUDA only.
+- Transcribes locally with Nemotron Streaming on CUDA by default, with Faster-Whisper still available.
 - Generates meeting-intelligence sidecar cards with local Ollama.
 - Searches prior sessions and selected local files with local embeddings.
 - Surfaces fast work-memory parallels from a pre-indexed local career/project archive.
@@ -32,7 +32,8 @@ Python package directly.
 cd /home/bp/project/brain-sidecar
 python3.11 -m venv .venv
 . .venv/bin/activate
-pip install -e ".[gpu,recall,dev]"
+pip install -e ".[gpu,recall,dev,nemotron]"
+pip install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'
 npm --prefix ui install
 ```
 
@@ -90,15 +91,12 @@ The app requires:
 - A selected CUDA ASR backend.
 - Ollama running locally, with the configured chat model on GPU.
 
-The default ASR backend is Faster-Whisper, configured with `device="cuda"` and
-`compute_type="float16"`. If
-`medium.en` cannot load because of VRAM pressure, the app may load `small.en`,
-but still on CUDA only. CPU fallback is intentionally not implemented.
-
-An optional `nemotron_streaming` backend can be selected for NVIDIA Nemotron
-Speech Streaming 0.6B. It is a true cache-aware streaming path rather than the
-default overlapping Whisper-window path, and remains opt-in until validated on
-the target GPU.
+The default ASR backend is NVIDIA Nemotron Speech Streaming 0.6B, configured as
+local CUDA-only cache-aware streaming with 160 ms chunks and `float32`
+inference. Faster-Whisper remains available by setting
+`BRAIN_SIDECAR_ASR_BACKEND=faster_whisper`; if `medium.en` cannot load because
+of VRAM pressure, that fallback path may load `small.en`, but still on CUDA
+only. CPU fallback is intentionally not implemented.
 
 ## Speed And Quality Tuning
 
@@ -109,7 +107,7 @@ the UI shows the dropped-window count so the sidecar stays real-time.
 
 Useful knobs:
 
-- `BRAIN_SIDECAR_ASR_BACKEND`: `faster_whisper` by default, or opt-in `nemotron_streaming`.
+- `BRAIN_SIDECAR_ASR_BACKEND`: `nemotron_streaming` by default, or `faster_whisper` for the older windowed ASR path.
 - `BRAIN_SIDECAR_ASR_BEAM_SIZE`: higher can improve transcript quality, lower is faster.
 - `BRAIN_SIDECAR_ASR_VAD_MIN_SILENCE_MS`: lower splits speech faster, higher creates steadier segments, default `300`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS`: audio window before ASR emits a transcript, default `3.4`.
@@ -119,7 +117,7 @@ Useful knobs:
 - `BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD`: reject low-confidence ASR segments, default `-1.0`.
 - `BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD`: reject repetitive/compressed ASR spans, default `2.4`.
 - `BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS`: skip near-silent audio windows before ASR, default `0.006`.
-- `BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB`: free VRAM target before loading Faster-Whisper, default `3500`.
+- `BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB`: free VRAM target before loading the selected ASR backend, default `3500`.
 - `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before ASR load when VRAM is tight, default `true`.
 - `BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS`: wait budget after unloading Ollama, default `10`.
 - `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`: Ollama `keep_alive` sent by app chat/embed calls, default `10m` so the smaller chat model can stay warm beside ASR.
@@ -324,16 +322,17 @@ asyncio.run(main())
 PY
 ```
 
-## Optional Nemotron Streaming ASR
+## Nemotron Streaming ASR
 
-Nemotron streaming is local/GPU only and not part of the default install. The
+Nemotron streaming is local/GPU only and is the normal launcher default. The
 verified integration path is NVIDIA NeMo/PyTorch using
 `nvidia/nemotron-speech-streaming-en-0.6b`, a 600M parameter cache-aware
 FastConformer-RNNT checkpoint. The model card lists mono audio input and
 non-overlapping streaming chunks at 80 ms, 160 ms, 560 ms, and 1120 ms.
 
-Install the base optional packages, then install NeMo ASR using NVIDIA's
-documented command:
+`./start.sh` installs the Nemotron Python extras and NeMo ASR stack when the
+backend is set to `nemotron_streaming`, which is now the default. For manual
+setup, use:
 
 ```bash
 sudo apt-get install -y libsndfile1 ffmpeg
@@ -342,18 +341,16 @@ pip install -e ".[nemotron]"
 pip install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'
 ```
 
-Enable and smoke test without storing raw audio:
+Smoke test without storing raw audio:
 
 ```bash
-BRAIN_SIDECAR_ASR_BACKEND=nemotron_streaming \
 BRAIN_SIDECAR_NEMOTRON_CHUNK_MS=160 \
 python scripts/test_nemotron_streaming.py runtime/test-audio/osr-us-female-harvard.wav
 ```
 
-If Nemotron is selected and NeMo/model loading fails, session start fails
-visibly with the dependency or model-access error. Switch
-`BRAIN_SIDECAR_ASR_BACKEND=faster_whisper` to return to the default windowed
-ASR path.
+If Nemotron or model loading fails, session start fails visibly with the
+dependency or model-access error. Switch `BRAIN_SIDECAR_ASR_BACKEND=faster_whisper`
+to return to the windowed ASR path.
 
 ## Tests
 

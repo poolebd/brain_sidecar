@@ -114,13 +114,13 @@ def active_session(session_id: str, *, save_transcript: bool) -> ActiveSession:
     )
 
 
-def test_asr_backend_config_defaults_to_faster_whisper(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_asr_backend_config_defaults_to_nemotron(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     monkeypatch.delenv("BRAIN_SIDECAR_ASR_BACKEND", raising=False)
 
     settings = load_settings()
 
-    assert settings.asr_backend == "faster_whisper"
+    assert settings.asr_backend == "nemotron_streaming"
     assert settings.nemotron_chunk_ms == 160
 
 

@@ -156,7 +156,7 @@ class ActiveSession:
     last_audio_rms: float | None = None
     silent_windows: int = 0
     asr_empty_windows: int = 0
-    asr_backend: str = "faster_whisper"
+    asr_backend: str = ASR_BACKEND_NEMOTRON_STREAMING
     asr_model: str | None = None
     streaming_session: StreamingAsrSession | None = None
     streaming_chunk_ms: int | None = None

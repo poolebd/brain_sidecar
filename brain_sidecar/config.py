@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sidecar.core.asr import (
-    ASR_BACKEND_FASTER_WHISPER,
     ASR_BACKEND_NEMOTRON_STREAMING,
     validate_asr_backend,
     validate_nemotron_chunk_ms,
@@ -56,7 +55,7 @@ class Settings:
     ollama_host: str
     ollama_chat_model: str
     ollama_embed_model: str
-    asr_backend: str = ASR_BACKEND_FASTER_WHISPER
+    asr_backend: str = ASR_BACKEND_NEMOTRON_STREAMING
     nemotron_model_id: str = "nvidia/nemotron-speech-streaming-en-0.6b"
     nemotron_chunk_ms: int = 160
     nemotron_device: str = "cuda"
@@ -121,7 +120,7 @@ class Settings:
 def load_settings() -> Settings:
     _load_dotenv()
     cwd_runtime = Path.cwd() / "runtime"
-    asr_backend = validate_asr_backend(_env("BRAIN_SIDECAR_ASR_BACKEND", ASR_BACKEND_FASTER_WHISPER))
+    asr_backend = validate_asr_backend(_env("BRAIN_SIDECAR_ASR_BACKEND", ASR_BACKEND_NEMOTRON_STREAMING))
     transcription_window_seconds = max(
         1.0,
         float(_env("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")),
