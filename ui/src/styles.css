@@ -293,8 +293,33 @@ blockquote {
   border-top: 1px solid var(--border);
   display: grid;
   font-size: 0.78rem;
-  gap: 0.4rem;
+  gap: 0.45rem;
   padding-top: 0.8rem;
+}
+
+.sidebar-status-button {
+  align-items: start;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-subtle);
+  display: grid;
+  gap: 0.22rem;
+  justify-items: start;
+  min-height: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.sidebar-status-button:hover {
+  color: var(--text);
+}
+
+.sidebar-status-button span,
+.sidebar-status-button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
 }
 
 .page {
@@ -349,9 +374,9 @@ blockquote {
   background: color-mix(in srgb, var(--surface) 82%, var(--bg));
   border: 1px solid var(--border);
   border-color: color-mix(in srgb, var(--border) 70%, transparent);
-  gap: 0.55rem;
-  grid-template-columns: minmax(13rem, 1fr) minmax(8rem, 0.34fr) minmax(12rem, 0.48fr) auto;
-  padding: 0.48rem;
+  gap: 0.48rem;
+  grid-template-columns: minmax(13rem, 1fr) minmax(7.5rem, 0.3fr) minmax(11rem, 0.44fr) auto;
+  padding: 0.4rem;
 }
 
 .compact-field {
@@ -366,6 +391,27 @@ blockquote {
 .session-selector-actions {
   display: flex;
   gap: 0.45rem;
+}
+
+.session-static-session {
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.24rem;
+  min-height: 3.1rem;
+  padding: 0.52rem 0.72rem;
+}
+
+.session-static-session span {
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.session-static-session strong {
+  font-size: 0.9rem;
+  line-height: 1.2;
 }
 
 .session-list,
@@ -688,13 +734,18 @@ blockquote {
 
 .memory-search-form {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.45rem;
 }
 
 .memory-search-actions {
-  display: grid;
+  display: flex;
   gap: 0.4rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-content: flex-start;
+}
+
+.memory-search-actions button {
+  min-height: 2.2rem;
+  padding-inline: 0.75rem;
 }
 
 .memory-category-nav {
@@ -971,6 +1022,38 @@ blockquote {
   font-size: 0.84rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.debug-key-status {
+  gap: 0.4rem;
+}
+
+.debug-diagnostics,
+.metadata-details {
+  background: color-mix(in srgb, var(--surface-2) 42%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.58rem 0.68rem;
+}
+
+.debug-diagnostics summary,
+.metadata-details summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 900;
+  list-style: none;
+}
+
+.debug-diagnostics summary::-webkit-details-marker,
+.metadata-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.debug-diagnostics[open],
+.metadata-details[open] {
+  display: grid;
+  gap: 0.65rem;
 }
 
 .theme-swatch-row {
@@ -2591,6 +2674,20 @@ time {
 
 .file-picker {
   background: var(--surface-2);
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+}
+
+.file-picker::file-selector-button {
+  background: color-mix(in srgb, var(--surface) 92%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-weight: 850;
+  margin-right: 0.55rem;
+  min-height: 1.75rem;
+  padding: 0.2rem 0.55rem;
 }
 
 .compact-tool {
@@ -2638,8 +2735,28 @@ time {
 }
 
 .mic-tuning {
+  align-items: end;
   display: grid;
   gap: 0.65rem;
+  grid-template-columns: minmax(14rem, 1fr) minmax(12rem, 0.5fr) auto;
+}
+
+.mic-tuning .tuning-header,
+.mic-tuning .tool-note {
+  grid-column: 1 / -1;
+}
+
+.mic-tuning .field-wide {
+  min-width: 0;
+}
+
+.mic-tuning .sensitivity-control {
+  align-self: end;
+}
+
+.mic-tuning .button-row {
+  align-self: end;
+  justify-content: end;
 }
 
 .tuning-header,
@@ -3374,6 +3491,7 @@ time {
   .capture-control-bar,
   .meeting-focus-editor,
   .meeting-reminder-grid,
+  .mic-tuning,
   .session-workspace-bar,
   .utility-tabs {
     grid-template-columns: 1fr;

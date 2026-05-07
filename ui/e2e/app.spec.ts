@@ -41,6 +41,11 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.getByRole("main", { name: "Tools" })).not.toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
   await expect(page.getByRole("main", { name: "Tools" })).toBeVisible();
+
+  await page.getByLabel("Open model details").click();
+  await expect(page.getByRole("main", { name: "Models" })).toBeVisible();
+  await page.getByLabel("Open capture details").click();
+  await expect(page.getByRole("main", { name: "Live" })).toBeVisible();
 });
 
 test("navigates the app shell and browses saved sessions", async ({ page }) => {
@@ -100,6 +105,8 @@ test("shows a saved-session empty state with a Saved-mode CTA", async ({ page })
   await expect(sessionsPage).toContainText("Use Saved mode on Live");
   await sessionsPage.getByRole("button", { name: "Start with Saved" }).click();
   await expect(page.getByRole("main", { name: "Live" })).toBeVisible();
+  await expect(page.locator('select[aria-label="Session selector"]')).toHaveCount(0);
+  await expect(page.getByLabel("Session selector", { exact: true })).toContainText("New meeting");
   await expect(page.getByLabel("Session save mode status")).toContainText("Saved transcript");
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Recording" })).toBeVisible();
 });
@@ -117,7 +124,7 @@ test("shows model residency and memory management pages", async ({ page }) => {
   await expect(modelsPage).toContainText("phi3:mini");
   await expect(modelsPage).toContainText("embeddinggemma");
   await expect(modelsPage).toContainText("Keepalive 30m");
-  await expect(modelsPage).toContainText("Keepalive 0");
+  await expect(modelsPage).toContainText("Keepalive not resident (0)");
   await expect(modelsPage).toContainText("GPU Residency");
   await expect(modelsPage.getByLabel("Config recipes")).toHaveJSProperty("open", false);
 
@@ -125,9 +132,10 @@ test("shows model residency and memory management pages", async ({ page }) => {
   const memoryPage = page.getByRole("main", { name: "Memory" });
   await expect(memoryPage).toBeVisible();
   const memoryCategories = page.getByRole("navigation", { name: "Memory category navigation" });
-  for (const label of ["Overview", "Library Roots", "Documents", "Work Sources", "Projects", "Search Results"]) {
+  for (const label of ["Overview", "Library Roots", "Documents", "Work Sources", "Projects"]) {
     await expect(memoryCategories.getByRole("button", { name: new RegExp(label) })).toBeVisible();
   }
+  await expect(memoryCategories.getByRole("button", { name: /Search Results/ })).toHaveCount(0);
   await expect(memoryPage.getByLabel("Browse index file")).toHaveCount(0);
   await expect(memoryPage.getByRole("button", { name: "Add Root" })).toHaveCount(0);
   await memoryCategories.getByRole("button", { name: /Documents/ }).click();
@@ -1104,7 +1112,7 @@ test("uses mocked library and recall APIs", async ({ page }) => {
   await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
 
   await page.getByRole("button", { name: "Live" }).click();
-  await page.getByPlaceholder("Ask Sidecar anything").fill("apollo rollout");
+  await page.getByPlaceholder("Ask Sidecar").fill("apollo rollout");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Prior transcript");
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Work memory");

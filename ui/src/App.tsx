@@ -2173,7 +2173,7 @@ export function App() {
       <div className="app-main">
       <header className="top-bar">
         <div className="top-runtime-context" aria-label="Runtime summary">
-          <span>Dross</span>
+          <span>Runtime</span>
           <strong>{topRuntimeSummary}</strong>
           <small>{topRuntimeDetail}</small>
         </div>
@@ -2294,7 +2294,7 @@ export function App() {
               aria-label="Unified query"
               value={manualQuery}
               onChange={(event) => setManualQuery(event.target.value)}
-              placeholder="Ask Sidecar anything"
+              placeholder="Ask Sidecar"
             />
             <button className="primary subtle" disabled={manualQueryBusy || !manualQuery.trim()}>
               {manualQueryBusy ? "Searching..." : "Search"}
@@ -2573,10 +2573,6 @@ export function App() {
                 </div>
               ) : null}
             </div>
-            <div className="button-row">
-              <button className="secondary" onClick={refreshDevices}>Refresh devices</button>
-              <button className="secondary" onClick={() => setMicTuning(defaultMicTuning())}>Reset Auto</button>
-            </div>
             {ENABLE_FIXTURE_AUDIO && (
               <div className="compact-tool" role="region" aria-label="Fixture audio test controls">
                 <div className="field">
@@ -2808,6 +2804,9 @@ export function App() {
                 <button className="secondary" onClick={recalibrateSpeakerProfile} disabled={Boolean(speakerBusy) || (speakerStatus?.embedding_count ?? 0) < 2}>
                   Recalibrate Threshold
                 </button>
+                <button className="secondary danger-subtle" onClick={resetSpeakerProfile} disabled={Boolean(speakerBusy)}>
+                  Delete Learned Embeddings
+                </button>
               </div>
             </details>
 
@@ -2857,11 +2856,6 @@ export function App() {
                 </div>
               </div>
             </details>
-            <div className="button-row">
-              <button className="secondary danger-subtle" onClick={resetSpeakerProfile} disabled={Boolean(speakerBusy)}>
-                Delete Learned Embeddings
-              </button>
-            </div>
           </section>
           )}
 
@@ -2875,35 +2869,40 @@ export function App() {
             <div className="vram-bar" aria-label={`VRAM usage ${vramPercent}%`}>
               <span style={{ width: `${vramPercent}%` }} />
             </div>
-            <div className="chip-row">
+            <div className="chip-row debug-key-status" aria-label="Debug status summary">
               <span className="chip">{gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "CUDA check"}</span>
               <span className="chip">ASR {asrBackendLabel}</span>
-              <span className="chip">{asrModelLabel}</span>
-              <span className="chip">{streamingModeLabel}</span>
-              {gpu.asr_backend === "nemotron_streaming" && (
-                <>
-                  <span className="chip">{streamingMetricLabel}</span>
-                  <span className="chip">{gpu.nemotron_loaded ? "Nemotron loaded" : "Nemotron cold"}</span>
-                </>
-              )}
               <span className="chip">{gpuFreeLabel}</span>
               <span className="chip">{webStatusLabel}</span>
-              <span className="chip">
-                window {formatSeconds(gpu.transcription_window_seconds ?? 5)} / overlap {formatSeconds(gpu.transcription_overlap_seconds ?? 0.75)}
-              </span>
-              <span className="chip">Chat {gpu.ollama_chat_model ?? "phi3:mini"} @ {ollamaChatHostLabel}</span>
-              <span className={gpu.ollama_chat_reachable === false ? "chip warning" : "chip"}>{ollamaChatReachabilityLabel}</span>
-              <span className="chip">Embed {gpu.ollama_embed_model ?? "embeddinggemma"} @ {ollamaEmbedHostLabel}</span>
-              <span className={gpu.ollama_embed_reachable === false ? "chip warning" : "chip"}>{ollamaEmbedReachabilityLabel}</span>
-              {(gpu.ollama_gpu_models ?? []).length === 0 ? (
-                <span className="chip muted">Ollama idle</span>
-              ) : (
-                gpu.ollama_gpu_models?.map((model) => <span key={model} className="chip">{model}</span>)
-              )}
-              <span className="chip">keep chat {gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"}</span>
-              <span className="chip">keep embed {gpu.ollama_embed_keep_alive ?? "0"}</span>
-              <span className="chip">dedupe {gpu.dedupe_similarity_threshold ?? "?"}</span>
             </div>
+            <details className="debug-diagnostics">
+              <summary>Runtime diagnostics</summary>
+              <div className="chip-row">
+                <span className="chip">{asrModelLabel}</span>
+                <span className="chip">{streamingModeLabel}</span>
+                {gpu.asr_backend === "nemotron_streaming" && (
+                  <>
+                    <span className="chip">{streamingMetricLabel}</span>
+                    <span className="chip">{gpu.nemotron_loaded ? "Nemotron loaded" : "Nemotron cold"}</span>
+                  </>
+                )}
+                <span className="chip">
+                  window {formatSeconds(gpu.transcription_window_seconds ?? 5)} / overlap {formatSeconds(gpu.transcription_overlap_seconds ?? 0.75)}
+                </span>
+                <span className="chip">Chat {gpu.ollama_chat_model ?? "phi3:mini"} @ {ollamaChatHostLabel}</span>
+                <span className={gpu.ollama_chat_reachable === false ? "chip warning" : "chip"}>{ollamaChatReachabilityLabel}</span>
+                <span className="chip">Embed {gpu.ollama_embed_model ?? "embeddinggemma"} @ {ollamaEmbedHostLabel}</span>
+                <span className={gpu.ollama_embed_reachable === false ? "chip warning" : "chip"}>{ollamaEmbedReachabilityLabel}</span>
+                {(gpu.ollama_gpu_models ?? []).length === 0 ? (
+                  <span className="chip muted">Ollama idle</span>
+                ) : (
+                  gpu.ollama_gpu_models?.map((model) => <span key={model} className="chip">{model}</span>)
+                )}
+                <span className="chip">keep chat {gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"}</span>
+                <span className="chip">keep embed {gpu.ollama_embed_keep_alive ?? "0"}</span>
+                <span className="chip">dedupe {gpu.dedupe_similarity_threshold ?? "?"}</span>
+              </div>
+            </details>
             <label className="toggle-row">
               <input
                 aria-label="Show debug metadata"
@@ -3018,10 +3017,24 @@ function Sidebar({
         ))}
       </nav>
       <div className="sidebar-footer">
-        <span className="status-badge">{status}</span>
-        <span>{asrBackendLabel}</span>
-        <span>{gpuFreeLabel}</span>
-        <small>{retentionLabel}</small>
+        <button
+          type="button"
+          className="sidebar-status-button"
+          aria-label="Open capture details"
+          onClick={() => onNavigate("live")}
+        >
+          <span className="status-badge">{status}</span>
+          <small>{retentionLabel}</small>
+        </button>
+        <button
+          type="button"
+          className="sidebar-status-button"
+          aria-label="Open model details"
+          onClick={() => onNavigate("models")}
+        >
+          <span>{asrBackendLabel}</span>
+          <small>{gpuFreeLabel}</small>
+        </button>
       </div>
     </aside>
   );
@@ -3057,6 +3070,7 @@ function SessionSelectorBar({
   onRetentionChange: (retention: SessionRetention) => void;
 }) {
   const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const hasSavedSessions = sessions.length > 0;
   return (
     <section className="session-workspace-bar" aria-label="Live session selector">
       <label className="field compact-field session-title-field">
@@ -3071,22 +3085,29 @@ function SessionSelectorBar({
         />
         <small>{status === "idle" || status === "stopped" ? "standby" : status} · {activeRetention === "saved" ? "transcript saved" : "screen only"}</small>
       </label>
-      <label className="field compact-field">
-        <span>Session</span>
-        <select
-          aria-label="Session selector"
-          value={sessionId ?? "new"}
-          disabled={disabled}
-          onChange={(event) => onSelect(event.target.value)}
-        >
-          <option value="new">New meeting</option>
-          {sessions.map((session) => (
-            <option key={session.id} value={session.id}>
-              {session.title}
-            </option>
-          ))}
-        </select>
-      </label>
+      {hasSavedSessions ? (
+        <label className="field compact-field">
+          <span>Session</span>
+          <select
+            aria-label="Session selector"
+            value={sessionId ?? "new"}
+            disabled={disabled}
+            onChange={(event) => onSelect(event.target.value)}
+          >
+            <option value="new">New meeting</option>
+            {sessions.map((session) => (
+              <option key={session.id} value={session.id}>
+                {session.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <div className="session-static-session" aria-label="Session selector">
+          <span>Session</span>
+          <strong>New meeting</strong>
+        </div>
+      )}
       <div className="mode-control compact" role="group" aria-label="Session save mode">
         <button
           type="button"
@@ -3400,6 +3421,8 @@ function ModelsPage({
       : thinkingReady && !hearingReady
         ? "Dross thinking ready; hearing needs setup"
         : "Dross setup needed";
+  const embeddingKeepalive = gpu.ollama_embed_keep_alive ?? "0";
+  const embeddingKeepaliveLabel = embeddingKeepalive === "0" ? "not resident (0)" : embeddingKeepalive;
   return (
     <main className="page models-page" aria-label="Models">
       <header className="page-header">
@@ -3443,7 +3466,7 @@ function ModelsPage({
           <RuntimeRow label="Model" value={gpu.ollama_embed_model ?? "embeddinggemma"} />
           <RuntimeRow label="Host" value={ollamaEmbedHostLabel} />
           <RuntimeRow label="Reachability" value={ollamaEmbedReachabilityLabel} />
-          <RuntimeRow label="Keepalive" value={gpu.ollama_embed_keep_alive ?? "0"} />
+          <RuntimeRow label="Keepalive" value={embeddingKeepaliveLabel} />
           <RuntimeRow label="Timeout" value={`${gpu.ollama_embed_timeout_seconds ?? 12}s`} />
         </ModelCard>
         <ModelCard title="GPU Residency" status={gpu.gpu_pressure ?? "check"}>
@@ -3578,14 +3601,28 @@ function MemoryPage({
   const selectedRootIndexedCount = selectedRoot
     ? librarySources.filter((source) => source.source_path.startsWith(selectedRoot)).length
     : 0;
-  const categoryItems: { view: MemoryView; label: string; count: number; disabled?: boolean }[] = [
+  const baseCategoryItems: { view: MemoryView; label: string; count: number; disabled?: boolean }[] = [
     { view: "overview", label: "Overview", count: (workMemoryStatus?.sources ?? 0) + librarySources.length },
     { view: "roots", label: "Library Roots", count: libraryRoots.length },
     { view: "documents", label: "Documents", count: librarySources.length },
     { view: "work_sources", label: "Work Sources", count: workMemorySources.length },
     { view: "projects", label: "Projects", count: workMemoryProjects.length },
-    { view: "search", label: "Search Results", count: memorySearchResults.length, disabled: !searchReady },
   ];
+  const categoryItems = searchReady
+    ? [...baseCategoryItems, { view: "search" as MemoryView, label: "Search Results", count: memorySearchResults.length }]
+    : baseCategoryItems;
+  const activeCategoryLabel = categoryItems.find((item) => item.view === memoryView)?.label ?? "Overview";
+  const memoryPaneTitle = memoryView === "overview"
+    ? "Index overview"
+    : memoryView === "roots"
+      ? "Library roots"
+      : memoryView === "documents"
+        ? "Documents"
+        : memoryView === "work_sources"
+          ? "Work sources"
+          : memoryView === "projects"
+            ? "Projects"
+            : "Search results";
 
   useEffect(() => {
     if (memoryView !== "search" || memorySearchResults.length === 0) {
@@ -3657,7 +3694,10 @@ function MemoryPage({
           <h1>Memory</h1>
           <span>{workMemoryStatus ? `${workMemoryStatus.projects} projects / ${workMemoryStatus.sources} sources` : "Index status loading"}</span>
         </div>
-        <button className="secondary" type="button" onClick={onRefresh} disabled={memoryBusy === "loading"}>{memoryBusy === "loading" ? "Refreshing..." : "Refresh"}</button>
+        <div className="page-header-actions">
+          {memoryBusy === "loading" && <span className="inline-loading">Refreshing memory</span>}
+          <button className="secondary" type="button" onClick={onRefresh} disabled={memoryBusy === "loading"}>Refresh</button>
+        </div>
       </header>
       <div className="memory-explorer explorer-shell">
         <aside className="memory-tree explorer-nav scroll" aria-label="Memory categories">
@@ -3709,8 +3749,8 @@ function MemoryPage({
         <section className="memory-list-pane scroll" aria-label="Memory items">
           <div className="memory-pane-head">
             <div>
-              <p className="label">{categoryItems.find((item) => item.view === memoryView)?.label}</p>
-              <h2>{memoryView === "overview" ? "Index overview" : "Browse memory"}</h2>
+              <p className="label">{activeCategoryLabel}</p>
+              <h2>{memoryPaneTitle}</h2>
             </div>
             <div className="button-row">
               {(memoryView === "overview" || memoryView === "roots" || memoryView === "documents") && (
@@ -3972,7 +4012,10 @@ function MemoryPage({
                 <span className="chip">{selectedWorkSource.status}</span>
                 <span className={selectedWorkSource.disabled ? "chip warning" : "chip"}>{selectedWorkSource.disabled ? "guarded" : selectedWorkSource.sensitivity}</span>
               </div>
-              <pre>{formatDebugValue(selectedWorkSource.metadata)}</pre>
+              <details className="metadata-details">
+                <summary>Metadata</summary>
+                <pre>{formatDebugValue(selectedWorkSource.metadata)}</pre>
+              </details>
             </div>
           )}
 
