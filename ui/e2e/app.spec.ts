@@ -18,19 +18,22 @@ test("loads mocked device and GPU state", async ({ page }) => {
   expect(liveBox).not.toBeNull();
   expect(liveBox!.y).toBeLessThan(360);
   await expect(page.getByRole("search")).toBeVisible();
+  await expect(page.getByRole("banner").getByRole("button", { name: "Utilities" })).toHaveCount(0);
   const toolsButton = page.getByRole("button", { name: "Tools" });
   await toolsButton.click();
   await expect(page.getByRole("main", { name: "Tools" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Tool sections" })).toContainText("Voice & Input");
   await expect(page.getByLabel("Audio source")).toHaveCount(0);
   await expect(page.getByLabel("USB microphone")).toHaveCount(0);
   await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
   await expect(page.getByLabel("Guided mic tuning")).toContainText("Auto Level");
   await expect(page.getByRole("main", { name: "Tools" }).getByRole("button", { name: "Close" })).toHaveCount(0);
-  await openDrawerRegion(page, "System");
-  await expect(page.getByText("NVIDIA RTX 4090 · 6144/24576 MB")).toBeVisible();
-  await expect(page.getByLabel("VRAM usage 25%")).toBeVisible();
-  await expect(page.getByText("CUDA ready")).toBeVisible();
-  await expect(page.getByRole("main", { name: "Tools" }).getByText("21 projects / 412 sources")).toBeVisible();
+  const debug = await openToolSection(page, "Logs & Debug");
+  await expect(debug.getByText("NVIDIA RTX 4090 · 6144/24576 MB")).toBeVisible();
+  await expect(debug.getByLabel("VRAM usage 25%")).toBeVisible();
+  await expect(debug.getByText("CUDA ready")).toBeVisible();
+  await expect(page.getByRole("main", { name: "Tools" })).not.toContainText("Transcript Retention");
+  await expect(page.getByRole("main", { name: "Tools" })).not.toContainText("Indexes");
   await page.getByRole("button", { name: "Live" }).click();
   await expect(page.getByRole("main", { name: "Tools" })).not.toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
@@ -62,6 +65,8 @@ test("navigates the app shell and browses saved sessions", async ({ page }) => {
 
   await nav.getByRole("button", { name: "Live" }).click();
   await expect(page.getByRole("main", { name: "Live" })).toBeVisible();
+  await expect(page.getByText("Open", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Save Title" })).toHaveCount(0);
   const createLiveSession = page.waitForRequest((request) => (
     request.method() === "POST" && request.url().endsWith("/api/sessions")
   ));
@@ -81,39 +86,67 @@ test("navigates the app shell and browses saved sessions", async ({ page }) => {
   });
 });
 
+test("shows a saved-session empty state with a Saved-mode CTA", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, { sessionsResponse: [] });
+  await page.reload();
+
+  await page.getByRole("button", { name: "Sessions" }).click();
+  const sessionsPage = page.getByRole("main", { name: "Sessions" });
+  await expect(sessionsPage).toContainText("No saved sessions yet");
+  await expect(sessionsPage).toContainText("Saved mode keeps transcript text");
+  await sessionsPage.getByRole("button", { name: "Start with Saved" }).click();
+  await expect(page.getByRole("main", { name: "Live" })).toBeVisible();
+  await expect(page.getByLabel("Session save mode status")).toContainText("Saved transcript");
+  await expect(page.getByRole("banner").getByRole("button", { name: "Start Recording" })).toBeVisible();
+});
+
 test("shows model residency and memory management pages", async ({ page }) => {
   const nav = page.getByRole("navigation", { name: "Primary navigation" });
   await nav.getByRole("button", { name: "Models" }).click();
   const modelsPage = page.getByRole("main", { name: "Models" });
   await expect(modelsPage).toBeVisible();
+  await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("Dross can hear and think now");
   await expect(modelsPage).toContainText("Nemotron Streaming");
+  await expect(modelsPage).toContainText("160 ms");
   await expect(modelsPage).toContainText("phi3:mini");
   await expect(modelsPage).toContainText("embeddinggemma");
   await expect(modelsPage).toContainText("Keepalive 30m");
   await expect(modelsPage).toContainText("Keepalive 0");
   await expect(modelsPage).toContainText("GPU Residency");
+  await expect(modelsPage.getByLabel("Config recipes")).toHaveJSProperty("open", false);
 
   await nav.getByRole("button", { name: "Memory" }).click();
   const memoryPage = page.getByRole("main", { name: "Memory" });
   await expect(memoryPage).toBeVisible();
-  await expect(memoryPage).toContainText("Library Roots");
-  await expect(memoryPage).toContainText("OGMS spec.txt");
-  await expect(memoryPage).toContainText("Online Generator Monitoring - T.A. Smith");
+  const memoryCategories = page.getByRole("navigation", { name: "Memory category navigation" });
+  for (const label of ["Overview", "Library Roots", "Documents", "Work Sources", "Projects", "Search"]) {
+    await expect(memoryCategories.getByRole("button", { name: new RegExp(label) })).toBeVisible();
+  }
+  await expect(memoryPage.getByLabel("Browse index file")).toHaveCount(0);
+  await expect(memoryPage.getByRole("button", { name: "Add Root" })).toHaveCount(0);
+  await memoryCategories.getByRole("button", { name: /Documents/ }).click();
+  await expect(memoryPage.getByLabel("Memory items")).toContainText("OGMS spec.txt");
+  await memoryPage.getByRole("button", { name: /OGMS spec.txt/ }).click();
+  await expect(memoryPage.getByLabel("Memory detail")).toContainText("Monitoring signals are useful when they map to decisions.");
+  await expect(memoryPage.getByLabel("Memory detail")).toContainText("/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt");
 
   const searchRequest = page.waitForRequest((request) => (
     request.method() === "POST" && request.url().endsWith("/api/work-memory/search")
   ));
   await memoryPage.getByLabel("Search memory").fill("generator monitoring");
-  await memoryPage.getByRole("button", { name: "Search" }).click();
+  await memoryPage.getByRole("button", { name: "Search", exact: true }).click();
   expect(JSON.parse((await searchRequest).postData() ?? "{}")).toMatchObject({
     query: "generator monitoring",
   });
-  await expect(memoryPage).toContainText("Monitoring signals are useful when they map to decisions.");
+  await expect(memoryCategories.getByRole("button", { name: /Search/ })).toHaveAttribute("aria-current", "page");
+  await expect(memoryPage.getByLabel("Memory items")).toContainText("Monitoring signals are useful when they map to decisions.");
 
+  await memoryCategories.getByRole("button", { name: /Library Roots/ }).click();
   const addRootRequest = page.waitForRequest((request) => (
     request.method() === "POST" && request.url().endsWith("/api/library/roots")
   ));
-  await memoryPage.getByLabel("File root").fill("/tmp/brain-sidecar-notes");
+  await memoryPage.getByLabel("Library root path").fill("/tmp/brain-sidecar-notes");
   await memoryPage.getByRole("button", { name: "Add Root" }).click();
   expect(JSON.parse((await addRootRequest).postData() ?? "{}")).toMatchObject({
     path: "/tmp/brain-sidecar-notes",
@@ -126,6 +159,7 @@ test("shows model residency and memory management pages", async ({ page }) => {
   await reindexLibrary;
   await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
 
+  await memoryCategories.getByRole("button", { name: /Overview/ }).click();
   const reindexWork = page.waitForRequest((request) => (
     request.method() === "POST" && request.url().endsWith("/api/work-memory/reindex")
   ));
@@ -148,15 +182,14 @@ test("shows Nemotron streaming ASR status compactly", async ({ page }) => {
     },
   });
   await page.reload();
-  await page.getByRole("button", { name: "Tools" }).click();
-  await openDrawerRegion(page, "System");
+  await page.getByRole("button", { name: "Models" }).click();
 
-  const system = page.getByRole("region", { name: "System" });
-  await expect(system).toContainText("ASR Nemotron Streaming");
-  await expect(system).toContainText("Stream 160 ms");
-  await expect(system).toContainText("Nemotron loaded");
-  await expect(system).toContainText("Chat phi3:mini @ local");
-  await expect(system).toContainText("Embed embeddinggemma @ local");
+  const models = page.getByRole("main", { name: "Models" });
+  await expect(models).toContainText("Nemotron Streaming");
+  await expect(models).toContainText("Stream 160 ms");
+  await expect(models).toContainText("loaded");
+  await expect(models).toContainText("phi3:mini");
+  await expect(models).toContainText("embeddinggemma");
 });
 
 test("clamps stale high mic boost and warns before capture", async ({ page }) => {
@@ -578,14 +611,6 @@ test("makes saved transcript recording an explicit capture mode", async ({ page 
 
 test("shows speaker identity controls instead of legacy ASR voice training", async ({ page }) => {
   await page.getByRole("button", { name: "Tools" }).click();
-  const speaker = await openDrawerRegion(page, "Speaker identity");
-  await expect(speaker).toBeVisible();
-  await expect(speaker).toContainText("not enrolled");
-  await expect(speaker).toContainText("0.0s usable");
-  await expect(speaker).toContainText("15.0s needed");
-  await expect(speaker.getByLabel("Speaker training steps")).toContainText("1 Start");
-  await expect(page.getByRole("region", { name: "Voice profile" })).toHaveCount(0);
-  await expect(page.getByText("ASR guidance preview")).toHaveCount(0);
   await expect(page.getByLabel("Guided mic tuning")).toContainText("Input Boost");
   await page.getByLabel("Speech Sensitivity").getByRole("button", { name: "Quiet" }).click();
   const micRequest = page.waitForRequest((request) => (
@@ -609,6 +634,15 @@ test("shows speaker identity controls instead of legacy ASR voice training", asy
   await expect(playback).toBeVisible();
   await expect(playback.locator("audio")).toHaveAttribute("src", /^blob:/);
   await expect(playback).toContainText("Raw audio is not saved");
+
+  const speaker = await openToolSection(page, "Speaker Identity", "Speaker identity");
+  await expect(speaker).toBeVisible();
+  await expect(speaker).toContainText("not enrolled");
+  await expect(speaker).toContainText("0.0s usable");
+  await expect(speaker).toContainText("15.0s needed");
+  await expect(speaker.getByLabel("Speaker training steps")).toContainText("1 Start");
+  await expect(page.getByRole("region", { name: "Voice profile" })).toHaveCount(0);
+  await expect(page.getByText("ASR guidance preview")).toHaveCount(0);
   await speaker.getByText("Advanced speaker controls").click();
   await expect(speaker).toContainText("embeddings");
   await speaker.getByText("Review learned speaker profile").click();
@@ -790,7 +824,7 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
   await expect(page.locator("#transcript")).not.toContainText("0.89");
 
   await page.getByRole("button", { name: "Tools" }).click();
-  await openDrawerRegion(page, "System");
+  await openToolSection(page, "Logs & Debug");
   await page.getByLabel("Show debug metadata").check();
   await page.getByRole("button", { name: "Live" }).click();
   const refreshedContextSection = page.getByLabel("Context cards");
@@ -938,7 +972,7 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
   await page.reload();
   await page.getByRole("button", { name: "Tools" }).click();
 
-  const testPanel = await openDrawerRegion(page, "Recorded audio test");
+  const testPanel = await openToolSection(page, "Test Mode", "Recorded audio test");
   await expect(testPanel).toBeVisible();
 
   await testPanel.getByLabel("Browse source audio").setInputFiles({
@@ -996,7 +1030,7 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
     matched_expected_terms: ["Online Generator Monitoring", "T.A. Smith"],
   });
   await page.getByRole("button", { name: "Tools" }).click();
-  const reopenedTestPanel = await openDrawerRegion(page, "Recorded audio test");
+  const reopenedTestPanel = await openToolSection(page, "Test Mode", "Recorded audio test");
   await expect(reopenedTestPanel.getByLabel("Recorded audio report")).toContainText("1");
   await expect(reopenedTestPanel.getByLabel("Recorded audio report")).toContainText("2/2");
   await expect(reopenedTestPanel.getByLabel("Recorded audio report")).toContainText("report.json");
@@ -1047,23 +1081,21 @@ test("blocks capture and speaker training when no healthy server microphone is a
   await expect(drawer.getByRole("button", { name: "Test Mic" })).toBeDisabled();
   await expect(drawer.getByRole("button", { name: "Start Listening" })).toBeDisabled();
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeDisabled();
-  const speaker = await openDrawerRegion(page, "Speaker identity");
+  const speaker = await openToolSection(page, "Speaker Identity", "Speaker identity");
   await expect(speaker.getByRole("button", { name: "Set Up BP Label" }).first()).toBeDisabled();
 });
 
 test("uses mocked library and recall APIs", async ({ page }) => {
-  await page.getByRole("button", { name: "Tools" }).click();
-  const indexes = await openDrawerRegion(page, "Indexes");
-  await indexes.getByLabel("Browse index file").setInputFiles({
-    name: "project-history.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from("# Project history"),
-  });
-  await expect(indexes.getByLabel("File root")).toHaveValue("/tmp/brain-sidecar-tests/input-files/uploaded-input.dat");
-  await indexes.getByRole("button", { name: "Add Files" }).click();
-  await expect(indexes.getByLabel("File root")).toHaveValue("");
+  await page.getByRole("button", { name: "Memory" }).click();
+  const memoryPage = page.getByRole("main", { name: "Memory" });
+  const categories = page.getByRole("navigation", { name: "Memory category navigation" });
+  await expect(memoryPage.getByLabel("Browse index file")).toHaveCount(0);
+  await categories.getByRole("button", { name: /Library Roots/ }).click();
+  await memoryPage.getByLabel("Library root path").fill("/tmp/brain-sidecar-tests/input-files/uploaded-input.dat");
+  await memoryPage.getByRole("button", { name: "Add Root" }).click();
+  await expect(memoryPage.getByLabel("Library root path")).toHaveValue("");
 
-  await indexes.getByRole("button", { name: "Reindex Files" }).click();
+  await memoryPage.getByLabel("Memory items").getByRole("button", { name: "Reindex Library" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
 
   await page.getByRole("button", { name: "Live" }).click();
@@ -1081,9 +1113,9 @@ test("uses mocked library and recall APIs", async ({ page }) => {
   await expect(page.locator("#transcript")).not.toContainText("notes.md");
   await expect(page.locator("#transcript")).not.toContainText("score 0.93");
 
-  await page.getByRole("button", { name: "Tools" }).click();
-  const reopenedIndexes = await openDrawerRegion(page, "Indexes");
-  await reopenedIndexes.getByRole("button", { name: "Index Work" }).click();
+  await page.getByRole("button", { name: "Memory" }).click();
+  await categories.getByRole("button", { name: /Projects/ }).click();
+  await memoryPage.getByRole("button", { name: "Reindex Work" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("work memory indexed 21 projects");
 });
 
@@ -1122,16 +1154,39 @@ test("keeps transcript and context readable on a phone viewport", async ({ page 
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
+test("keeps cockpit pages compact at desktop and laptop widths", async ({ page }) => {
+  for (const size of [
+    { width: 1920, height: 1008 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize(size);
+    await page.getByRole("button", { name: "Live" }).click();
+    await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await page.getByRole("button", { name: "Tools" }).click();
+    await expect(page.getByRole("main", { name: "Tools" })).toBeVisible();
+    await expect(page.getByLabel("Voice & Input")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    await page.getByRole("button", { name: "Memory" }).click();
+    await expect(page.getByLabel("Memory categories")).toBeVisible();
+    await expect(page.getByLabel("Memory items")).toBeVisible();
+    await expect(page.getByLabel("Memory detail")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+});
+
 test("persists theme selection across reloads", async ({ page }) => {
   await page.getByRole("button", { name: "Tools" }).click();
-  let system = await openDrawerRegion(page, "System");
-  await system.getByLabel("Theme").selectOption("canopy");
+  let appearance = await openToolSection(page, "Appearance");
+  await appearance.getByRole("combobox", { name: "Theme" }).selectOption("canopy");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "canopy");
 
   await page.reload();
   await page.getByRole("button", { name: "Tools" }).click();
-  system = await openDrawerRegion(page, "System");
-  await expect(system.getByLabel("Theme")).toHaveValue("canopy");
+  appearance = await openToolSection(page, "Appearance");
+  await expect(appearance.getByRole("combobox", { name: "Theme" })).toHaveValue("canopy");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "canopy");
 });
 
@@ -1145,15 +1200,10 @@ test("keeps core capture controls usable on a phone viewport", async ({ page }) 
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeVisible();
 });
 
-async function openDrawerRegion(page: Page, name: string) {
-  const region = page.getByRole("region", { name });
+async function openToolSection(page: Page, tabName: string, regionName = tabName) {
+  await page.getByRole("navigation", { name: "Tool sections" }).getByRole("button", { name: tabName }).click();
+  const region = page.getByRole("region", { name: regionName });
   await expect(region).toBeVisible();
-  const isOpen = await region.evaluate((element) => (
-    element instanceof HTMLDetailsElement ? element.open : true
-  ));
-  if (!isOpen) {
-    await region.locator("summary").first().click();
-  }
   return region;
 }
 

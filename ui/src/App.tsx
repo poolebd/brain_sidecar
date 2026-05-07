@@ -25,6 +25,15 @@ type ThemeName = "neutral" | "midnight" | "canopy" | "ember";
 type AudioSource = "server_device" | "fixture";
 type SessionRetention = "temporary" | "saved";
 type AppPage = "live" | "sessions" | "tools" | "models" | "memory";
+type ToolView = "voice" | "speaker" | "test" | "debug" | "appearance";
+type MemoryView = "overview" | "roots" | "documents" | "work_sources" | "projects" | "search";
+
+type MemorySelection =
+  | { view: "roots"; id: string; root: string }
+  | { view: "documents"; id: string; source: LibraryChunkSource }
+  | { view: "work_sources"; id: string; source: WorkMemorySource }
+  | { view: "projects"; id: string; project: WorkMemoryProject }
+  | { view: "search"; id: string; result: WorkMemoryCard };
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase();
 const ENABLE_FIXTURE_AUDIO = import.meta.env.VITE_ENABLE_FIXTURE_AUDIO === "1";
@@ -575,12 +584,14 @@ export function App() {
   const [activeSessionRetention, setActiveSessionRetention] = useState<SessionRetention | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentSessionTitle, setCurrentSessionTitle] = useState("New meeting");
+  const [savedLiveTitle, setSavedLiveTitle] = useState("New meeting");
   const [sessionCatalog, setSessionCatalog] = useState<SessionSummary[]>([]);
   const [sessionSearch, setSessionSearch] = useState("");
   const [sessionsBusy, setSessionsBusy] = useState("");
   const [selectedPastSessionId, setSelectedPastSessionId] = useState<string | null>(null);
   const [selectedPastSession, setSelectedPastSession] = useState<SessionDetail | null>(null);
   const [sessionTitleDraft, setSessionTitleDraft] = useState("");
+  const [toolView, setToolView] = useState<ToolView>("voice");
   const [status, setStatus] = useState("idle");
   const [gpu, setGpu] = useState<GpuHealth>({});
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
@@ -955,6 +966,19 @@ export function App() {
       : captureStarting
         ? "busy"
         : "idle";
+  const pageContext: Record<AppPage, { eyebrow: string; title: string; detail: string }> = {
+    live: { eyebrow: "Live", title: "Meeting cockpit", detail: captureStatusSummary },
+    sessions: { eyebrow: "Saved Work", title: "Sessions", detail: `${sessionCatalog.length} saved / ${sessionSearch.trim() ? "filtered" : "all"}` },
+    tools: { eyebrow: "Tools", title: "Meeting utilities", detail: "Voice, identity, tests, logs, and theme" },
+    models: { eyebrow: "Runtime", title: "Models", detail: `${asrBackendLabel} / ${gpuFreeLabel}` },
+    memory: { eyebrow: "Index", title: "Memory", detail: workMemoryLabel },
+  };
+  const currentPageContext = pageContext[activePage];
+  const liveTitleDirty = Boolean(
+    sessionId
+    && currentSessionTitle.trim()
+    && currentSessionTitle.trim() !== savedLiveTitle.trim(),
+  );
 
   async function refreshDevices() {
     const response = await fetch(`${API_BASE}/api/devices`);
@@ -1032,9 +1056,11 @@ export function App() {
     }
     const metadata = await response.json() as SessionSummary;
     setSelectedPastSession((current) => current ? { ...current, ...metadata } : current);
+    setSessionTitleDraft(metadata.title);
     setSessionCatalog((current) => current.map((session) => session.id === metadata.id ? metadata : session));
     if (metadata.id === sessionId) {
       setCurrentSessionTitle(metadata.title);
+      setSavedLiveTitle(metadata.title);
     }
   }
 
@@ -1047,7 +1073,9 @@ export function App() {
     });
     const payload = await response.json();
     setSessionId(payload.id);
-    setCurrentSessionTitle(String(payload.title ?? requestedTitle ?? "New meeting"));
+    const nextTitle = String(payload.title ?? requestedTitle ?? "New meeting");
+    setCurrentSessionTitle(nextTitle);
+    setSavedLiveTitle(nextTitle);
     setTranscript([]);
     setNotes([]);
     setRecall([]);
@@ -1104,6 +1132,7 @@ export function App() {
     }
     const metadata = await response.json() as SessionSummary;
     setCurrentSessionTitle(metadata.title);
+    setSavedLiveTitle(metadata.title);
     setSessionCatalog((current) => current.map((session) => session.id === metadata.id ? metadata : session));
     if (selectedPastSession?.id === metadata.id) {
       setSelectedPastSession((current) => current ? { ...current, ...metadata } : current);
@@ -1118,6 +1147,7 @@ export function App() {
     if (id === "new") {
       setSessionId(null);
       setCurrentSessionTitle("New meeting");
+      setSavedLiveTitle("New meeting");
       return;
     }
     const selected = sessionCatalog.find((session) => session.id === id);
@@ -1126,6 +1156,7 @@ export function App() {
     }
     setSessionId(selected.id);
     setCurrentSessionTitle(selected.title);
+    setSavedLiveTitle(selected.title);
     setTranscript([]);
     setNotes([]);
     setRecall([]);
@@ -2141,12 +2172,10 @@ export function App() {
       />
       <div className="app-main">
       <header className="top-bar">
-        <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true" />
-          <div>
-            <strong>Brain Sidecar</strong>
-            <small>Local meeting cockpit</small>
-          </div>
+        <div className="top-page-context">
+          <span>{currentPageContext.eyebrow}</span>
+          <strong>{currentPageContext.title}</strong>
+          <small>{currentPageContext.detail}</small>
         </div>
         <div className="top-actions">
           <span className={`status-pill ${statusTone}`} aria-label="Runtime status">
@@ -2157,19 +2186,14 @@ export function App() {
             {captureActive ? (activeRetention === "saved" ? "Recording" : "Listening") : sessionRetentionStatus}
           </span>
           {headerQueueLabel && <span className="queue-pill" aria-label="Capture queue status">{headerQueueLabel}</span>}
-          <button
-            className="secondary tool-drawer-toggle"
-            type="button"
-            onClick={() => setActivePage("tools")}
-          >
-            Utilities
-          </button>
           <button className="primary" onClick={() => start()} disabled={captureStartDisabled}>
             {captureButtonLabel}
           </button>
-          <button className="danger" onClick={stop} disabled={captureStopDisabled}>
-            Stop
-          </button>
+          {!captureStopDisabled && (
+            <button className="danger" onClick={stop}>
+              Stop
+            </button>
+          )}
         </div>
       </header>
 
@@ -2184,6 +2208,7 @@ export function App() {
             retention={sessionRetention}
             activeRetention={activeRetention}
             disabled={captureActive || captureStarting}
+            dirty={liveTitleDirty}
             onSelect={selectLiveSession}
             onNew={newLiveSession}
             onTitleChange={setCurrentSessionTitle}
@@ -2350,6 +2375,10 @@ export function App() {
           onTitleDraftChange={setSessionTitleDraft}
           onSaveTitle={updatePastSessionTitle}
           onHighlightSources={setHighlightedSourceIds}
+          onCreateSavedSession={() => {
+            setSessionRetention("saved");
+            setActivePage("live");
+          }}
         />
       )}
 
@@ -2385,7 +2414,6 @@ export function App() {
           workMemoryProjects={workMemoryProjects}
           workMemorySources={workMemorySources}
           memorySearchResults={memorySearchResults}
-          fileUploadBusy={fileUploadBusy}
           onLibraryPathChange={setLibraryPath}
           onAddLibraryRoot={addLibraryRoot}
           onReindexLibrary={reindex}
@@ -2397,22 +2425,41 @@ export function App() {
           onMemoryQueryChange={setMemoryQuery}
           onSearch={searchMemory}
           onRefresh={refreshMemoryPage}
-          onInputFilePick={(event) => handleInputFilePick(event, "index-file", setLibraryPath)}
         />
       )}
 
       {activePage === "tools" && (
         <main className="page tools-page" aria-label="Tools">
-          <div className="drawer-header page-header">
+          <div className="utility-header page-header">
             <div>
               <p className="label">Tools</p>
               <h2>Meeting utilities</h2>
               <span>Speaker identity, microphone tuning, tests, theme, and system logs.</span>
             </div>
           </div>
+          <nav className="utility-tabs" aria-label="Tool sections">
+            {([
+              ["voice", "Voice & Input"],
+              ["speaker", "Speaker Identity"],
+              ["test", "Test Mode"],
+              ["debug", "Logs & Debug"],
+              ["appearance", "Appearance"],
+            ] as [ToolView, string][]).map(([view, label]) => (
+              <button
+                key={view}
+                type="button"
+                className={toolView === view ? "active" : ""}
+                aria-current={toolView === view ? "page" : undefined}
+                onClick={() => setToolView(view)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
 
-          <section className="drawer-section" id="capture">
-            <div className="drawer-section-heading">
+          {toolView === "voice" && (
+          <section className="utility-section" id="capture" aria-label="Voice & Input">
+            <div className="utility-section-heading">
               <h3>Input</h3>
               <span>{devices.length || "No"} devices</span>
             </div>
@@ -2436,32 +2483,6 @@ export function App() {
                 <span>{deviceNotice || "Auto-selected on this computer. Browser microphones are disabled."}</span>
               </div>
               <button className="secondary" onClick={refreshDevices}>Refresh</button>
-            </div>
-            <div className="compact-tool">
-              <p className="label">Transcript Retention</p>
-              <div className="mode-control compact" role="group" aria-label="Transcript retention">
-                <button
-                  type="button"
-                  aria-pressed={sessionRetention === "temporary"}
-                  className={sessionRetention === "temporary" ? "active" : ""}
-                  disabled={captureStarting || captureActive}
-                  onClick={() => setSessionRetention("temporary")}
-                >
-                  <span>Listen</span>
-                  <small>Ephemeral</small>
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={sessionRetention === "saved"}
-                  className={sessionRetention === "saved" ? "active" : ""}
-                  disabled={captureStarting || captureActive}
-                  onClick={() => setSessionRetention("saved")}
-                >
-                  <span>Record</span>
-                  <small>Saved transcript</small>
-                </button>
-              </div>
-              <p className="tool-note">{sessionRetentionDetail}</p>
             </div>
             <div className="compact-tool mic-tuning" role="region" aria-label="Guided mic tuning">
               <div className="tuning-header">
@@ -2578,13 +2599,14 @@ export function App() {
               </div>
             )}
           </section>
+          )}
 
-          {testModeVisible && (
-            <details className="drawer-section drawer-section-collapsible" id="test-mode" role="region" aria-label="Recorded audio test">
-              <summary className="drawer-section-heading">
+          {toolView === "test" && testModeVisible && (
+            <section className="utility-section" id="test-mode" role="region" aria-label="Recorded audio test">
+              <div className="utility-section-heading">
                 <h3>Recorded Audio Test</h3>
                 <span>{testBusy || (testPrepared ? "ready" : "idle")}</span>
-              </summary>
+              </div>
               <div className="test-mode-grid">
                 <div className="field field-wide">
                   <span>Source audio path</span>
@@ -2647,14 +2669,24 @@ export function App() {
 	                  <small>{testReport.report_path ?? testPrepared?.report_path}</small>
 	                </div>
               )}
-            </details>
+            </section>
           )}
 
-          <details className="drawer-section drawer-section-collapsible" id="speaker-identity" aria-label="Speaker identity" role="region">
-            <summary className="drawer-section-heading">
+          {toolView === "test" && !testModeVisible && (
+            <section className="utility-section" aria-label="Recorded audio test unavailable">
+              <div className="empty-panel">
+                <h2>Test mode is off</h2>
+                <p>Recorded playback controls appear here when test mode is enabled in the local runtime.</p>
+              </div>
+            </section>
+          )}
+
+          {toolView === "speaker" && (
+          <section className="utility-section" id="speaker-identity" aria-label="Speaker identity" role="region">
+            <div className="utility-section-heading">
               <h3>Speaker Identity</h3>
               <span>{speakerStatusLabel}</span>
-            </summary>
+            </div>
 
             <div className={`speaker-training-card ${speakerStage}`} aria-label="Speaker training next step">
               <div className="speaker-training-status">
@@ -2822,51 +2854,15 @@ export function App() {
                 Delete Learned Embeddings
               </button>
             </div>
-          </details>
+          </section>
+          )}
 
-          <details className="drawer-section drawer-section-collapsible" id="indexes" aria-label="Indexes" role="region">
-            <summary className="drawer-section-heading">
-              <h3>Indexes</h3>
-              <span>{workMemoryLabel}</span>
-            </summary>
-            <div className="memory-overview" aria-label="Work memory index summary">
-              <span><strong>{workMemoryStatus?.projects ?? 0}</strong> projects</span>
-              <span><strong>{workMemoryStatus?.evidence ?? 0}</strong> citations</span>
-              <span><strong>{workMemoryStatus?.disabled_sources ?? 0}</strong> guarded</span>
-            </div>
-            <div className="field">
-              <span>File root</span>
-              <div className="path-picker">
-                <input
-                  aria-label="File root"
-                  value={libraryPath}
-                  onChange={(event) => setLibraryPath(event.target.value)}
-                  placeholder="/path/to/notes-or-docs"
-                />
-                <input
-                  aria-label="Browse index file"
-                  className="file-picker"
-                  type="file"
-                  accept=".txt,.md,.markdown,.pdf,.docx,.json,.csv,.rtf"
-                  disabled={Boolean(fileUploadBusy) || workMemoryBusy === "indexing"}
-                  onChange={(event) => handleInputFilePick(event, "index-file", setLibraryPath)}
-                />
-              </div>
-            </div>
-            <div className="button-row">
-              <button className="secondary" onClick={addLibraryRoot}>Add Files</button>
-              <button className="secondary" onClick={reindex}>Reindex Files</button>
-              <button className="secondary" onClick={reindexWorkMemory} disabled={workMemoryBusy === "indexing"}>
-                {workMemoryBusy === "indexing" ? "Indexing..." : "Index Work"}
-              </button>
-            </div>
-          </details>
-
-          <details className="drawer-section drawer-section-collapsible" aria-label="System" role="region">
-            <summary className="drawer-section-heading">
-              <h3>System</h3>
+          {toolView === "debug" && (
+          <section className="utility-section" aria-label="Logs & Debug" role="region">
+            <div className="utility-section-heading">
+              <h3>Logs & Debug</h3>
               <span>{gpu.asr_cuda_available ? "ready" : "check"}</span>
-            </summary>
+            </div>
             <p className="gpu-name">{gpuLabel}</p>
             <div className="vram-bar" aria-label={`VRAM usage ${vramPercent}%`}>
               <span style={{ width: `${vramPercent}%` }} />
@@ -2900,14 +2896,6 @@ export function App() {
               <span className="chip">keep embed {gpu.ollama_embed_keep_alive ?? "0"}</span>
               <span className="chip">dedupe {gpu.dedupe_similarity_threshold ?? "?"}</span>
             </div>
-            <label className="field">
-              <span>Theme</span>
-              <select aria-label="Theme" value={theme} onChange={(event) => setTheme(event.target.value as ThemeName)}>
-                {THEMES.map((item) => (
-                  <option key={item.value} value={item.value}>{item.label}</option>
-                ))}
-              </select>
-            </label>
             <label className="toggle-row">
               <input
                 aria-label="Show debug metadata"
@@ -2917,28 +2905,58 @@ export function App() {
               />
               Show debug metadata
             </label>
-            {showDebugMetadata && (
-              <details className="system-log" open>
-                <summary>System logs</summary>
-                {systemLogs.length === 0 ? (
-                  <p className="tool-note">No system logs yet.</p>
-                ) : (
-                  <div className="system-log-list">
-                    {systemLogs.map((log) => (
-                      <article key={`${log.id}-${log.seq}`} className={`system-log-entry ${log.level}`}>
-                        <div>
-                          <strong>{log.title}</strong>
-                          <time>{formatClock(log.at)}</time>
-                        </div>
-                        <p>{log.message}</p>
-                        {log.metadata && <pre>{formatDebugValue(log.metadata)}</pre>}
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </details>
+            <div className="system-log" aria-label="System logs">
+              <strong>System logs</strong>
+              {systemLogs.length === 0 ? (
+                <p className="tool-note">No system logs yet.</p>
+              ) : (
+                <div className="system-log-list">
+                  {systemLogs.map((log) => (
+                    <article key={`${log.id}-${log.seq}`} className={`system-log-entry ${log.level}`}>
+                      <div>
+                        <strong>{log.title}</strong>
+                        <time>{formatClock(log.at)}</time>
+                      </div>
+                      <p>{log.message}</p>
+                      {showDebugMetadata && log.metadata && <pre>{formatDebugValue(log.metadata)}</pre>}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+          )}
+
+          {toolView === "appearance" && (
+          <section className="utility-section" aria-label="Appearance" role="region">
+            <div className="utility-section-heading">
+              <h3>Appearance</h3>
+              <span>{THEMES.find((item) => item.value === theme)?.label ?? theme}</span>
+            </div>
+            <label className="field">
+              <span>Theme</span>
+              <select aria-label="Theme" value={theme} onChange={(event) => setTheme(event.target.value as ThemeName)}>
+                {THEMES.map((item) => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="theme-swatch-row" aria-label="Theme swatches">
+              {THEMES.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className={`theme-swatch ${theme === item.value ? "active" : ""}`}
+                  aria-label={`${item.label} theme`}
+                  onClick={() => setTheme(item.value)}
+                >
+                  <span />
+                  <strong>{item.label}</strong>
+                </button>
+              ))}
+            </div>
+          </section>
             )}
-          </details>
         </main>
       )}
       </div>
@@ -3009,6 +3027,7 @@ function SessionSelectorBar({
   retention,
   activeRetention,
   disabled,
+  dirty,
   onSelect,
   onNew,
   onTitleChange,
@@ -3022,6 +3041,7 @@ function SessionSelectorBar({
   retention: SessionRetention;
   activeRetention: SessionRetention;
   disabled: boolean;
+  dirty: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
   onTitleChange: (title: string) => void;
@@ -3030,7 +3050,7 @@ function SessionSelectorBar({
 }) {
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   return (
-    <section className="session-selector" aria-label="Live session selector">
+    <section className="session-workspace-bar" aria-label="Live session selector">
       <label className="field compact-field session-title-field">
         <span>Title</span>
         <input
@@ -3044,7 +3064,7 @@ function SessionSelectorBar({
         <small>{status === "idle" || status === "stopped" ? "stopped" : status} · {activeRetention === "saved" ? "saved" : "temporary"}</small>
       </label>
       <label className="field compact-field">
-        <span>Open</span>
+        <span>Session</span>
         <select
           aria-label="Session selector"
           value={sessionId ?? "new"}
@@ -3082,14 +3102,16 @@ function SessionSelectorBar({
         </button>
       </div>
       <div className="session-selector-actions">
-        <button
-          className="secondary"
-          type="button"
-          onClick={() => onTitleSave(titleInputRef.current?.value ?? title)}
-          disabled={disabled || !sessionId || !title.trim()}
-        >
-          Save Title
-        </button>
+        {dirty && (
+          <button
+            className="secondary"
+            type="button"
+            onClick={() => onTitleSave(titleInputRef.current?.value ?? title)}
+            disabled={disabled || !sessionId || !title.trim()}
+          >
+            Save Title
+          </button>
+        )}
         <button className="secondary" type="button" onClick={onNew} disabled={disabled}>
           New Session
         </button>
@@ -3112,6 +3134,7 @@ function SessionsPage({
   onTitleDraftChange,
   onSaveTitle,
   onHighlightSources,
+  onCreateSavedSession,
 }: {
   sessions: SessionSummary[];
   selectedSession: SessionDetail | null;
@@ -3126,9 +3149,23 @@ function SessionsPage({
   onTitleDraftChange: (value: string) => void;
   onSaveTitle: () => void;
   onHighlightSources: (ids: Set<string>) => void;
+  onCreateSavedSession: () => void;
 }) {
   const transcriptText = selectedSession?.transcript_segments.map((segment) => segment.text).join("\n") ?? "";
   const briefText = selectedSession?.summary?.summary ?? selectedSession?.note_cards.map((card) => `${card.title}\n${card.body}`).join("\n\n") ?? "";
+  const cleanSearch = search.trim().toLowerCase();
+  const filteredSessions = cleanSearch
+    ? sessions.filter((session) => (
+      session.title.toLowerCase().includes(cleanSearch)
+      || session.status.toLowerCase().includes(cleanSearch)
+      || (session.retention ?? "").toLowerCase().includes(cleanSearch)
+    ))
+    : sessions;
+  const selectedTitleDirty = Boolean(
+    selectedSession
+    && titleDraft.trim()
+    && titleDraft.trim() !== selectedSession.title.trim(),
+  );
   return (
     <main className="page sessions-page" aria-label="Sessions">
       <header className="page-header">
@@ -3155,9 +3192,17 @@ function SessionsPage({
           </label>
           <button className="secondary" type="button" onClick={onRefresh}>Search</button>
           {sessions.length === 0 ? (
-            <p className="empty-note">No saved sessions yet.</p>
+            <div className="empty-panel session-empty-state">
+              <h2>No saved sessions yet</h2>
+              <p>Saved mode keeps transcript text, Meeting Output cards, and summaries here. Raw audio is still discarded.</p>
+              <button className="primary subtle" type="button" onClick={onCreateSavedSession}>
+                Start with Saved
+              </button>
+            </div>
+          ) : filteredSessions.length === 0 ? (
+            <p className="empty-note">No sessions match this filter.</p>
           ) : (
-            sessions.map((session) => (
+            filteredSessions.map((session) => (
               <button
                 key={session.id}
                 type="button"
@@ -3191,9 +3236,11 @@ function SessionsPage({
                     onChange={(event) => onTitleDraftChange(event.target.value)}
                   />
                 </label>
-                <button className="secondary" type="button" onClick={onSaveTitle} disabled={busy === "saving-title"}>
-                  {busy === "saving-title" ? "Saving..." : "Save Title"}
-                </button>
+                {selectedTitleDirty && (
+                  <button className="secondary" type="button" onClick={onSaveTitle} disabled={busy === "saving-title"}>
+                    {busy === "saving-title" ? "Saving..." : "Save Title"}
+                  </button>
+                )}
               </div>
               <div className="chip-row">
                 <span className="chip">{selectedSession.status}</span>
@@ -3307,6 +3354,22 @@ function ModelsPage({
   ollamaEmbedReachabilityLabel: string;
   onRefresh: () => void;
 }) {
+  const hearingReady = !gpu.asr_backend_error && gpu.asr_cuda_available !== false;
+  const thinkingReady = gpu.ollama_chat_reachable !== false;
+  const memoryReady = gpu.ollama_embed_reachable !== false;
+  const readyCount = [hearingReady, thinkingReady, memoryReady].filter(Boolean).length;
+  const readinessTitle = hearingReady && thinkingReady
+    ? "Dross can hear and think now"
+    : hearingReady
+      ? "Dross can hear; thinking is not confirmed"
+      : thinkingReady
+        ? "Dross can think; hearing needs attention"
+        : "Dross is not ready yet";
+  const readinessDetail = [
+    hearingReady ? `${asrBackendLabel} available` : (gpu.asr_backend_error || gpu.asr_cuda_error || "ASR check needed"),
+    thinkingReady ? `chat ${gpu.ollama_chat_model ?? "phi3:mini"} reachable` : "chat offline",
+    memoryReady ? `embed ${gpu.ollama_embed_model ?? "embeddinggemma"} reachable` : "embeddings offline",
+  ].join(" / ");
   return (
     <main className="page models-page" aria-label="Models">
       <header className="page-header">
@@ -3317,40 +3380,54 @@ function ModelsPage({
         </div>
         <button className="secondary" type="button" onClick={onRefresh}>Refresh status</button>
       </header>
+      <section className={`readiness-summary ${hearingReady && thinkingReady ? "ready" : "warning"}`} aria-label="Dross readiness summary">
+        <div>
+          <p className="label">Readiness</p>
+          <h2>{readinessTitle}</h2>
+          <span>{readinessDetail}</span>
+        </div>
+        <div className="readiness-score" aria-label={`${readyCount} of 3 runtime lanes ready`}>
+          <strong>{readyCount}/3</strong>
+          <span>ready</span>
+        </div>
+      </section>
       <div className="models-grid">
         <ModelCard title="Hearing / ASR" status={gpu.asr_backend_error ? "error" : gpu.nemotron_loaded ? "loaded" : "cold"}>
-          <span>Backend <strong>{asrBackendLabel}</strong></span>
-          <span>Model <strong>{asrModelLabel}</strong></span>
-          <span>{streamingModeLabel}</span>
-          <span>{streamingMetricLabel}</span>
-          <span>Dtype <strong>{gpu.asr_dtype ?? "configured in .env"}</strong></span>
+          <RuntimeRow label="Backend" value={asrBackendLabel} />
+          <RuntimeRow label="Model" value={asrModelLabel} />
+          <RuntimeRow label="Stream" value={streamingModeLabel} />
+          <RuntimeRow label="Latency" value={streamingMetricLabel} />
+          <RuntimeRow label="Dtype" value={gpu.asr_dtype ?? "configured in .env"} />
           {gpu.asr_backend_error && <p className="warning-text">{gpu.asr_backend_error}</p>}
         </ModelCard>
         <ModelCard title="Thinking / Chat" status={gpu.ollama_chat_reachable === false ? "offline" : "ready"}>
-          <span>Model <strong>{gpu.ollama_chat_model ?? "phi3:mini"}</strong></span>
-          <span>Host <strong>{ollamaChatHostLabel}</strong></span>
-          <span>{ollamaChatReachabilityLabel}</span>
-          <span>Keepalive <strong>{gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"}</strong></span>
-          <span>Timeout <strong>{gpu.ollama_chat_timeout_seconds ?? 20}s</strong></span>
+          <RuntimeRow label="Model" value={gpu.ollama_chat_model ?? "phi3:mini"} />
+          <RuntimeRow label="Host" value={ollamaChatHostLabel} />
+          <RuntimeRow label="Reachability" value={ollamaChatReachabilityLabel} />
+          <RuntimeRow label="Keepalive" value={gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"} />
+          <RuntimeRow label="Timeout" value={`${gpu.ollama_chat_timeout_seconds ?? 20}s`} />
         </ModelCard>
         <ModelCard title="Memory / Embeddings" status={gpu.ollama_embed_reachable === false ? "offline" : "ready"}>
-          <span>Model <strong>{gpu.ollama_embed_model ?? "embeddinggemma"}</strong></span>
-          <span>Host <strong>{ollamaEmbedHostLabel}</strong></span>
-          <span>{ollamaEmbedReachabilityLabel}</span>
-          <span>Keepalive <strong>{gpu.ollama_embed_keep_alive ?? "0"}</strong></span>
-          <span>Timeout <strong>{gpu.ollama_embed_timeout_seconds ?? 12}s</strong></span>
+          <RuntimeRow label="Model" value={gpu.ollama_embed_model ?? "embeddinggemma"} />
+          <RuntimeRow label="Host" value={ollamaEmbedHostLabel} />
+          <RuntimeRow label="Reachability" value={ollamaEmbedReachabilityLabel} />
+          <RuntimeRow label="Keepalive" value={gpu.ollama_embed_keep_alive ?? "0"} />
+          <RuntimeRow label="Timeout" value={`${gpu.ollama_embed_timeout_seconds ?? 12}s`} />
         </ModelCard>
         <ModelCard title="GPU Residency" status={gpu.gpu_pressure ?? "check"}>
-          <span>{gpuLabel}</span>
+          <RuntimeRow label="Device" value={gpuLabel} />
           <div className="vram-bar" aria-label={`VRAM usage ${vramPercent}%`}><span style={{ width: `${vramPercent}%` }} /></div>
-          <span>{gpuFreeLabel}</span>
-          <span>Ollama models <strong>{gpu.ollama_gpu_models?.join(", ") || "idle"}</strong></span>
-          <span>Unload Ollama on ASR start <strong>{gpu.asr_unload_ollama_on_start ? "yes" : "no"}</strong></span>
-          <span>Streaming finals <strong>{pipeline.streamingFinalCount}</strong></span>
+          <RuntimeRow label="Free VRAM" value={gpuFreeLabel} />
+          <RuntimeRow label="Ollama models" value={gpu.ollama_gpu_models?.join(", ") || "idle"} />
+          <RuntimeRow label="Unload on ASR" value={gpu.asr_unload_ollama_on_start ? "yes" : "no"} />
+          <RuntimeRow label="Streaming finals" value={String(pipeline.streamingFinalCount)} />
         </ModelCard>
       </div>
-      <section className="copy-snippet" aria-label="Model config snippets">
-        <h2>Config snippets</h2>
+      <details className="copy-snippet config-recipes" aria-label="Config recipes">
+        <summary>
+          <h2>Config recipes</h2>
+          <span>Restart required after .env changes</span>
+        </summary>
         {[
           ["Switch to Faster-Whisper", "BRAIN_SIDECAR_ASR_BACKEND=faster_whisper"],
           ["Unload Ollama before ASR", "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true"],
@@ -3363,7 +3440,7 @@ function ModelsPage({
             <small>Set in .env · restart required</small>
           </button>
         ))}
-      </section>
+      </details>
     </main>
   );
 }
@@ -3380,6 +3457,16 @@ function ModelCard({ title, status, children }: { title: string; status: string;
   );
 }
 
+function RuntimeRow({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="runtime-row">
+      <small>{label}</small>
+      {" "}
+      <strong>{value}</strong>
+    </span>
+  );
+}
+
 function MemoryPage({
   workMemoryStatus,
   libraryPath,
@@ -3392,7 +3479,6 @@ function MemoryPage({
   workMemoryProjects,
   workMemorySources,
   memorySearchResults,
-  fileUploadBusy,
   onLibraryPathChange,
   onAddLibraryRoot,
   onReindexLibrary,
@@ -3401,7 +3487,6 @@ function MemoryPage({
   onMemoryQueryChange,
   onSearch,
   onRefresh,
-  onInputFilePick,
 }: {
   workMemoryStatus: WorkMemoryStatus | null;
   libraryPath: string;
@@ -3414,7 +3499,6 @@ function MemoryPage({
   workMemoryProjects: WorkMemoryProject[];
   workMemorySources: WorkMemorySource[];
   memorySearchResults: WorkMemoryCard[];
-  fileUploadBusy: string;
   onLibraryPathChange: (value: string) => void;
   onAddLibraryRoot: () => void;
   onReindexLibrary: () => void;
@@ -3423,8 +3507,102 @@ function MemoryPage({
   onMemoryQueryChange: (value: string) => void;
   onSearch: () => void;
   onRefresh: () => void;
-  onInputFilePick: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
+  const [memoryView, setMemoryView] = useState<MemoryView>("overview");
+  const [selectedMemoryItem, setSelectedMemoryItem] = useState<MemorySelection | null>(null);
+  const cleanQuery = memoryQuery.trim().toLowerCase();
+  const visibleRoots = cleanQuery
+    ? libraryRoots.filter((root) => root.toLowerCase().includes(cleanQuery))
+    : libraryRoots;
+  const visibleDocuments = cleanQuery
+    ? librarySources.filter((source) => (
+      source.title.toLowerCase().includes(cleanQuery)
+      || source.source_path.toLowerCase().includes(cleanQuery)
+    ))
+    : librarySources;
+  const visibleWorkSources = cleanQuery
+    ? workMemorySources.filter((source) => (
+      source.title.toLowerCase().includes(cleanQuery)
+      || source.path.toLowerCase().includes(cleanQuery)
+      || source.source_group.toLowerCase().includes(cleanQuery)
+    ))
+    : workMemorySources;
+  const visibleProjects = cleanQuery
+    ? workMemoryProjects.filter((project) => (
+      project.title.toLowerCase().includes(cleanQuery)
+      || project.organization.toLowerCase().includes(cleanQuery)
+      || project.summary.toLowerCase().includes(cleanQuery)
+    ))
+    : workMemoryProjects;
+  const selectedDocument = selectedMemoryItem?.view === "documents"
+    ? selectedMemoryItem.source
+    : librarySources.find((source) => source.source_path === selectedLibrarySourcePath) ?? null;
+  const selectedWorkSource = selectedMemoryItem?.view === "work_sources" ? selectedMemoryItem.source : null;
+  const selectedProject = selectedMemoryItem?.view === "projects" ? selectedMemoryItem.project : null;
+  const selectedSearchResult = selectedMemoryItem?.view === "search" ? selectedMemoryItem.result : null;
+  const selectedRoot = selectedMemoryItem?.view === "roots" ? selectedMemoryItem.root : null;
+  const categoryItems: { view: MemoryView; label: string; count: number }[] = [
+    { view: "overview", label: "Overview", count: (workMemoryStatus?.sources ?? 0) + librarySources.length },
+    { view: "roots", label: "Library Roots", count: libraryRoots.length },
+    { view: "documents", label: "Documents", count: librarySources.length },
+    { view: "work_sources", label: "Work Sources", count: workMemorySources.length },
+    { view: "projects", label: "Projects", count: workMemoryProjects.length },
+    { view: "search", label: "Search", count: memorySearchResults.length },
+  ];
+
+  useEffect(() => {
+    if (memoryView !== "search" || memorySearchResults.length === 0) {
+      return;
+    }
+    if (selectedMemoryItem?.view === "search" && memorySearchResults.includes(selectedMemoryItem.result)) {
+      return;
+    }
+    setSelectedMemoryItem({
+      view: "search",
+      id: `search:${memorySearchResults[0].project_id}:${memorySearchResults[0].title}`,
+      result: memorySearchResults[0],
+    });
+  }, [memorySearchResults, memoryView, selectedMemoryItem]);
+
+  function activateMemoryView(view: MemoryView) {
+    setMemoryView(view);
+    if (view === "overview") {
+      setSelectedMemoryItem(null);
+      return;
+    }
+    if (view === "roots" && visibleRoots[0]) {
+      setSelectedMemoryItem({ view, id: `root:${visibleRoots[0]}`, root: visibleRoots[0] });
+      return;
+    }
+    if (view === "documents" && visibleDocuments[0]) {
+      setSelectedMemoryItem({ view, id: visibleDocuments[0].source_path, source: visibleDocuments[0] });
+      onSelectLibrarySource(visibleDocuments[0].source_path);
+      return;
+    }
+    if (view === "work_sources" && visibleWorkSources[0]) {
+      setSelectedMemoryItem({ view, id: visibleWorkSources[0].id, source: visibleWorkSources[0] });
+      return;
+    }
+    if (view === "projects" && visibleProjects[0]) {
+      setSelectedMemoryItem({ view, id: visibleProjects[0].id, project: visibleProjects[0] });
+      return;
+    }
+    if (view === "search" && memorySearchResults[0]) {
+      setSelectedMemoryItem({
+        view,
+        id: `search:${memorySearchResults[0].project_id}:${memorySearchResults[0].title}`,
+        result: memorySearchResults[0],
+      });
+      return;
+    }
+    setSelectedMemoryItem(null);
+  }
+
+  function runMemorySearch() {
+    setMemoryView("search");
+    onSearch();
+  }
+
   return (
     <main className="page memory-page" aria-label="Memory">
       <header className="page-header">
@@ -3435,115 +3613,326 @@ function MemoryPage({
         </div>
         <button className="secondary" type="button" onClick={onRefresh} disabled={memoryBusy === "loading"}>{memoryBusy === "loading" ? "Refreshing..." : "Refresh"}</button>
       </header>
-      <div className="memory-explorer">
-        <aside className="memory-tree" aria-label="Memory tree">
-          <label className="field field-wide">
-            <span>Search memory</span>
-            <input
-              aria-label="Search memory"
-              value={memoryQuery}
-              onChange={(event) => onMemoryQueryChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") onSearch();
-              }}
-              placeholder="project, document, phrase"
-            />
-          </label>
-          <button className="secondary" type="button" onClick={onSearch}>{memoryBusy === "searching" ? "Searching..." : "Search"}</button>
-          <h3>Library Roots</h3>
-          {libraryRoots.length === 0 ? <p className="empty-note">No library roots yet.</p> : libraryRoots.map((root) => <span key={root} className="memory-tree-row">{root}</span>)}
-          <h3>Indexed Documents</h3>
-          {librarySources.length === 0 ? <p className="empty-note">No indexed documents yet.</p> : librarySources.map((source) => (
-            <button
-              key={source.source_path}
-              type="button"
-              className={`memory-tree-row ${selectedLibrarySourcePath === source.source_path ? "active" : ""}`}
-              onClick={() => onSelectLibrarySource(source.source_path)}
-            >
-              <strong>{source.title}</strong>
-              <small>{source.chunk_count} chunks</small>
-            </button>
-          ))}
-          <h3>Work Sources</h3>
-          {workMemorySources.slice(0, 24).map((source) => (
-            <span key={source.id} className={`memory-tree-row ${source.disabled ? "muted" : ""}`}>
-              {source.title}
-              <small>{source.source_group} · {source.status}</small>
-            </span>
-          ))}
+      <div className="memory-explorer explorer-shell">
+        <aside className="memory-tree explorer-nav scroll" aria-label="Memory categories">
+          <form
+            className="memory-search-form"
+            role="search"
+            onSubmit={(event) => {
+              event.preventDefault();
+              runMemorySearch();
+            }}
+          >
+            <label className="field field-wide">
+              <span>Search memory</span>
+              <input
+                aria-label="Search memory"
+                value={memoryQuery}
+                onChange={(event) => onMemoryQueryChange(event.target.value)}
+                placeholder="project, document, phrase"
+              />
+            </label>
+            <button className="secondary" type="submit">{memoryBusy === "searching" ? "Searching..." : "Search"}</button>
+          </form>
+          <nav className="memory-category-nav" aria-label="Memory category navigation">
+            {categoryItems.map((item) => (
+              <button
+                key={item.view}
+                type="button"
+                className={`memory-category-item ${memoryView === item.view ? "active" : ""}`}
+                aria-current={memoryView === item.view ? "page" : undefined}
+                onClick={() => activateMemoryView(item.view)}
+              >
+                <span>{item.label}</span>
+                <strong>{item.count}</strong>
+              </button>
+            ))}
+          </nav>
         </aside>
-        <section className="memory-detail" aria-label="Memory detail">
-          <div className="memory-actions">
-            <div className="field field-wide">
-              <span>File root</span>
-              <div className="path-picker">
-                <input
-                  aria-label="File root"
-                  value={libraryPath}
-                  onChange={(event) => onLibraryPathChange(event.target.value)}
-                  placeholder="/path/to/notes-or-docs"
-                />
-                <input
-                  aria-label="Browse index file"
-                  className="file-picker"
-                  type="file"
-                  accept=".txt,.md,.markdown,.pdf,.docx,.json,.csv,.rtf"
-                  disabled={Boolean(fileUploadBusy) || memoryBusy === "indexing"}
-                  onChange={onInputFilePick}
-                />
+
+        <section className="memory-list-pane scroll" aria-label="Memory items">
+          <div className="memory-pane-head">
+            <div>
+              <p className="label">{categoryItems.find((item) => item.view === memoryView)?.label}</p>
+              <h2>{memoryView === "overview" ? "Index overview" : "Browse memory"}</h2>
+            </div>
+            <div className="button-row">
+              {(memoryView === "overview" || memoryView === "roots" || memoryView === "documents") && (
+                <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex Library</button>
+              )}
+              {(memoryView === "overview" || memoryView === "work_sources" || memoryView === "projects") && (
+                <button className="secondary" type="button" onClick={onReindexWorkMemory}>Reindex Work</button>
+              )}
+            </div>
+          </div>
+
+          {memoryView === "overview" && (
+            <>
+              <div className="memory-overview" aria-label="Work memory index summary">
+                <span><strong>{workMemoryStatus?.projects ?? 0}</strong> projects</span>
+                <span><strong>{workMemoryStatus?.sources ?? 0}</strong> work sources</span>
+                <span><strong>{workMemoryStatus?.evidence ?? 0}</strong> citations</span>
+                <span><strong>{libraryRoots.length}</strong> library roots</span>
+                <span><strong>{librarySources.length}</strong> documents</span>
+                <span><strong>{workMemoryStatus?.disabled_sources ?? 0}</strong> guarded</span>
+              </div>
+              <div className="project-grid">
+                {workMemoryProjects.slice(0, 6).map((project) => (
+                  <button
+                    key={project.id}
+                    type="button"
+                    className="memory-item-card"
+                    onClick={() => {
+                      setMemoryView("projects");
+                      setSelectedMemoryItem({ view: "projects", id: project.id, project });
+                    }}
+                  >
+                    <strong>{project.title}</strong>
+                    <span>{project.organization} · {project.date_range}</span>
+                    <p>{project.summary}</p>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {memoryView === "roots" && (
+            <>
+              <div className="memory-root-add" aria-label="Add library root">
+                <label className="field field-wide">
+                  <span>Library root path</span>
+                  <input
+                    aria-label="Library root path"
+                    value={libraryPath}
+                    onChange={(event) => onLibraryPathChange(event.target.value)}
+                    placeholder="/path/to/notes-or-docs"
+                  />
+                </label>
+                <button className="primary subtle" type="button" onClick={onAddLibraryRoot} disabled={!libraryPath.trim()}>
+                  Add Root
+                </button>
+              </div>
+              {visibleRoots.length === 0 ? (
+                <div className="empty-panel">
+                  <h2>No library roots yet</h2>
+                  <p>Add a local path to make files available for document indexing.</p>
+                </div>
+              ) : visibleRoots.map((root) => (
+                <button
+                  key={root}
+                  type="button"
+                  className={`memory-item-row ${selectedRoot === root ? "active" : ""}`}
+                  onClick={() => setSelectedMemoryItem({ view: "roots", id: `root:${root}`, root })}
+                >
+                  <strong>{PathLabel(root)}</strong>
+                  <span>{root}</span>
+                </button>
+              ))}
+            </>
+          )}
+
+          {memoryView === "documents" && (
+            visibleDocuments.length === 0 ? (
+              <div className="empty-panel">
+                <h2>No indexed documents yet</h2>
+                <p>Add a Library Root or reindex the current roots to inspect file chunks here.</p>
+              </div>
+            ) : visibleDocuments.map((source) => (
+              <button
+                key={source.source_path}
+                type="button"
+                className={`memory-item-row ${selectedDocument?.source_path === source.source_path ? "active" : ""}`}
+                onClick={() => {
+                  setSelectedMemoryItem({ view: "documents", id: source.source_path, source });
+                  onSelectLibrarySource(source.source_path);
+                }}
+              >
+                <strong>{source.title}</strong>
+                <span>{source.source_path}</span>
+                <small>{source.chunk_count} chunks · updated {formatDateTime(source.updated_at)}</small>
+              </button>
+            ))
+          )}
+
+          {memoryView === "work_sources" && (
+            visibleWorkSources.length === 0 ? (
+              <div className="empty-panel">
+                <h2>No work sources found</h2>
+                <p>Work-memory source rows will appear here after the work index refreshes.</p>
+              </div>
+            ) : visibleWorkSources.map((source) => (
+              <button
+                key={source.id}
+                type="button"
+                className={`memory-item-row ${selectedWorkSource?.id === source.id ? "active" : ""} ${source.disabled ? "muted" : ""}`}
+                onClick={() => setSelectedMemoryItem({ view: "work_sources", id: source.id, source })}
+              >
+                <strong>{source.title}</strong>
+                <span>{source.path}</span>
+                <small>{source.source_group} · {source.status} · {source.sensitivity}</small>
+              </button>
+            ))
+          )}
+
+          {memoryView === "projects" && (
+            visibleProjects.length === 0 ? (
+              <div className="empty-panel">
+                <h2>No projects found</h2>
+                <p>Project memory appears after the work-memory index has usable project evidence.</p>
+              </div>
+            ) : (
+              <div className="project-grid">
+                {visibleProjects.map((project) => (
+                  <button
+                    key={project.id}
+                    type="button"
+                    className={`memory-item-card ${selectedProject?.id === project.id ? "active" : ""}`}
+                    onClick={() => setSelectedMemoryItem({ view: "projects", id: project.id, project })}
+                  >
+                    <strong>{project.title}</strong>
+                    <span>{project.organization} · {project.date_range}</span>
+                    <p>{project.summary}</p>
+                    <small>{project.source_group} · {Math.round(project.confidence * 100)}%</small>
+                  </button>
+                ))}
+              </div>
+            )
+          )}
+
+          {memoryView === "search" && (
+            memorySearchResults.length === 0 ? (
+              <div className="empty-panel">
+                <h2>{memoryBusy === "searching" ? "Searching memory" : "No search results yet"}</h2>
+                <p>Run a search to gather matching work-memory cards without mixing them into documents or projects.</p>
+              </div>
+            ) : memorySearchResults.map((result, index) => (
+              <button
+                key={`${result.project_id}-${result.title}-${index}`}
+                type="button"
+                className={`memory-item-row ${selectedSearchResult === result ? "active" : ""}`}
+                onClick={() => setSelectedMemoryItem({ view: "search", id: `search:${result.project_id}:${index}`, result })}
+              >
+                <strong>{result.title}</strong>
+                <span>{result.text}</span>
+                <small>{Math.round(result.score * 100)}% match · {result.organization}</small>
+              </button>
+            ))
+          )}
+        </section>
+
+        <section className="memory-detail explorer-detail scroll" aria-label="Memory detail">
+          {memoryView === "overview" && (
+            <div className="memory-detail-stack">
+              <div className="empty-panel">
+                <h2>Memory index status</h2>
+                <p>{workMemoryStatus?.guardrail ?? "Work-memory guardrail status is loading."}</p>
+              </div>
+              <div className="chip-row">
+                {(workMemoryStatus?.default_roots ?? []).slice(0, 6).map((root) => <span key={root} className="chip">{PathLabel(root)}</span>)}
               </div>
             </div>
-            <button className="secondary" type="button" onClick={onAddLibraryRoot}>Add Root</button>
-            <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex Library</button>
-            <button className="secondary" type="button" onClick={onReindexWorkMemory}>Reindex Work</button>
-          </div>
-          <div className="memory-overview" aria-label="Work memory index summary">
-            <span><strong>{workMemoryStatus?.projects ?? 0}</strong> projects</span>
-            <span><strong>{workMemoryStatus?.evidence ?? 0}</strong> citations</span>
-            <span><strong>{workMemoryStatus?.disabled_sources ?? 0}</strong> guarded</span>
-          </div>
-          {memorySearchResults.length > 0 && (
-            <section>
-              <h3>Search results</h3>
-              <div className="session-card-list">
-                {memorySearchResults.map((result) => (
-                  <article key={result.project_id} className="session-note-card">
-                    <strong>{result.title}</strong>
-                    <p>{result.text}</p>
-                    <span className="status-badge">{Math.round(result.score * 100)}%</span>
+          )}
+
+          {memoryView !== "overview" && !selectedMemoryItem && (
+            <div className="empty-panel">
+              <h2>Select an item</h2>
+              <p>Metadata, paths, chunks, snippets, and contextual actions will appear here.</p>
+            </div>
+          )}
+
+          {selectedRoot && (
+            <div className="memory-detail-stack">
+              <p className="label">Library Root</p>
+              <h2>{PathLabel(selectedRoot)}</h2>
+              <code>{selectedRoot}</code>
+              <div className="button-row">
+                <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex Library</button>
+              </div>
+            </div>
+          )}
+
+          {selectedDocument && (
+            <div className="memory-detail-stack">
+              <p className="label">Indexed Document</p>
+              <h2>{selectedDocument.title}</h2>
+              <code>{selectedDocument.source_path}</code>
+              <div className="chip-row">
+                <span className="chip">{selectedDocument.chunk_count} chunks</span>
+                <span className="chip">first chunk {selectedDocument.first_chunk_index}</span>
+              </div>
+              <div className="library-chunk-list scroll" aria-label="Document chunks">
+                {libraryChunks.length === 0 ? <p className="empty-note">No chunks loaded for this document yet.</p> : libraryChunks.map((chunk) => (
+                  <article key={chunk.id} className="library-chunk-card">
+                    <span className="status-badge">chunk {chunk.chunk_index}</span>
+                    <strong>{chunk.title}</strong>
+                    <p>{chunk.text}</p>
                   </article>
                 ))}
               </div>
-            </section>
+            </div>
           )}
-          <section>
-            <h3>{selectedLibrarySourcePath ? PathLabel(selectedLibrarySourcePath) : "Indexed chunks"}</h3>
-            <div className="library-chunk-list scroll">
-              {libraryChunks.length === 0 ? <p className="empty-note">Select an indexed document to inspect chunks.</p> : libraryChunks.map((chunk) => (
-                <article key={chunk.id} className="library-chunk-card">
-                  <span className="status-badge">chunk {chunk.chunk_index}</span>
-                  <strong>{chunk.title}</strong>
-                  <p>{chunk.text}</p>
-                </article>
-              ))}
+
+          {selectedWorkSource && (
+            <div className="memory-detail-stack">
+              <p className="label">Work Source</p>
+              <h2>{selectedWorkSource.title}</h2>
+              <code>{selectedWorkSource.path}</code>
+              <div className="chip-row">
+                <span className="chip">{selectedWorkSource.source_group}</span>
+                <span className="chip">{selectedWorkSource.status}</span>
+                <span className={selectedWorkSource.disabled ? "chip warning" : "chip"}>{selectedWorkSource.disabled ? "guarded" : selectedWorkSource.sensitivity}</span>
+              </div>
+              <pre>{formatDebugValue(selectedWorkSource.metadata)}</pre>
             </div>
-          </section>
-          <section>
-            <h3>Projects</h3>
-            <div className="project-grid">
-              {workMemoryProjects.slice(0, 24).map((project) => (
-                <article key={project.id} className="session-note-card">
-                  <strong>{project.title}</strong>
-                  <span>{project.organization} · {project.date_range}</span>
-                  <p>{project.summary}</p>
-                  <div className="chip-row">
-                    <span className="chip">{project.source_group}</span>
-                    <span className="chip">{Math.round(project.confidence * 100)}%</span>
-                  </div>
-                </article>
-              ))}
+          )}
+
+          {selectedProject && (
+            <div className="memory-detail-stack">
+              <p className="label">Project</p>
+              <h2>{selectedProject.title}</h2>
+              <span>{selectedProject.organization} · {selectedProject.role} · {selectedProject.date_range}</span>
+              <p>{selectedProject.summary}</p>
+              <div className="chip-row">
+                <span className="chip">{selectedProject.domain}</span>
+                <span className="chip">{selectedProject.source_group}</span>
+                <span className="chip">{Math.round(selectedProject.confidence * 100)}%</span>
+              </div>
+              {(selectedProject.lessons ?? []).length > 0 && (
+                <div className="memory-evidence-list" aria-label="Project lessons">
+                  {selectedProject.lessons.map((lesson) => <p key={lesson}>{lesson}</p>)}
+                </div>
+              )}
+              {(selectedProject.evidence ?? []).length > 0 && (
+                <div className="memory-evidence-list" aria-label="Project evidence">
+                  {selectedProject.evidence!.map((item) => (
+                    <article key={item.id}>
+                      <strong>{PathLabel(item.source_path)}</strong>
+                      <p>{item.snippet}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
             </div>
-          </section>
+          )}
+
+          {selectedSearchResult && (
+            <div className="memory-detail-stack">
+              <p className="label">Search Result</p>
+              <h2>{selectedSearchResult.title}</h2>
+              <span>{selectedSearchResult.organization} · {selectedSearchResult.date_range}</span>
+              <p>{selectedSearchResult.text}</p>
+              <blockquote>{selectedSearchResult.lesson}</blockquote>
+              <div className="chip-row">
+                <span className="chip">{Math.round(selectedSearchResult.score * 100)}% match</span>
+                <span className="chip">{Math.round(selectedSearchResult.confidence * 100)}% confidence</span>
+              </div>
+              <div className="memory-evidence-list" aria-label="Search citations">
+                {selectedSearchResult.citations.length === 0 ? <p>No citations attached.</p> : selectedSearchResult.citations.map((citation) => (
+                  <code key={citation}>{citation}</code>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       </div>
     </main>
@@ -4031,24 +4420,27 @@ function QualityStrip({
   showDebugMetadata: boolean;
 }) {
   return (
-    <section className="quality-strip" aria-label="Sidecar quality status">
-      <span><strong>{metrics.acceptedCurrentCount}</strong> current</span>
-      <span><strong>{metrics.workMemoryCount}</strong> memory</span>
-      <span><strong>{metrics.manualCount}</strong> manual</span>
-      {diagnostics && (
-        <>
-          <span><strong>{diagnostics.generated_candidate_count}</strong> generated</span>
-          <span><strong>{diagnostics.suppressed_count}</strong> suppressed</span>
-        </>
-      )}
-      <span><strong>{formatPercent(metrics.evidenceQuoteCoverage)}</strong> evidence</span>
-      <span><strong>{formatPercent(metrics.sourceIdCoverage)}</strong> sources</span>
-      <span>{qualityGateActive ? "Quality gate active" : "Quality gate off"}</span>
-      <span className="quiet">{rawCount} raw</span>
-      {showDebugMetadata && diagnostics?.top_suppression_reasons.length ? (
-        <span className="quiet">Reasons: {diagnostics.top_suppression_reasons.map((item) => `${item.reason} ${item.count}`).join("; ")}</span>
-      ) : null}
-    </section>
+    <details className="quality-strip-details" aria-label="Meeting output details">
+      <summary>Details</summary>
+      <section className="quality-strip" aria-label="Sidecar quality status">
+        <span><strong>{metrics.acceptedCurrentCount}</strong> current</span>
+        <span><strong>{metrics.workMemoryCount}</strong> memory</span>
+        <span><strong>{metrics.manualCount}</strong> manual</span>
+        {diagnostics && (
+          <>
+            <span><strong>{diagnostics.generated_candidate_count}</strong> generated</span>
+            <span><strong>{diagnostics.suppressed_count}</strong> suppressed</span>
+          </>
+        )}
+        <span><strong>{formatPercent(metrics.evidenceQuoteCoverage)}</strong> evidence</span>
+        <span><strong>{formatPercent(metrics.sourceIdCoverage)}</strong> sources</span>
+        <span>{qualityGateActive ? "Quality gate active" : "Quality gate off"}</span>
+        <span className="quiet">{rawCount} raw</span>
+        {showDebugMetadata && diagnostics?.top_suppression_reasons.length ? (
+          <span className="quiet">Reasons: {diagnostics.top_suppression_reasons.map((item) => `${item.reason} ${item.count}`).join("; ")}</span>
+        ) : null}
+      </section>
+    </details>
   );
 }
 

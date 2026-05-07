@@ -62,6 +62,7 @@ type MockApiOptions = {
   testModeEnabled?: boolean;
   devicesResponse?: MockDeviceResponse;
   gpuHealthResponse?: Record<string, unknown>;
+  sessionsResponse?: Record<string, unknown>[];
 };
 
 export const mockDevices: MockDevice[] = [
@@ -444,7 +445,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     }
 
     if (method === "GET" && path === "/api/sessions") {
-      await json(route, { sessions: [savedSession] });
+      await json(route, { sessions: options.sessionsResponse ?? [savedSession] });
       return;
     }
 
