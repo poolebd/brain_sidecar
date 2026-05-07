@@ -16,28 +16,122 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.getByLabel("Live field empty state")).toContainText("Ready. Start listening or ask Sidecar.");
   const liveBox = await page.locator("#transcript").boundingBox();
   expect(liveBox).not.toBeNull();
-  expect(liveBox!.y).toBeLessThan(220);
+  expect(liveBox!.y).toBeLessThan(360);
   await expect(page.getByRole("search")).toBeVisible();
   const toolsButton = page.getByRole("button", { name: "Tools" });
-  await expect(toolsButton).toHaveAttribute("aria-expanded", "false");
   await toolsButton.click();
-  await expect(toolsButton).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("main", { name: "Tools" })).toBeVisible();
   await expect(page.getByLabel("Audio source")).toHaveCount(0);
   await expect(page.getByLabel("USB microphone")).toHaveCount(0);
   await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
   await expect(page.getByLabel("Guided mic tuning")).toContainText("Auto Level");
-  await expect(page.getByLabel("Tools drawer").getByRole("button", { name: "Close" })).toHaveCount(0);
+  await expect(page.getByRole("main", { name: "Tools" }).getByRole("button", { name: "Close" })).toHaveCount(0);
   await openDrawerRegion(page, "System");
   await expect(page.getByText("NVIDIA RTX 4090 · 6144/24576 MB")).toBeVisible();
   await expect(page.getByLabel("VRAM usage 25%")).toBeVisible();
   await expect(page.getByText("CUDA ready")).toBeVisible();
-  await expect(page.getByLabel("Tools drawer").getByText("21 projects / 412 sources")).toBeVisible();
-  await toolsButton.click();
-  await expect(toolsButton).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByLabel("Tools drawer")).not.toBeVisible();
-  await toolsButton.click();
-  await page.keyboard.press("Escape");
-  await expect(toolsButton).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("main", { name: "Tools" }).getByText("21 projects / 412 sources")).toBeVisible();
+  await page.getByRole("button", { name: "Live" }).click();
+  await expect(page.getByRole("main", { name: "Tools" })).not.toBeVisible();
+  await page.getByRole("button", { name: "Tools" }).click();
+  await expect(page.getByRole("main", { name: "Tools" })).toBeVisible();
+});
+
+test("navigates the app shell and browses saved sessions", async ({ page }) => {
+  const nav = page.getByRole("navigation", { name: "Primary navigation" });
+  for (const label of ["Live", "Sessions", "Tools", "Models", "Memory"]) {
+    await expect(nav.getByRole("button", { name: label })).toBeVisible();
+  }
+
+  await nav.getByRole("button", { name: "Sessions" }).click();
+  await expect(nav.getByRole("button", { name: "Sessions" })).toHaveAttribute("aria-current", "page");
+  const sessionsPage = page.getByRole("main", { name: "Sessions" });
+  await expect(sessionsPage).toBeVisible();
+  await sessionsPage.getByRole("button", { name: /Saved model planning call/ }).click();
+  await expect(sessionsPage.getByLabel("Session detail")).toContainText("keep Nemotron and Phi resident");
+  await expect(sessionsPage.getByLabel("Session detail")).toContainText("Same-GPU default");
+
+  const patchTitle = page.waitForRequest((request) => (
+    request.method() === "PATCH" && request.url().endsWith("/api/sessions/session-saved-1")
+  ));
+  await sessionsPage.getByLabel("Session title").fill("Renamed model planning call");
+  await sessionsPage.getByRole("button", { name: "Save Title" }).click();
+  expect(JSON.parse((await patchTitle).postData() ?? "{}")).toMatchObject({
+    title: "Renamed model planning call",
+  });
+
+  await nav.getByRole("button", { name: "Live" }).click();
+  await expect(page.getByRole("main", { name: "Live" })).toBeVisible();
+  const createLiveSession = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/sessions")
+  ));
+  await page.getByLabel("Live session title").fill("Live shell check");
+  await page.getByRole("button", { name: "New Session" }).click();
+  expect(JSON.parse((await createLiveSession).postData() ?? "{}")).toMatchObject({
+    title: "Live shell check",
+  });
+
+  const patchLiveTitle = page.waitForRequest((request) => (
+    request.method() === "PATCH" && request.url().endsWith("/api/sessions/session-123")
+  ));
+  await page.getByLabel("Live session title").fill("Renamed live shell check");
+  await page.getByRole("button", { name: "Save Title" }).click();
+  expect(JSON.parse((await patchLiveTitle).postData() ?? "{}")).toMatchObject({
+    title: "Renamed live shell check",
+  });
+});
+
+test("shows model residency and memory management pages", async ({ page }) => {
+  const nav = page.getByRole("navigation", { name: "Primary navigation" });
+  await nav.getByRole("button", { name: "Models" }).click();
+  const modelsPage = page.getByRole("main", { name: "Models" });
+  await expect(modelsPage).toBeVisible();
+  await expect(modelsPage).toContainText("Nemotron Streaming");
+  await expect(modelsPage).toContainText("phi3:mini");
+  await expect(modelsPage).toContainText("embeddinggemma");
+  await expect(modelsPage).toContainText("Keepalive 30m");
+  await expect(modelsPage).toContainText("Keepalive 0");
+  await expect(modelsPage).toContainText("GPU Residency");
+
+  await nav.getByRole("button", { name: "Memory" }).click();
+  const memoryPage = page.getByRole("main", { name: "Memory" });
+  await expect(memoryPage).toBeVisible();
+  await expect(memoryPage).toContainText("Library Roots");
+  await expect(memoryPage).toContainText("OGMS spec.txt");
+  await expect(memoryPage).toContainText("Online Generator Monitoring - T.A. Smith");
+
+  const searchRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/work-memory/search")
+  ));
+  await memoryPage.getByLabel("Search memory").fill("generator monitoring");
+  await memoryPage.getByRole("button", { name: "Search" }).click();
+  expect(JSON.parse((await searchRequest).postData() ?? "{}")).toMatchObject({
+    query: "generator monitoring",
+  });
+  await expect(memoryPage).toContainText("Monitoring signals are useful when they map to decisions.");
+
+  const addRootRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/library/roots")
+  ));
+  await memoryPage.getByLabel("File root").fill("/tmp/brain-sidecar-notes");
+  await memoryPage.getByRole("button", { name: "Add Root" }).click();
+  expect(JSON.parse((await addRootRequest).postData() ?? "{}")).toMatchObject({
+    path: "/tmp/brain-sidecar-notes",
+  });
+
+  const reindexLibrary = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/library/reindex")
+  ));
+  await memoryPage.getByRole("button", { name: "Reindex Library" }).click();
+  await reindexLibrary;
+  await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
+
+  const reindexWork = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/work-memory/reindex")
+  ));
+  await memoryPage.getByRole("button", { name: "Reindex Work" }).click();
+  await reindexWork;
+  await expect(page.getByLabel("Runtime status")).toContainText("work memory indexed 21 projects");
 });
 
 test("shows Nemotron streaming ASR status compactly", async ({ page }) => {
@@ -76,7 +170,7 @@ test("clamps stale high mic boost and warns before capture", async ({ page }) =>
   await page.reload();
   await page.getByRole("button", { name: "Tools" }).click();
 
-  const drawer = page.getByLabel("Tools drawer");
+  const drawer = page.getByRole("main", { name: "Tools" });
   await expect(drawer.getByLabel("Input Boost")).toHaveValue("12");
   await expect(drawer.getByLabel("Guided mic tuning")).toContainText("+12 dB");
   await expect(drawer.getByLabel("Guided mic tuning")).toContainText("High boost can clip");
@@ -146,7 +240,7 @@ test("shows active USB mic capture as in use instead of missing", async ({ page 
   await page.reload();
   await page.getByRole("button", { name: "Tools" }).click();
 
-  const drawer = page.getByLabel("Tools drawer");
+  const drawer = page.getByRole("main", { name: "Tools" });
   await expect(drawer.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone (in use)");
   await expect(drawer.getByLabel("Server microphone")).toContainText("USB mic is in use by active capture");
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeDisabled();
@@ -698,8 +792,10 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
   await page.getByRole("button", { name: "Tools" }).click();
   await openDrawerRegion(page, "System");
   await page.getByLabel("Show debug metadata").check();
-  await page.getByRole("button", { name: "Tools" }).click();
-  await contextSection.locator(".context-card").first().getByRole("button", { name: "Details" }).click();
+  await page.getByRole("button", { name: "Live" }).click();
+  const refreshedContextSection = page.getByLabel("Context cards");
+  await openDetailsByLabel(page, "Context cards");
+  await refreshedContextSection.locator(".context-card").first().getByRole("button", { name: "Details" }).click();
   await expect(page.locator("#recall")).toContainText("source ID");
   await expect(page.locator("#recall")).toContainText(/debug-source-/);
   await expect(page.locator("#recall")).toContainText("score");
@@ -884,6 +980,7 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
       queue_depth: 0,
     },
   });
+  await page.getByRole("button", { name: "Live" }).click();
   await expect(page.getByText("1 heard").first()).toBeVisible();
 
   const reportRequest = page.waitForRequest((candidate) => (
@@ -898,14 +995,16 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
     expected_terms: ["Online Generator Monitoring", "T.A. Smith"],
     matched_expected_terms: ["Online Generator Monitoring", "T.A. Smith"],
   });
-  await expect(testPanel.getByLabel("Recorded audio report")).toContainText("1");
-  await expect(testPanel.getByLabel("Recorded audio report")).toContainText("2/2");
-  await expect(testPanel.getByLabel("Recorded audio report")).toContainText("report.json");
+  await page.getByRole("button", { name: "Tools" }).click();
+  const reopenedTestPanel = await openDrawerRegion(page, "Recorded audio test");
+  await expect(reopenedTestPanel.getByLabel("Recorded audio report")).toContainText("1");
+  await expect(reopenedTestPanel.getByLabel("Recorded audio report")).toContainText("2/2");
+  await expect(reopenedTestPanel.getByLabel("Recorded audio report")).toContainText("report.json");
 });
 
 test("locks live capture to the auto-selected server microphone", async ({ page }) => {
   await page.getByRole("button", { name: "Tools" }).click();
-  const drawer = page.getByLabel("Tools drawer");
+  const drawer = page.getByRole("main", { name: "Tools" });
   await expect(drawer.getByLabel("Audio source")).toHaveCount(0);
   await expect(drawer.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
   await expect(drawer.getByLabel("Browser microphone status")).toHaveCount(0);
@@ -941,7 +1040,7 @@ test("blocks capture and speaker training when no healthy server microphone is a
   await page.reload();
   await page.getByRole("button", { name: "Tools" }).click();
 
-  const drawer = page.getByLabel("Tools drawer");
+  const drawer = page.getByRole("main", { name: "Tools" });
   await expect(drawer.getByLabel("USB microphone")).toHaveCount(0);
   await expect(drawer.getByLabel("Server microphone")).toContainText("No healthy server microphone detected");
   await expect(drawer.getByRole("status")).toContainText("No healthy server microphone detected");
@@ -967,7 +1066,7 @@ test("uses mocked library and recall APIs", async ({ page }) => {
   await indexes.getByRole("button", { name: "Reindex Files" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
 
-  await page.getByRole("button", { name: "Tools" }).click();
+  await page.getByRole("button", { name: "Live" }).click();
   await page.getByPlaceholder("Ask Sidecar anything").fill("apollo rollout");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Prior transcript");
@@ -1048,6 +1147,18 @@ test("keeps core capture controls usable on a phone viewport", async ({ page }) 
 
 async function openDrawerRegion(page: Page, name: string) {
   const region = page.getByRole("region", { name });
+  await expect(region).toBeVisible();
+  const isOpen = await region.evaluate((element) => (
+    element instanceof HTMLDetailsElement ? element.open : true
+  ));
+  if (!isOpen) {
+    await region.locator("summary").first().click();
+  }
+  return region;
+}
+
+async function openDetailsByLabel(page: Page, name: string) {
+  const region = page.getByLabel(name);
   await expect(region).toBeVisible();
   const isOpen = await region.evaluate((element) => (
     element instanceof HTMLDetailsElement ? element.open : true

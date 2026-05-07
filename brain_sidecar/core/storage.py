@@ -297,6 +297,7 @@ class Storage:
             self.conn.commit()
 
     def _apply_migrations(self) -> None:
+        self._ensure_column("sessions", "save_transcript", "integer")
         self._ensure_column("transcript_segments", "speaker_role", "text")
         self._ensure_column("transcript_segments", "speaker_label", "text")
         self._ensure_column("transcript_segments", "speaker_confidence", "real")
@@ -306,6 +307,7 @@ class Storage:
         self._ensure_column("note_cards", "owner", "text")
         self._ensure_column("note_cards", "due_date", "text")
         self._ensure_column("note_cards", "missing_info", "text")
+        self._record_migration("20260507_session_retention")
         self._record_migration("20260504_transcript_speaker_fields")
         self._record_migration("20260504_session_memory_summaries")
         self._record_migration("20260505_note_evidence_fields")
@@ -1077,13 +1079,156 @@ class Storage:
             self.conn.commit()
         return record
 
-    def set_session_status(self, session_id: str, status: str, ended_at: float | None = None) -> None:
+    def set_session_status(
+        self,
+        session_id: str,
+        status: str,
+        ended_at: float | None = None,
+        *,
+        save_transcript: bool | None = None,
+    ) -> None:
+        save_value = None if save_transcript is None else 1 if save_transcript else 0
         with self._lock:
-            self.conn.execute(
-                "update sessions set status = ?, ended_at = coalesce(?, ended_at) where id = ?",
-                (status, ended_at, session_id),
-            )
+            if save_value is None:
+                self.conn.execute(
+                    "update sessions set status = ?, ended_at = coalesce(?, ended_at) where id = ?",
+                    (status, ended_at, session_id),
+                )
+            else:
+                self.conn.execute(
+                    "update sessions set status = ?, ended_at = coalesce(?, ended_at), save_transcript = ? where id = ?",
+                    (status, ended_at, save_value, session_id),
+                )
             self.conn.commit()
+
+    def update_session_title(self, session_id: str, title: str) -> dict[str, Any]:
+        clean_title = " ".join(title.split()).strip()
+        if not clean_title:
+            raise ValueError("Session title cannot be empty.")
+        with self._lock:
+            updated = self.conn.execute(
+                "update sessions set title = ? where id = ?",
+                (clean_title[:180], session_id),
+            )
+            if updated.rowcount == 0:
+                raise KeyError(session_id)
+            self.conn.commit()
+        return self.session_metadata(session_id)
+
+    def list_sessions(
+        self,
+        *,
+        limit: int = 50,
+        include_empty: bool = True,
+        status: str | None = None,
+        query: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        if status:
+            where.append("s.status = ?")
+            params.append(status)
+        if query:
+            where.append("lower(s.title) like ?")
+            params.append(f"%{query.lower()}%")
+        if not include_empty:
+            where.append("(coalesce(t.transcript_count, 0) > 0 or coalesce(n.note_count, 0) > 0 or m.session_id is not null)")
+        where_sql = f"where {' and '.join(where)}" if where else ""
+        rows = self.conn.execute(
+            f"""
+            select
+              s.*,
+              coalesce(t.transcript_count, 0) as transcript_count,
+              coalesce(n.note_count, 0) as note_count,
+              m.session_id is not null as summary_exists
+            from sessions s
+            left join (
+              select session_id, count(*) as transcript_count
+              from transcript_segments
+              group by session_id
+            ) t on t.session_id = s.id
+            left join (
+              select session_id, count(*) as note_count
+              from note_cards
+              group by session_id
+            ) n on n.session_id = s.id
+            left join session_memory_summaries m on m.session_id = s.id
+            {where_sql}
+            order by coalesce(s.ended_at, s.started_at) desc
+            limit ?
+            """,
+            (*params, max(1, min(limit, 200))),
+        ).fetchall()
+        return [self._session_row_to_dict(row) for row in rows]
+
+    def session_metadata(self, session_id: str) -> dict[str, Any]:
+        rows = self.conn.execute(
+            """
+            select
+              s.*,
+              coalesce(t.transcript_count, 0) as transcript_count,
+              coalesce(n.note_count, 0) as note_count,
+              m.session_id is not null as summary_exists
+            from sessions s
+            left join (
+              select session_id, count(*) as transcript_count
+              from transcript_segments
+              group by session_id
+            ) t on t.session_id = s.id
+            left join (
+              select session_id, count(*) as note_count
+              from note_cards
+              group by session_id
+            ) n on n.session_id = s.id
+            left join session_memory_summaries m on m.session_id = s.id
+            where s.id = ?
+            """,
+            (session_id,),
+        ).fetchall()
+        if not rows:
+            raise KeyError(session_id)
+        return self._session_row_to_dict(rows[0])
+
+    def session_detail(self, session_id: str) -> dict[str, Any]:
+        metadata = self.session_metadata(session_id)
+        saved = metadata["save_transcript"] is not False
+        return {
+            **metadata,
+            "transcript_segments": self.session_transcript_segments(session_id) if saved else [],
+            "note_cards": self.session_note_cards(session_id) if saved else [],
+            "summary": self.session_memory_summary(session_id) if saved else None,
+            "transcript_redacted": not saved,
+            "raw_audio_retained": False,
+        }
+
+    def session_transcript_segments(self, session_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            select * from transcript_segments
+            where session_id = ?
+            order by start_s, created_at
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._transcript_row_to_segment(row).to_dict() for row in rows]
+
+    def session_note_cards(self, session_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            select * from note_cards
+            where session_id = ?
+            order by created_at
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._note_row_to_dict(row) for row in rows]
+
+    def session_memory_summary(self, session_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "select * from session_memory_summaries where session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return self._session_memory_summary_row_to_dict(row) if row else None
 
     def add_transcript_segment(self, segment: TranscriptSegment) -> None:
         with self._lock:
@@ -1205,27 +1350,7 @@ class Storage:
             """,
             (session_id, limit),
         ).fetchall()
-        return [
-            TranscriptSegment(
-                id=row["id"],
-                session_id=row["session_id"],
-                start_s=row["start_s"],
-                end_s=row["end_s"],
-                text=row["text"],
-                is_final=bool(row["is_final"]),
-                created_at=row["created_at"],
-                speaker_role=row["speaker_role"],
-                speaker_label=row["speaker_label"],
-                speaker_confidence=row["speaker_confidence"],
-                speaker_match_reason=row["speaker_match_reason"],
-                speaker_low_confidence=(
-                    bool(row["speaker_low_confidence"])
-                    if row["speaker_low_confidence"] is not None
-                    else None
-                ),
-            )
-            for row in reversed(rows)
-        ]
+        return [self._transcript_row_to_segment(row) for row in reversed(rows)]
 
     def add_note(self, note: NoteCard) -> None:
         with self._lock:
@@ -1267,6 +1392,72 @@ class Storage:
     def library_roots(self) -> list[Path]:
         rows = self.conn.execute("select path from library_roots order by created_at").fetchall()
         return [Path(row["path"]) for row in rows]
+
+    def document_chunk_sources(
+        self,
+        *,
+        limit: int = 200,
+        query: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where = ""
+        params: list[Any] = []
+        if query:
+            where = "where lower(source_path) like ? or lower(text) like ?"
+            needle = f"%{query.lower()}%"
+            params.extend([needle, needle])
+        rows = self.conn.execute(
+            f"""
+            select
+              source_path,
+              count(*) as chunk_count,
+              max(updated_at) as updated_at,
+              min(chunk_index) as first_chunk_index
+            from document_chunks
+            {where}
+            group by source_path
+            order by updated_at desc
+            limit ?
+            """,
+            (*params, max(1, min(limit, 500))),
+        ).fetchall()
+        return [
+            {
+                "source_path": row["source_path"],
+                "title": Path(row["source_path"]).name,
+                "chunk_count": int(row["chunk_count"]),
+                "updated_at": row["updated_at"],
+                "first_chunk_index": row["first_chunk_index"],
+            }
+            for row in rows
+        ]
+
+    def document_chunks(
+        self,
+        *,
+        source_path: str | None = None,
+        query: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        if source_path:
+            where.append("source_path = ?")
+            params.append(source_path)
+        if query:
+            where.append("(lower(source_path) like ? or lower(text) like ?)")
+            needle = f"%{query.lower()}%"
+            params.extend([needle, needle])
+        where_sql = f"where {' and '.join(where)}" if where else ""
+        rows = self.conn.execute(
+            f"""
+            select * from document_chunks
+            {where_sql}
+            order by source_path, chunk_index
+            limit ?
+            """,
+            (*params, max(1, min(limit, 500))),
+        ).fetchall()
+        return [self._document_chunk_row_to_dict(row) for row in rows]
 
     def upsert_document_chunk(self, source_path: Path, chunk_index: int, text: str, metadata: dict[str, Any]) -> str:
         chunk_id = new_id("chunk")
@@ -1625,6 +1816,82 @@ class Storage:
             "disabled_sources": int(disabled_count),
             "latest_index_at": latest_row["latest"],
             "source_groups": {row["source_group"]: int(row["count"]) for row in rows},
+        }
+
+    def _session_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        transcript_count = int(row["transcript_count"])
+        note_count = int(row["note_count"])
+        summary_exists = bool(row["summary_exists"])
+        raw_save = row["save_transcript"]
+        save_transcript = None if raw_save is None else bool(raw_save)
+        if save_transcript is True:
+            retention = "saved"
+        elif save_transcript is False:
+            retention = "temporary"
+        elif transcript_count or note_count or summary_exists:
+            retention = "saved"
+        else:
+            retention = "empty"
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "status": row["status"],
+            "started_at": row["started_at"],
+            "ended_at": row["ended_at"],
+            "save_transcript": save_transcript,
+            "retention": retention,
+            "transcript_count": transcript_count,
+            "note_count": note_count,
+            "summary_exists": summary_exists,
+            "raw_audio_retained": False,
+        }
+
+    def _transcript_row_to_segment(self, row: sqlite3.Row) -> TranscriptSegment:
+        return TranscriptSegment(
+            id=row["id"],
+            session_id=row["session_id"],
+            start_s=row["start_s"],
+            end_s=row["end_s"],
+            text=row["text"],
+            is_final=bool(row["is_final"]),
+            created_at=row["created_at"],
+            speaker_role=row["speaker_role"],
+            speaker_label=row["speaker_label"],
+            speaker_confidence=row["speaker_confidence"],
+            speaker_match_reason=row["speaker_match_reason"],
+            speaker_low_confidence=(
+                bool(row["speaker_low_confidence"])
+                if row["speaker_low_confidence"] is not None
+                else None
+            ),
+        )
+
+    def _note_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "kind": row["kind"],
+            "title": row["title"],
+            "body": row["body"],
+            "source_segment_ids": json.loads(row["source_segment_ids"]),
+            "created_at": row["created_at"],
+            "evidence_quote": row["evidence_quote"],
+            "owner": row["owner"],
+            "due_date": row["due_date"],
+            "missing_info": row["missing_info"],
+            "raw_audio_retained": False,
+        }
+
+    def _document_chunk_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "source_path": row["source_path"],
+            "title": Path(row["source_path"]).name,
+            "chunk_index": int(row["chunk_index"]),
+            "text": row["text"],
+            "metadata": json.loads(row["metadata"]),
+            "updated_at": row["updated_at"],
+            "raw_audio_retained": False,
         }
 
     def _work_memory_project_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:

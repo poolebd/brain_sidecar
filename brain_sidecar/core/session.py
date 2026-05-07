@@ -287,7 +287,7 @@ class SessionManager:
                 active.tasks.append(asyncio.create_task(self._run_web_context_loop(session_id, web_context_queue)))
             for task in active.tasks:
                 task.add_done_callback(lambda done_task, sid=session_id: self._surface_task_exception(sid, done_task))
-            self.storage.set_session_status(session_id, "running")
+            self.storage.set_session_status(session_id, "running", save_transcript=save_transcript)
 
         await self.bus.publish(
             SidecarEvent(

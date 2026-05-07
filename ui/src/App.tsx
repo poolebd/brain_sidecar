@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import {
   buildLiveFieldRows,
   buildConsultingBriefMarkdown,
@@ -24,11 +24,13 @@ import {
 type ThemeName = "neutral" | "midnight" | "canopy" | "ember";
 type AudioSource = "server_device" | "fixture";
 type SessionRetention = "temporary" | "saved";
+type AppPage = "live" | "sessions" | "tools" | "models" | "memory";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase();
 const ENABLE_FIXTURE_AUDIO = import.meta.env.VITE_ENABLE_FIXTURE_AUDIO === "1";
 const DEFAULT_FIXTURE_AUDIO = import.meta.env.VITE_DEFAULT_FIXTURE_AUDIO ?? "";
 const DEFAULT_THEME: ThemeName = "midnight";
+const APP_PAGE_STORAGE_KEY = "brain-sidecar-active-page-v1";
 const THEME_STORAGE_KEY = "brain-sidecar-theme-v2";
 const DEBUG_METADATA_STORAGE_KEY = "brain-sidecar-debug-metadata-v1";
 const SESSION_RETENTION_STORAGE_KEY = "brain-sidecar-session-retention-v1";
@@ -164,6 +166,51 @@ type NoteCard = {
   citations?: string[];
 };
 
+type SessionSummary = {
+  id: string;
+  title: string;
+  status: string;
+  started_at: number;
+  ended_at?: number | null;
+  save_transcript?: boolean | null;
+  retention?: "saved" | "temporary" | "empty";
+  transcript_count: number;
+  note_count: number;
+  summary_exists: boolean;
+  raw_audio_retained?: boolean;
+};
+
+type SavedTranscriptSegment = TranscriptLine & {
+  is_final?: boolean;
+  speaker_role?: string;
+  speaker_label?: string;
+  speaker_confidence?: number;
+  speaker_match_reason?: string;
+  speaker_low_confidence?: boolean;
+};
+
+type SessionMemorySummary = {
+  session_id: string;
+  title: string;
+  summary: string;
+  topics: string[];
+  decisions: string[];
+  actions: string[];
+  unresolved_questions: string[];
+  entities: string[];
+  lessons: string[];
+  source_segment_ids: string[];
+  created_at: number;
+  updated_at: number;
+};
+
+type SessionDetail = SessionSummary & {
+  transcript_segments: SavedTranscriptSegment[];
+  note_cards: NoteCard[];
+  summary: SessionMemorySummary | null;
+  transcript_redacted?: boolean;
+};
+
 type RecallHit = {
   source_type: string;
   source_id: string;
@@ -198,6 +245,55 @@ type WorkMemoryCard = {
   lesson: string;
   citations: string[];
   text: string;
+};
+
+type WorkMemoryProject = {
+  id: string;
+  project_key: string;
+  title: string;
+  organization: string;
+  date_range: string;
+  role: string;
+  domain: string;
+  summary: string;
+  lessons: string[];
+  triggers: string[];
+  source_group: string;
+  confidence: number;
+  updated_at: number;
+  evidence?: { id: string; source_path: string; snippet: string; artifact_type: string; weight: number }[];
+};
+
+type WorkMemorySource = {
+  id: string;
+  path: string;
+  source_group: string;
+  sensitivity: string;
+  status: string;
+  title: string;
+  content_hash: string;
+  metadata: Record<string, unknown>;
+  disabled: boolean;
+  created_at: number;
+  updated_at: number;
+};
+
+type LibraryChunkSource = {
+  source_path: string;
+  title: string;
+  chunk_count: number;
+  updated_at: number;
+  first_chunk_index: number;
+};
+
+type LibraryChunk = {
+  id: string;
+  source_path: string;
+  title: string;
+  chunk_index: number;
+  text: string;
+  metadata: Record<string, unknown>;
+  updated_at: number;
 };
 
 type TestModePrepared = {
@@ -268,6 +364,8 @@ type GpuHealth = {
   ollama_keep_alive?: string;
   ollama_chat_keep_alive?: string;
   ollama_embed_keep_alive?: string;
+  ollama_chat_timeout_seconds?: number;
+  ollama_embed_timeout_seconds?: number;
   asr_beam_size?: number;
   transcription_queue_size?: number;
   partial_transcripts_enabled?: boolean;
@@ -444,6 +542,13 @@ type FetchJsonResult<T> = {
 };
 
 export function App() {
+  const [activePage, setActivePage] = useState<AppPage>(() => {
+    if (typeof window === "undefined") {
+      return "live";
+    }
+    const storedPage = window.localStorage.getItem(APP_PAGE_STORAGE_KEY);
+    return isAppPage(storedPage) ? storedPage : "live";
+  });
   const [theme, setTheme] = useState<ThemeName>(() => {
     if (typeof window === "undefined") {
       return DEFAULT_THEME;
@@ -469,6 +574,13 @@ export function App() {
   });
   const [activeSessionRetention, setActiveSessionRetention] = useState<SessionRetention | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [currentSessionTitle, setCurrentSessionTitle] = useState("New meeting");
+  const [sessionCatalog, setSessionCatalog] = useState<SessionSummary[]>([]);
+  const [sessionSearch, setSessionSearch] = useState("");
+  const [sessionsBusy, setSessionsBusy] = useState("");
+  const [selectedPastSessionId, setSelectedPastSessionId] = useState<string | null>(null);
+  const [selectedPastSession, setSelectedPastSession] = useState<SessionDetail | null>(null);
+  const [sessionTitleDraft, setSessionTitleDraft] = useState("");
   const [status, setStatus] = useState("idle");
   const [gpu, setGpu] = useState<GpuHealth>({});
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
@@ -494,6 +606,15 @@ export function App() {
   const [fileUploadBusy, setFileUploadBusy] = useState("");
   const [testReport, setTestReport] = useState<TestModeReport | null>(null);
   const [libraryPath, setLibraryPath] = useState("");
+  const [libraryRoots, setLibraryRoots] = useState<string[]>([]);
+  const [librarySources, setLibrarySources] = useState<LibraryChunkSource[]>([]);
+  const [libraryChunks, setLibraryChunks] = useState<LibraryChunk[]>([]);
+  const [selectedLibrarySourcePath, setSelectedLibrarySourcePath] = useState<string | null>(null);
+  const [memoryQuery, setMemoryQuery] = useState("");
+  const [memoryBusy, setMemoryBusy] = useState("");
+  const [workMemoryProjects, setWorkMemoryProjects] = useState<WorkMemoryProject[]>([]);
+  const [workMemorySources, setWorkMemorySources] = useState<WorkMemorySource[]>([]);
+  const [memorySearchResults, setMemorySearchResults] = useState<WorkMemoryCard[]>([]);
   const [manualQuery, setManualQuery] = useState("");
   const [manualQueryBusy, setManualQueryBusy] = useState(false);
   const [workMemoryStatus, setWorkMemoryStatus] = useState<WorkMemoryStatus | null>(null);
@@ -521,7 +642,6 @@ export function App() {
     }
     return window.localStorage.getItem(DEBUG_METADATA_STORAGE_KEY) === "true";
   });
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [followLive, setFollowLive] = useState(true);
   const [unseenItems, setUnseenItems] = useState(0);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -541,8 +661,22 @@ export function App() {
     refreshGpu();
     refreshSpeakerStatus();
     refreshWorkMemoryStatus();
+    refreshSessionCatalog();
     attachSpeakerEvents();
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(APP_PAGE_STORAGE_KEY, activePage);
+    if (activePage === "sessions") {
+      refreshSessionCatalog();
+    }
+    if (activePage === "memory") {
+      refreshMemoryPage();
+    }
+    if (activePage === "models") {
+      refreshGpu();
+    }
+  }, [activePage]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -564,19 +698,6 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(MEETING_FOCUS_STORAGE_KEY, JSON.stringify(meetingFocus));
   }, [meetingFocus]);
-
-  useEffect(() => {
-    if (!drawerOpen) {
-      return;
-    }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setDrawerOpen(false);
-      }
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [drawerOpen]);
 
   useEffect(() => {
     return () => {
@@ -864,14 +985,69 @@ export function App() {
     setWorkMemoryStatus(await response.json());
   }
 
-  async function createSession() {
+  async function refreshSessionCatalog() {
+    setSessionsBusy((current) => current || "loading");
+    const query = sessionSearch.trim();
+    const url = new URL(`${API_BASE}/api/sessions`);
+    url.searchParams.set("include_empty", "true");
+    url.searchParams.set("limit", "80");
+    if (query) {
+      url.searchParams.set("query", query);
+    }
+    const response = await fetch(url);
+    setSessionsBusy((current) => current === "loading" ? "" : current);
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json() as { sessions?: SessionSummary[] };
+    setSessionCatalog(payload.sessions ?? []);
+  }
+
+  async function loadPastSession(id: string) {
+    setSessionsBusy("detail");
+    const response = await fetch(`${API_BASE}/api/sessions/${id}`);
+    setSessionsBusy("");
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json() as SessionDetail;
+    setSelectedPastSessionId(id);
+    setSelectedPastSession(payload);
+    setSessionTitleDraft(payload.title);
+  }
+
+  async function updatePastSessionTitle() {
+    if (!selectedPastSession || !sessionTitleDraft.trim()) {
+      return;
+    }
+    setSessionsBusy("saving-title");
+    const response = await fetch(`${API_BASE}/api/sessions/${selectedPastSession.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: sessionTitleDraft.trim() }),
+    });
+    setSessionsBusy("");
+    if (!response.ok) {
+      return;
+    }
+    const metadata = await response.json() as SessionSummary;
+    setSelectedPastSession((current) => current ? { ...current, ...metadata } : current);
+    setSessionCatalog((current) => current.map((session) => session.id === metadata.id ? metadata : session));
+    if (metadata.id === sessionId) {
+      setCurrentSessionTitle(metadata.title);
+    }
+  }
+
+  async function createSession(title?: string) {
+    const requestedTitle = (title ?? currentSessionTitle.trim()) || null;
     const response = await fetch(`${API_BASE}/api/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ title: requestedTitle }),
     });
     const payload = await response.json();
     setSessionId(payload.id);
+    setCurrentSessionTitle(String(payload.title ?? requestedTitle ?? "New meeting"));
     setTranscript([]);
     setNotes([]);
     setRecall([]);
@@ -900,7 +1076,140 @@ export function App() {
     followLiveRef.current = true;
     setFollowLive(true);
     attachEvents(payload.id);
+    await refreshSessionCatalog();
     return payload.id as string;
+  }
+
+  async function newLiveSession() {
+    if (captureActive || captureStarting) {
+      return;
+    }
+    await createSession(currentSessionTitle.trim() || "New meeting");
+    setStatus("idle");
+    setActivePage("live");
+  }
+
+  async function updateLiveSessionTitle(titleOverride?: string) {
+    const cleanTitle = (titleOverride ?? currentSessionTitle).trim();
+    if (!sessionId || !cleanTitle || captureActive || captureStarting) {
+      return;
+    }
+    const response = await fetch(`${API_BASE}/api/sessions/${sessionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: cleanTitle }),
+    });
+    if (!response.ok) {
+      return;
+    }
+    const metadata = await response.json() as SessionSummary;
+    setCurrentSessionTitle(metadata.title);
+    setSessionCatalog((current) => current.map((session) => session.id === metadata.id ? metadata : session));
+    if (selectedPastSession?.id === metadata.id) {
+      setSelectedPastSession((current) => current ? { ...current, ...metadata } : current);
+      setSessionTitleDraft(metadata.title);
+    }
+  }
+
+  function selectLiveSession(id: string) {
+    if (captureActive || captureStarting) {
+      return;
+    }
+    if (id === "new") {
+      setSessionId(null);
+      setCurrentSessionTitle("New meeting");
+      return;
+    }
+    const selected = sessionCatalog.find((session) => session.id === id);
+    if (!selected) {
+      return;
+    }
+    setSessionId(selected.id);
+    setCurrentSessionTitle(selected.title);
+    setTranscript([]);
+    setNotes([]);
+    setRecall([]);
+    setTranscriptEvents([]);
+    setSidecarCards([]);
+    setDismissedCardKeys(new Set());
+    setExpandedContextCards(new Set());
+    attachEvents(selected.id);
+  }
+
+  async function refreshMemoryPage() {
+    setMemoryBusy((current) => current || "loading");
+    await Promise.all([
+      refreshLibraryRoots(),
+      refreshLibraryChunks(selectedLibrarySourcePath ?? undefined),
+      refreshWorkMemoryCollections(),
+      refreshWorkMemoryStatus(),
+    ]);
+    setMemoryBusy((current) => current === "loading" ? "" : current);
+  }
+
+  async function refreshLibraryRoots() {
+    const response = await fetch(`${API_BASE}/api/library/roots`);
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json() as { roots?: string[] };
+    setLibraryRoots(payload.roots ?? []);
+  }
+
+  async function refreshLibraryChunks(sourcePath?: string) {
+    const url = new URL(`${API_BASE}/api/library/chunks`);
+    url.searchParams.set("limit", "120");
+    if (memoryQuery.trim()) {
+      url.searchParams.set("query", memoryQuery.trim());
+    }
+    if (sourcePath) {
+      url.searchParams.set("source_path", sourcePath);
+    }
+    const response = await fetch(url);
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json() as { sources?: LibraryChunkSource[]; chunks?: LibraryChunk[] };
+    setLibrarySources(payload.sources ?? []);
+    setLibraryChunks(payload.chunks ?? []);
+  }
+
+  async function refreshWorkMemoryCollections() {
+    const [projectsResponse, sourcesResponse] = await Promise.all([
+      fetch(`${API_BASE}/api/work-memory/projects`),
+      fetch(`${API_BASE}/api/work-memory/sources?limit=120`),
+    ]);
+    if (projectsResponse.ok) {
+      const payload = await projectsResponse.json() as { projects?: WorkMemoryProject[] };
+      setWorkMemoryProjects(payload.projects ?? []);
+    }
+    if (sourcesResponse.ok) {
+      const payload = await sourcesResponse.json() as { sources?: WorkMemorySource[] };
+      setWorkMemorySources(payload.sources ?? []);
+    }
+  }
+
+  async function searchMemory() {
+    const query = memoryQuery.trim();
+    if (!query) {
+      await refreshLibraryChunks(selectedLibrarySourcePath ?? undefined);
+      setMemorySearchResults([]);
+      return;
+    }
+    setMemoryBusy("searching");
+    const [workResponse] = await Promise.all([
+      fetch(`${API_BASE}/api/work-memory/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, limit: 8 }),
+      }),
+      refreshLibraryChunks(selectedLibrarySourcePath ?? undefined),
+    ]);
+    setMemoryBusy("");
+    if (workResponse.ok) {
+      const payload = await workResponse.json() as { cards?: WorkMemoryCard[] };
+      setMemorySearchResults(payload.cards ?? []);
+    }
   }
 
   function attachEvents(id: string) {
@@ -1408,6 +1717,7 @@ export function App() {
     });
     setBriefVisible(true);
     setActiveSessionRetention(null);
+    await refreshSessionCatalog();
     if (testPrepared && testStartedAtRef.current && testSessionIdRef.current === stoppedSessionId) {
       await saveTestReport(stoppedSessionId, testPrepared, testStartedAtRef.current);
     }
@@ -1529,6 +1839,7 @@ export function App() {
       message: libraryPath.trim(),
     });
     setLibraryPath("");
+    await refreshLibraryRoots();
     await refreshWorkMemoryStatus();
   }
 
@@ -1547,6 +1858,7 @@ export function App() {
       message: `${payload.chunks_indexed ?? 0} chunks indexed from ${payload.roots_indexed ?? "configured"} roots.`,
       metadata: payload,
     });
+    await refreshLibraryChunks(selectedLibrarySourcePath ?? undefined);
   }
 
   async function searchRecall() {
@@ -1673,7 +1985,7 @@ export function App() {
     }
     setSpeakerEnrollment(payload);
     setSpeakerStatus(payload.profile);
-    setDrawerOpen(true);
+    setActivePage("tools");
     appendSystemLog({
       level: "status",
       title: "Speaker identity training started",
@@ -1818,7 +2130,16 @@ export function App() {
   }
 
   return (
-    <div className="app-frame">
+    <div className="app-shell">
+      <Sidebar
+        activePage={activePage}
+        status={status}
+        asrBackendLabel={asrBackendLabel}
+        gpuFreeLabel={gpuFreeLabel}
+        retentionLabel={captureActive ? activeRetentionStatus : sessionRetentionStatus}
+        onNavigate={setActivePage}
+      />
+      <div className="app-main">
       <header className="top-bar">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true" />
@@ -1839,11 +2160,9 @@ export function App() {
           <button
             className="secondary tool-drawer-toggle"
             type="button"
-            aria-controls="tools-drawer"
-            aria-expanded={drawerOpen}
-            onClick={() => setDrawerOpen((value) => !value)}
+            onClick={() => setActivePage("tools")}
           >
-            Tools
+            Utilities
           </button>
           <button className="primary" onClick={() => start()} disabled={captureStartDisabled}>
             {captureButtonLabel}
@@ -1854,8 +2173,23 @@ export function App() {
         </div>
       </header>
 
-      <main className="workspace-grid">
+      {activePage === "live" && (
+      <main className="workspace-grid page live-page" aria-label="Live">
         <section className="transcript-pane" aria-label="Live field pane">
+          <SessionSelectorBar
+            sessionId={sessionId}
+            title={currentSessionTitle}
+            sessions={sessionCatalog}
+            status={status}
+            retention={sessionRetention}
+            activeRetention={activeRetention}
+            disabled={captureActive || captureStarting}
+            onSelect={selectLiveSession}
+            onNew={newLiveSession}
+            onTitleChange={setCurrentSessionTitle}
+            onTitleSave={updateLiveSessionTitle}
+            onRetentionChange={setSessionRetention}
+          />
           <div className="field-toolbar">
             <div>
               <p className="label">Live Field</p>
@@ -1998,17 +2332,82 @@ export function App() {
             />
           )}
         </section>
+      </main>
+      )}
 
-        {drawerOpen && <div className="tool-drawer-scrim" aria-hidden="true" onClick={() => setDrawerOpen(false)} />}
-        <aside
-          id="tools-drawer"
-          className={`tool-drawer ${drawerOpen ? "open" : ""}`}
-          aria-label="Tools drawer"
-        >
-          <div className="drawer-header">
+      {activePage === "sessions" && (
+        <SessionsPage
+          sessions={sessionCatalog}
+          selectedSession={selectedPastSession}
+          selectedSessionId={selectedPastSessionId}
+          search={sessionSearch}
+          busy={sessionsBusy}
+          titleDraft={sessionTitleDraft}
+          highlightedSourceIds={highlightedSourceIds}
+          onSearchChange={setSessionSearch}
+          onRefresh={refreshSessionCatalog}
+          onSelect={loadPastSession}
+          onTitleDraftChange={setSessionTitleDraft}
+          onSaveTitle={updatePastSessionTitle}
+          onHighlightSources={setHighlightedSourceIds}
+        />
+      )}
+
+      {activePage === "models" && (
+        <ModelsPage
+          gpu={gpu}
+          pipeline={pipeline}
+          gpuLabel={gpuLabel}
+          vramPercent={vramPercent}
+          gpuFreeLabel={gpuFreeLabel}
+          asrBackendLabel={asrBackendLabel}
+          asrModelLabel={asrModelLabel}
+          streamingModeLabel={streamingModeLabel}
+          streamingMetricLabel={streamingMetricLabel}
+          ollamaChatHostLabel={ollamaChatHostLabel}
+          ollamaEmbedHostLabel={ollamaEmbedHostLabel}
+          ollamaChatReachabilityLabel={ollamaChatReachabilityLabel}
+          ollamaEmbedReachabilityLabel={ollamaEmbedReachabilityLabel}
+          onRefresh={refreshGpu}
+        />
+      )}
+
+      {activePage === "memory" && (
+        <MemoryPage
+          workMemoryStatus={workMemoryStatus}
+          libraryPath={libraryPath}
+          libraryRoots={libraryRoots}
+          librarySources={librarySources}
+          libraryChunks={libraryChunks}
+          selectedLibrarySourcePath={selectedLibrarySourcePath}
+          memoryQuery={memoryQuery}
+          memoryBusy={memoryBusy || workMemoryBusy}
+          workMemoryProjects={workMemoryProjects}
+          workMemorySources={workMemorySources}
+          memorySearchResults={memorySearchResults}
+          fileUploadBusy={fileUploadBusy}
+          onLibraryPathChange={setLibraryPath}
+          onAddLibraryRoot={addLibraryRoot}
+          onReindexLibrary={reindex}
+          onReindexWorkMemory={reindexWorkMemory}
+          onSelectLibrarySource={(sourcePath) => {
+            setSelectedLibrarySourcePath(sourcePath);
+            refreshLibraryChunks(sourcePath);
+          }}
+          onMemoryQueryChange={setMemoryQuery}
+          onSearch={searchMemory}
+          onRefresh={refreshMemoryPage}
+          onInputFilePick={(event) => handleInputFilePick(event, "index-file", setLibraryPath)}
+        />
+      )}
+
+      {activePage === "tools" && (
+        <main className="page tools-page" aria-label="Tools">
+          <div className="drawer-header page-header">
             <div>
               <p className="label">Tools</p>
-              <h2>Session controls</h2>
+              <h2>Meeting utilities</h2>
+              <span>Speaker identity, microphone tuning, tests, theme, and system logs.</span>
             </div>
           </div>
 
@@ -2473,6 +2872,7 @@ export function App() {
               <span style={{ width: `${vramPercent}%` }} />
             </div>
             <div className="chip-row">
+              <span className="chip">{gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "CUDA check"}</span>
               <span className="chip">ASR {asrBackendLabel}</span>
               <span className="chip">{asrModelLabel}</span>
               <span className="chip">{streamingModeLabel}</span>
@@ -2539,9 +2939,614 @@ export function App() {
               </details>
             )}
           </details>
-        </aside>
-      </main>
+        </main>
+      )}
+      </div>
     </div>
+  );
+}
+
+function Sidebar({
+  activePage,
+  status,
+  asrBackendLabel,
+  gpuFreeLabel,
+  retentionLabel,
+  onNavigate,
+}: {
+  activePage: AppPage;
+  status: string;
+  asrBackendLabel: string;
+  gpuFreeLabel: string;
+  retentionLabel: string;
+  onNavigate: (page: AppPage) => void;
+}) {
+  const items: { page: AppPage; label: string; short: string }[] = [
+    { page: "live", label: "Live", short: "Live" },
+    { page: "sessions", label: "Sessions", short: "Log" },
+    { page: "tools", label: "Tools", short: "Tool" },
+    { page: "models", label: "Models", short: "AI" },
+    { page: "memory", label: "Memory", short: "Mem" },
+  ];
+  return (
+    <aside className="sidebar" aria-label="Primary navigation">
+      <div className="sidebar-brand">
+        <span className="brand-mark" aria-hidden="true" />
+        <div>
+          <strong>Brain Sidecar</strong>
+          <small>Dross cockpit</small>
+        </div>
+      </div>
+      <nav className="sidebar-nav" aria-label="Primary navigation">
+        {items.map((item) => (
+          <button
+            key={item.page}
+            type="button"
+            className={`sidebar-item ${activePage === item.page ? "sidebar-item-active" : ""}`}
+            aria-current={activePage === item.page ? "page" : undefined}
+            onClick={() => onNavigate(item.page)}
+          >
+            <span aria-hidden="true">{item.short}</span>
+            {item.label}
+          </button>
+        ))}
+      </nav>
+      <div className="sidebar-footer">
+        <span className="status-badge">{status}</span>
+        <span>{asrBackendLabel}</span>
+        <span>{gpuFreeLabel}</span>
+        <small>{retentionLabel}</small>
+      </div>
+    </aside>
+  );
+}
+
+function SessionSelectorBar({
+  sessionId,
+  title,
+  sessions,
+  status,
+  retention,
+  activeRetention,
+  disabled,
+  onSelect,
+  onNew,
+  onTitleChange,
+  onTitleSave,
+  onRetentionChange,
+}: {
+  sessionId: string | null;
+  title: string;
+  sessions: SessionSummary[];
+  status: string;
+  retention: SessionRetention;
+  activeRetention: SessionRetention;
+  disabled: boolean;
+  onSelect: (id: string) => void;
+  onNew: () => void;
+  onTitleChange: (title: string) => void;
+  onTitleSave: (title: string) => void;
+  onRetentionChange: (retention: SessionRetention) => void;
+}) {
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  return (
+    <section className="session-selector" aria-label="Live session selector">
+      <label className="field compact-field session-title-field">
+        <span>Title</span>
+        <input
+          ref={titleInputRef}
+          aria-label="Live session title"
+          value={title}
+          disabled={disabled}
+          onChange={(event) => onTitleChange(event.target.value)}
+          placeholder="New meeting"
+        />
+        <small>{status === "idle" || status === "stopped" ? "stopped" : status} · {activeRetention === "saved" ? "saved" : "temporary"}</small>
+      </label>
+      <label className="field compact-field">
+        <span>Open</span>
+        <select
+          aria-label="Session selector"
+          value={sessionId ?? "new"}
+          disabled={disabled}
+          onChange={(event) => onSelect(event.target.value)}
+        >
+          <option value="new">New meeting</option>
+          {sessions.map((session) => (
+            <option key={session.id} value={session.id}>
+              {session.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="mode-control compact" role="group" aria-label="Live retention">
+        <button
+          type="button"
+          aria-pressed={retention === "temporary"}
+          className={retention === "temporary" ? "active" : ""}
+          disabled={disabled}
+          onClick={() => onRetentionChange("temporary")}
+        >
+          <span>Temporary</span>
+          <small>listen only</small>
+        </button>
+        <button
+          type="button"
+          aria-pressed={retention === "saved"}
+          className={retention === "saved" ? "active" : ""}
+          disabled={disabled}
+          onClick={() => onRetentionChange("saved")}
+        >
+          <span>Saved</span>
+          <small>record text</small>
+        </button>
+      </div>
+      <div className="session-selector-actions">
+        <button
+          className="secondary"
+          type="button"
+          onClick={() => onTitleSave(titleInputRef.current?.value ?? title)}
+          disabled={disabled || !sessionId || !title.trim()}
+        >
+          Save Title
+        </button>
+        <button className="secondary" type="button" onClick={onNew} disabled={disabled}>
+          New Session
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function SessionsPage({
+  sessions,
+  selectedSession,
+  selectedSessionId,
+  search,
+  busy,
+  titleDraft,
+  highlightedSourceIds,
+  onSearchChange,
+  onRefresh,
+  onSelect,
+  onTitleDraftChange,
+  onSaveTitle,
+  onHighlightSources,
+}: {
+  sessions: SessionSummary[];
+  selectedSession: SessionDetail | null;
+  selectedSessionId: string | null;
+  search: string;
+  busy: string;
+  titleDraft: string;
+  highlightedSourceIds: Set<string>;
+  onSearchChange: (value: string) => void;
+  onRefresh: () => void;
+  onSelect: (id: string) => void;
+  onTitleDraftChange: (value: string) => void;
+  onSaveTitle: () => void;
+  onHighlightSources: (ids: Set<string>) => void;
+}) {
+  const transcriptText = selectedSession?.transcript_segments.map((segment) => segment.text).join("\n") ?? "";
+  const briefText = selectedSession?.summary?.summary ?? selectedSession?.note_cards.map((card) => `${card.title}\n${card.body}`).join("\n\n") ?? "";
+  return (
+    <main className="page sessions-page" aria-label="Sessions">
+      <header className="page-header">
+        <div>
+          <p className="label">Saved Work</p>
+          <h1>Sessions</h1>
+          <span>Browse saved transcripts, cards, and post-call summaries.</span>
+        </div>
+        <button className="secondary" type="button" onClick={onRefresh} disabled={busy === "loading"}>{busy === "loading" ? "Refreshing..." : "Refresh"}</button>
+      </header>
+      <div className="split-pane">
+        <section className="session-list" aria-label="Session list">
+          <label className="field field-wide">
+            <span>Search sessions</span>
+            <input
+              aria-label="Search sessions"
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onRefresh();
+              }}
+              placeholder="meeting title"
+            />
+          </label>
+          <button className="secondary" type="button" onClick={onRefresh}>Search</button>
+          {sessions.length === 0 ? (
+            <p className="empty-note">No saved sessions yet.</p>
+          ) : (
+            sessions.map((session) => (
+              <button
+                key={session.id}
+                type="button"
+                className={`session-list-item ${selectedSessionId === session.id ? "active" : ""}`}
+                onClick={() => onSelect(session.id)}
+              >
+                <strong>{session.title}</strong>
+                <span>{formatDateTime(session.started_at)} · {session.transcript_count} lines</span>
+                <small className="chip-row">
+                  <span className="status-badge">{session.status}</span>
+                  <span className="status-badge">{session.retention ?? "empty"}</span>
+                </small>
+              </button>
+            ))
+          )}
+        </section>
+        <section className="session-detail" aria-label="Session detail">
+          {!selectedSession ? (
+            <div className="empty-panel">
+              <h2>Select a session</h2>
+              <p>Saved transcripts, Meeting Output cards, and summaries open here.</p>
+            </div>
+          ) : (
+            <>
+              <div className="session-title-row">
+                <label className="field field-wide">
+                  <span>Title</span>
+                  <input
+                    aria-label="Session title"
+                    value={titleDraft}
+                    onChange={(event) => onTitleDraftChange(event.target.value)}
+                  />
+                </label>
+                <button className="secondary" type="button" onClick={onSaveTitle} disabled={busy === "saving-title"}>
+                  {busy === "saving-title" ? "Saving..." : "Save Title"}
+                </button>
+              </div>
+              <div className="chip-row">
+                <span className="chip">{selectedSession.status}</span>
+                <span className="chip">{selectedSession.retention}</span>
+                <span className="chip">{selectedSession.transcript_count} transcript lines</span>
+                <span className="chip">{selectedSession.note_count} cards</span>
+                <span className="chip">raw audio discarded</span>
+              </div>
+              {selectedSession.transcript_redacted ? (
+                <div className="empty-panel">
+                  <h3>This session was listen-only</h3>
+                  <p>Transcript text was not persisted for this temporary session.</p>
+                </div>
+              ) : (
+                <div className="session-content-grid">
+                  <section>
+                    <div className="section-heading-row">
+                      <h3>Transcript</h3>
+                      <button className="secondary" type="button" disabled={!transcriptText} onClick={() => navigator.clipboard?.writeText(transcriptText)}>Copy transcript</button>
+                    </div>
+                    <div className="session-transcript scroll">
+                      {selectedSession.transcript_segments.length === 0 ? (
+                        <p className="empty-note">No transcript was saved for this session.</p>
+                      ) : selectedSession.transcript_segments.map((segment) => {
+                        const ids = new Set([segment.id, ...(segment.source_segment_ids ?? [])]);
+                        const highlighted = Array.from(ids).some((id) => highlightedSourceIds.has(id));
+                        return (
+                          <article
+                            key={segment.id}
+                            className={`saved-transcript-row ${highlighted ? "highlight" : ""}`}
+                            data-transcript-id={segment.id}
+                          >
+                            <span>{formatSeconds(segment.start_s)}-{formatSeconds(segment.end_s)}</span>
+                            <strong>{segment.speaker_label ?? segment.speaker_role ?? "Speaker"}</strong>
+                            <p>{segment.text}</p>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </section>
+                  <section>
+                    <div className="section-heading-row">
+                      <h3>Cards & Brief</h3>
+                      <button className="secondary" type="button" disabled={!briefText} onClick={() => navigator.clipboard?.writeText(briefText)}>Copy brief</button>
+                    </div>
+                    {selectedSession.summary && (
+                      <article className="session-summary-card">
+                        <strong>{selectedSession.summary.title}</strong>
+                        <p>{selectedSession.summary.summary}</p>
+                        <div className="chip-row">
+                          {selectedSession.summary.topics.slice(0, 8).map((topic) => <span key={topic} className="chip">{topic}</span>)}
+                        </div>
+                      </article>
+                    )}
+                    <div className="session-card-list">
+                      {selectedSession.note_cards.length === 0 ? (
+                        <p className="empty-note">No Meeting Output cards were saved for this session.</p>
+                      ) : selectedSession.note_cards.map((card) => (
+                        <article key={card.id} className="session-note-card">
+                          <span className="status-badge">{card.kind}</span>
+                          <strong>{card.title}</strong>
+                          <p>{card.body}</p>
+                          {card.evidence_quote && <blockquote>{card.evidence_quote}</blockquote>}
+                          {(card.source_segment_ids ?? []).length > 0 && (
+                            <button className="secondary" type="button" onClick={() => onHighlightSources(new Set(card.source_segment_ids))}>
+                              Highlight evidence
+                            </button>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function ModelsPage({
+  gpu,
+  pipeline,
+  gpuLabel,
+  vramPercent,
+  gpuFreeLabel,
+  asrBackendLabel,
+  asrModelLabel,
+  streamingModeLabel,
+  streamingMetricLabel,
+  ollamaChatHostLabel,
+  ollamaEmbedHostLabel,
+  ollamaChatReachabilityLabel,
+  ollamaEmbedReachabilityLabel,
+  onRefresh,
+}: {
+  gpu: GpuHealth;
+  pipeline: PipelineState;
+  gpuLabel: string;
+  vramPercent: number;
+  gpuFreeLabel: string;
+  asrBackendLabel: string;
+  asrModelLabel: string;
+  streamingModeLabel: string;
+  streamingMetricLabel: string;
+  ollamaChatHostLabel: string;
+  ollamaEmbedHostLabel: string;
+  ollamaChatReachabilityLabel: string;
+  ollamaEmbedReachabilityLabel: string;
+  onRefresh: () => void;
+}) {
+  return (
+    <main className="page models-page" aria-label="Models">
+      <header className="page-header">
+        <div>
+          <p className="label">Runtime</p>
+          <h1>Models</h1>
+          <span>Local model residency and restart-required configuration.</span>
+        </div>
+        <button className="secondary" type="button" onClick={onRefresh}>Refresh status</button>
+      </header>
+      <div className="models-grid">
+        <ModelCard title="Hearing / ASR" status={gpu.asr_backend_error ? "error" : gpu.nemotron_loaded ? "loaded" : "cold"}>
+          <span>Backend <strong>{asrBackendLabel}</strong></span>
+          <span>Model <strong>{asrModelLabel}</strong></span>
+          <span>{streamingModeLabel}</span>
+          <span>{streamingMetricLabel}</span>
+          <span>Dtype <strong>{gpu.asr_dtype ?? "configured in .env"}</strong></span>
+          {gpu.asr_backend_error && <p className="warning-text">{gpu.asr_backend_error}</p>}
+        </ModelCard>
+        <ModelCard title="Thinking / Chat" status={gpu.ollama_chat_reachable === false ? "offline" : "ready"}>
+          <span>Model <strong>{gpu.ollama_chat_model ?? "phi3:mini"}</strong></span>
+          <span>Host <strong>{ollamaChatHostLabel}</strong></span>
+          <span>{ollamaChatReachabilityLabel}</span>
+          <span>Keepalive <strong>{gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"}</strong></span>
+          <span>Timeout <strong>{gpu.ollama_chat_timeout_seconds ?? 20}s</strong></span>
+        </ModelCard>
+        <ModelCard title="Memory / Embeddings" status={gpu.ollama_embed_reachable === false ? "offline" : "ready"}>
+          <span>Model <strong>{gpu.ollama_embed_model ?? "embeddinggemma"}</strong></span>
+          <span>Host <strong>{ollamaEmbedHostLabel}</strong></span>
+          <span>{ollamaEmbedReachabilityLabel}</span>
+          <span>Keepalive <strong>{gpu.ollama_embed_keep_alive ?? "0"}</strong></span>
+          <span>Timeout <strong>{gpu.ollama_embed_timeout_seconds ?? 12}s</strong></span>
+        </ModelCard>
+        <ModelCard title="GPU Residency" status={gpu.gpu_pressure ?? "check"}>
+          <span>{gpuLabel}</span>
+          <div className="vram-bar" aria-label={`VRAM usage ${vramPercent}%`}><span style={{ width: `${vramPercent}%` }} /></div>
+          <span>{gpuFreeLabel}</span>
+          <span>Ollama models <strong>{gpu.ollama_gpu_models?.join(", ") || "idle"}</strong></span>
+          <span>Unload Ollama on ASR start <strong>{gpu.asr_unload_ollama_on_start ? "yes" : "no"}</strong></span>
+          <span>Streaming finals <strong>{pipeline.streamingFinalCount}</strong></span>
+        </ModelCard>
+      </div>
+      <section className="copy-snippet" aria-label="Model config snippets">
+        <h2>Config snippets</h2>
+        {[
+          ["Switch to Faster-Whisper", "BRAIN_SIDECAR_ASR_BACKEND=faster_whisper"],
+          ["Unload Ollama before ASR", "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true"],
+          ["Split chat to LAN", "BRAIN_SIDECAR_OLLAMA_CHAT_HOST=http://192.168.86.219:11434"],
+          ["Nemotron chunk", "BRAIN_SIDECAR_NEMOTRON_CHUNK_MS=160"],
+        ].map(([label, snippet]) => (
+          <button key={label} className="secondary" type="button" onClick={() => navigator.clipboard?.writeText(snippet)}>
+            <span>{label}</span>
+            <code>{snippet}</code>
+            <small>Set in .env · restart required</small>
+          </button>
+        ))}
+      </section>
+    </main>
+  );
+}
+
+function ModelCard({ title, status, children }: { title: string; status: string; children: ReactNode }) {
+  return (
+    <article className="model-card">
+      <div className="section-heading-row">
+        <h2>{title}</h2>
+        <span className="status-badge">{status}</span>
+      </div>
+      <div className="model-card-body">{children}</div>
+    </article>
+  );
+}
+
+function MemoryPage({
+  workMemoryStatus,
+  libraryPath,
+  libraryRoots,
+  librarySources,
+  libraryChunks,
+  selectedLibrarySourcePath,
+  memoryQuery,
+  memoryBusy,
+  workMemoryProjects,
+  workMemorySources,
+  memorySearchResults,
+  fileUploadBusy,
+  onLibraryPathChange,
+  onAddLibraryRoot,
+  onReindexLibrary,
+  onReindexWorkMemory,
+  onSelectLibrarySource,
+  onMemoryQueryChange,
+  onSearch,
+  onRefresh,
+  onInputFilePick,
+}: {
+  workMemoryStatus: WorkMemoryStatus | null;
+  libraryPath: string;
+  libraryRoots: string[];
+  librarySources: LibraryChunkSource[];
+  libraryChunks: LibraryChunk[];
+  selectedLibrarySourcePath: string | null;
+  memoryQuery: string;
+  memoryBusy: string;
+  workMemoryProjects: WorkMemoryProject[];
+  workMemorySources: WorkMemorySource[];
+  memorySearchResults: WorkMemoryCard[];
+  fileUploadBusy: string;
+  onLibraryPathChange: (value: string) => void;
+  onAddLibraryRoot: () => void;
+  onReindexLibrary: () => void;
+  onReindexWorkMemory: () => void;
+  onSelectLibrarySource: (sourcePath: string) => void;
+  onMemoryQueryChange: (value: string) => void;
+  onSearch: () => void;
+  onRefresh: () => void;
+  onInputFilePick: (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <main className="page memory-page" aria-label="Memory">
+      <header className="page-header">
+        <div>
+          <p className="label">Index</p>
+          <h1>Memory</h1>
+          <span>{workMemoryStatus ? `${workMemoryStatus.projects} projects / ${workMemoryStatus.sources} sources` : "Index status loading"}</span>
+        </div>
+        <button className="secondary" type="button" onClick={onRefresh} disabled={memoryBusy === "loading"}>{memoryBusy === "loading" ? "Refreshing..." : "Refresh"}</button>
+      </header>
+      <div className="memory-explorer">
+        <aside className="memory-tree" aria-label="Memory tree">
+          <label className="field field-wide">
+            <span>Search memory</span>
+            <input
+              aria-label="Search memory"
+              value={memoryQuery}
+              onChange={(event) => onMemoryQueryChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onSearch();
+              }}
+              placeholder="project, document, phrase"
+            />
+          </label>
+          <button className="secondary" type="button" onClick={onSearch}>{memoryBusy === "searching" ? "Searching..." : "Search"}</button>
+          <h3>Library Roots</h3>
+          {libraryRoots.length === 0 ? <p className="empty-note">No library roots yet.</p> : libraryRoots.map((root) => <span key={root} className="memory-tree-row">{root}</span>)}
+          <h3>Indexed Documents</h3>
+          {librarySources.length === 0 ? <p className="empty-note">No indexed documents yet.</p> : librarySources.map((source) => (
+            <button
+              key={source.source_path}
+              type="button"
+              className={`memory-tree-row ${selectedLibrarySourcePath === source.source_path ? "active" : ""}`}
+              onClick={() => onSelectLibrarySource(source.source_path)}
+            >
+              <strong>{source.title}</strong>
+              <small>{source.chunk_count} chunks</small>
+            </button>
+          ))}
+          <h3>Work Sources</h3>
+          {workMemorySources.slice(0, 24).map((source) => (
+            <span key={source.id} className={`memory-tree-row ${source.disabled ? "muted" : ""}`}>
+              {source.title}
+              <small>{source.source_group} · {source.status}</small>
+            </span>
+          ))}
+        </aside>
+        <section className="memory-detail" aria-label="Memory detail">
+          <div className="memory-actions">
+            <div className="field field-wide">
+              <span>File root</span>
+              <div className="path-picker">
+                <input
+                  aria-label="File root"
+                  value={libraryPath}
+                  onChange={(event) => onLibraryPathChange(event.target.value)}
+                  placeholder="/path/to/notes-or-docs"
+                />
+                <input
+                  aria-label="Browse index file"
+                  className="file-picker"
+                  type="file"
+                  accept=".txt,.md,.markdown,.pdf,.docx,.json,.csv,.rtf"
+                  disabled={Boolean(fileUploadBusy) || memoryBusy === "indexing"}
+                  onChange={onInputFilePick}
+                />
+              </div>
+            </div>
+            <button className="secondary" type="button" onClick={onAddLibraryRoot}>Add Root</button>
+            <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex Library</button>
+            <button className="secondary" type="button" onClick={onReindexWorkMemory}>Reindex Work</button>
+          </div>
+          <div className="memory-overview" aria-label="Work memory index summary">
+            <span><strong>{workMemoryStatus?.projects ?? 0}</strong> projects</span>
+            <span><strong>{workMemoryStatus?.evidence ?? 0}</strong> citations</span>
+            <span><strong>{workMemoryStatus?.disabled_sources ?? 0}</strong> guarded</span>
+          </div>
+          {memorySearchResults.length > 0 && (
+            <section>
+              <h3>Search results</h3>
+              <div className="session-card-list">
+                {memorySearchResults.map((result) => (
+                  <article key={result.project_id} className="session-note-card">
+                    <strong>{result.title}</strong>
+                    <p>{result.text}</p>
+                    <span className="status-badge">{Math.round(result.score * 100)}%</span>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+          <section>
+            <h3>{selectedLibrarySourcePath ? PathLabel(selectedLibrarySourcePath) : "Indexed chunks"}</h3>
+            <div className="library-chunk-list scroll">
+              {libraryChunks.length === 0 ? <p className="empty-note">Select an indexed document to inspect chunks.</p> : libraryChunks.map((chunk) => (
+                <article key={chunk.id} className="library-chunk-card">
+                  <span className="status-badge">chunk {chunk.chunk_index}</span>
+                  <strong>{chunk.title}</strong>
+                  <p>{chunk.text}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+          <section>
+            <h3>Projects</h3>
+            <div className="project-grid">
+              {workMemoryProjects.slice(0, 24).map((project) => (
+                <article key={project.id} className="session-note-card">
+                  <strong>{project.title}</strong>
+                  <span>{project.organization} · {project.date_range}</span>
+                  <p>{project.summary}</p>
+                  <div className="chip-row">
+                    <span className="chip">{project.source_group}</span>
+                    <span className="chip">{Math.round(project.confidence * 100)}%</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        </section>
+      </div>
+    </main>
   );
 }
 
@@ -3927,8 +4932,29 @@ function formatClock(value: number): string {
   });
 }
 
+function formatDateTime(value: number | null | undefined): string {
+  if (!value) {
+    return "unknown time";
+  }
+  return new Date(value * 1000).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function formatSeconds(value: number): string {
   return `${Number(value).toFixed(1)}s`;
+}
+
+function PathLabel(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) ?? path;
+}
+
+function isAppPage(value: string | null): value is AppPage {
+  return value === "live" || value === "sessions" || value === "tools" || value === "models" || value === "memory";
 }
 
 function formatOllamaHostLabel(host?: string): string {

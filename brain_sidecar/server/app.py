@@ -39,6 +39,10 @@ class CreateSessionRequest(BaseModel):
     title: str | None = None
 
 
+class UpdateSessionRequest(BaseModel):
+    title: Annotated[str, Field(min_length=1, max_length=180)]
+
+
 class MicTuningRequest(BaseModel):
     auto_level: bool = True
     input_gain_db: float = Field(default=0.0, ge=-12.0, le=24.0)
@@ -341,6 +345,39 @@ def create_app() -> FastAPI:
     async def create_session(request: CreateSessionRequest) -> dict:
         return await manager.create_session(request.title)
 
+    @app.get("/api/sessions")
+    async def list_sessions(
+        limit: int = 50,
+        include_empty: bool = True,
+        status: str | None = None,
+        query: str | None = None,
+    ) -> dict:
+        return {
+            "sessions": await asyncio.to_thread(
+                manager.storage.list_sessions,
+                limit=max(1, min(limit, 200)),
+                include_empty=include_empty,
+                status=status,
+                query=query,
+            )
+        }
+
+    @app.get("/api/sessions/{session_id}")
+    async def session_detail(session_id: str) -> dict:
+        try:
+            return await asyncio.to_thread(manager.storage.session_detail, session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}") from exc
+
+    @app.patch("/api/sessions/{session_id}")
+    async def update_session(session_id: str, request: UpdateSessionRequest) -> dict:
+        try:
+            return await asyncio.to_thread(manager.storage.update_session_title, session_id, request.title)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/sessions/{session_id}/start")
     async def start_session(session_id: str, request: StartSessionRequest) -> dict:
         fixture_wav = Path(request.fixture_wav).expanduser().resolve() if request.fixture_wav else None
@@ -528,6 +565,17 @@ def create_app() -> FastAPI:
     @app.get("/api/library/roots")
     async def list_library_roots() -> dict:
         return {"roots": [str(path) for path in manager.storage.library_roots()]}
+
+    @app.get("/api/library/chunks")
+    async def list_library_chunks(
+        limit: int = 200,
+        query: str | None = None,
+        source_path: str | None = None,
+    ) -> dict:
+        return {
+            "sources": manager.storage.document_chunk_sources(limit=limit, query=query),
+            "chunks": manager.storage.document_chunks(source_path=source_path, query=query, limit=limit),
+        }
 
     @app.post("/api/library/reindex")
     async def reindex_library() -> dict:

@@ -188,6 +188,19 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     raw_audio_retained: false,
     recent_segments: [],
   };
+  const savedSession = {
+    id: "session-saved-1",
+    title: "Saved model planning call",
+    status: "stopped",
+    started_at: 1_768_000_000,
+    ended_at: 1_768_000_300,
+    save_transcript: true,
+    retention: "saved",
+    transcript_count: 2,
+    note_count: 1,
+    summary_exists: true,
+    raw_audio_retained: false,
+  };
 
   await page.route(`${API_ORIGIN}/api/**`, async (route) => {
     const request = route.request();
@@ -430,8 +443,100 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
       return;
     }
 
+    if (method === "GET" && path === "/api/sessions") {
+      await json(route, { sessions: [savedSession] });
+      return;
+    }
+
     if (method === "POST" && path === "/api/sessions") {
-      await json(route, { id: "session-123" });
+      const body = JSON.parse(request.postData() ?? "{}") as { title?: string | null };
+      await json(route, {
+        id: "session-123",
+        title: body.title || "New meeting",
+        status: "created",
+        started_at: 1_768_000_500,
+      });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/sessions/session-saved-1") {
+      await json(route, {
+        ...savedSession,
+        transcript_segments: [
+          {
+            id: "seg-1",
+            session_id: "session-saved-1",
+            start_s: 0,
+            end_s: 4,
+            text: "We should keep Nemotron and Phi resident on the same GPU.",
+            is_final: true,
+            created_at: 1_768_000_010,
+            speaker_label: "BP",
+            source_segment_ids: ["seg-1"],
+          },
+          {
+            id: "seg-2",
+            session_id: "session-saved-1",
+            start_s: 4,
+            end_s: 8,
+            text: "Temporary sessions should not persist transcript text.",
+            is_final: true,
+            created_at: 1_768_000_020,
+            speaker_label: "Speaker 1",
+            source_segment_ids: ["seg-2"],
+          },
+        ],
+        note_cards: [
+          {
+            id: "note-1",
+            session_id: "session-saved-1",
+            kind: "decision",
+            title: "Same-GPU default",
+            body: "Nemotron and phi3:mini are the normal local pair.",
+            source_segment_ids: ["seg-1"],
+            evidence_quote: "keep Nemotron and Phi resident",
+            created_at: 1_768_000_040,
+          },
+        ],
+        summary: {
+          session_id: "session-saved-1",
+          title: "Model planning brief",
+          summary: "The call settled on same-GPU Nemotron and phi3:mini defaults.",
+          topics: ["nemotron", "phi3"],
+          decisions: ["Use same GPU defaults."],
+          actions: [],
+          unresolved_questions: [],
+          entities: ["Nemotron"],
+          lessons: [],
+          source_segment_ids: ["seg-1"],
+          created_at: 1_768_000_060,
+          updated_at: 1_768_000_060,
+        },
+        transcript_redacted: false,
+      });
+      return;
+    }
+
+    if (method === "PATCH" && path === "/api/sessions/session-saved-1") {
+      const body = JSON.parse(request.postData() ?? "{}") as { title?: string };
+      await json(route, { ...savedSession, title: body.title ?? savedSession.title });
+      return;
+    }
+
+    if (method === "PATCH" && path === "/api/sessions/session-123") {
+      const body = JSON.parse(request.postData() ?? "{}") as { title?: string };
+      await json(route, {
+        id: "session-123",
+        title: body.title ?? "New meeting",
+        status: "created",
+        started_at: 1_768_000_500,
+        save_transcript: null,
+        retention: "empty",
+        transcript_count: 0,
+        note_count: 0,
+        summary_exists: false,
+        raw_audio_retained: false,
+      });
       return;
     }
 
@@ -484,6 +589,37 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
       return;
     }
 
+    if (method === "GET" && path === "/api/library/roots") {
+      await json(route, { roots: ["/home/bp/Nextcloud2/_library/_shoalstone/past work"] });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/library/chunks") {
+      await json(route, {
+        sources: [
+          {
+            source_path: "/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt",
+            title: "OGMS spec.txt",
+            chunk_count: 3,
+            updated_at: 1_768_000_000,
+            first_chunk_index: 0,
+          },
+        ],
+        chunks: [
+          {
+            id: "chunk-1",
+            source_path: "/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt",
+            title: "OGMS spec.txt",
+            chunk_index: 0,
+            text: "Monitoring signals are useful when they map to decisions.",
+            metadata: {},
+            updated_at: 1_768_000_000,
+          },
+        ],
+      });
+      return;
+    }
+
     if (method === "POST" && path === "/api/library/reindex") {
       await json(route, { chunks_indexed: 42 });
       return;
@@ -494,6 +630,71 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         projects_indexed: 21,
         evidence_indexed: 88,
         sources_indexed: 412,
+      });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/work-memory/projects") {
+      await json(route, {
+        projects: [
+          {
+            id: "wproj-ogm",
+            project_key: "ogm",
+            title: "Online Generator Monitoring - T.A. Smith",
+            organization: "Oglethorpe Power",
+            date_range: "Mar 2019 - June 2021",
+            role: "Consultant",
+            domain: "energy",
+            summary: "Mapped monitoring data to maintenance decisions.",
+            lessons: ["Map measurements to decisions."],
+            triggers: ["generator monitoring"],
+            source_group: "consulting_history",
+            confidence: 0.92,
+            updated_at: 1_768_000_000,
+            evidence: [],
+          },
+        ],
+      });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/work-memory/sources") {
+      await json(route, {
+        sources: [
+          {
+            id: "wsrc-1",
+            path: "/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt",
+            source_group: "consulting_history",
+            sensitivity: "guardrail",
+            status: "indexed",
+            title: "OGMS spec.txt",
+            content_hash: "hash",
+            metadata: {},
+            disabled: false,
+            created_at: 1_768_000_000,
+            updated_at: 1_768_000_000,
+          },
+        ],
+      });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/work-memory/search") {
+      await json(route, {
+        cards: [
+          {
+            project_id: "wproj-ogm",
+            title: "Online Generator Monitoring - T.A. Smith",
+            text: "Monitoring signals are useful when they map to decisions.",
+            lesson: "Map measurements to decisions.",
+            organization: "Oglethorpe Power",
+            date_range: "Mar 2019 - June 2021",
+            reason: "generator monitoring",
+            confidence: 0.92,
+            score: 0.89,
+            citations: ["/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt"],
+          },
+        ],
       });
       return;
     }
@@ -757,7 +958,7 @@ function corsHeaders() {
   return {
     "access-control-allow-origin": "*",
     "access-control-allow-headers": "content-type",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-methods": "GET,POST,PATCH,OPTIONS",
   };
 }
 
