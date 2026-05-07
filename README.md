@@ -138,6 +138,8 @@ Useful knobs:
 - `BRAIN_SIDECAR_NEMOTRON_LOCAL_FILES_ONLY`: use cached Hugging Face files only, default `false`.
 - `BRAIN_SIDECAR_STREAMING_PARTIALS_ENABLED`: emit streaming partial captions for Nemotron, default `true` when selected.
 - `BRAIN_SIDECAR_STREAMING_STABLE_FINAL_CHUNKS`: trailing words held back before finalizing cumulative streaming text, default `3`.
+- `BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS`: preferred minimum words before a Nemotron final transcript block, default `10`.
+- `BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS`: minimum held duration before a shorter phrase can finalize, default `2.8`.
 - `BRAIN_SIDECAR_DEDUPE_SIMILARITY_THRESHOLD`: suppresses repeated text from overlapping windows.
 - `BRAIN_SIDECAR_ASR_INITIAL_PROMPT`: optional vocabulary/context hint for names, projects, or jargon.
 - `BRAIN_SIDECAR_SPEAKER_ENROLLMENT_SAMPLE_SECONDS`: USB-mic recording window for each Speaker Identity sample, default `8`.

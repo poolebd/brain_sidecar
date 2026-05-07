@@ -17,6 +17,8 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
         "BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED",
         "BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS",
         "BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS",
+        "BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS",
+        "BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -30,6 +32,8 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
     assert settings.partial_transcripts_enabled is False
     assert settings.partial_window_seconds == 2.0
     assert settings.partial_min_interval_seconds == 2.0
+    assert settings.streaming_min_final_words == 10
+    assert settings.streaming_min_final_seconds == 2.8
     assert settings.recall_min_score == 0.58
     assert settings.recall_max_live_hits == 4
     assert settings.recall_prefer_summaries is True
@@ -116,12 +120,16 @@ def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250")
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS", "0.8")
+    monkeypatch.setenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS", "12")
+    monkeypatch.setenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS", "3.5")
 
     settings = load_settings()
 
     assert settings.audio_chunk_ms == 250
     assert settings.transcription_window_seconds == 3.4
     assert settings.transcription_overlap_seconds == 0.8
+    assert settings.streaming_min_final_words == 12
+    assert settings.streaming_min_final_seconds == 3.5
 
 
 def test_balanced_preview_env_profile(monkeypatch, tmp_path) -> None:

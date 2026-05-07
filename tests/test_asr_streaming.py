@@ -117,17 +117,23 @@ def active_session(session_id: str, *, save_transcript: bool) -> ActiveSession:
 def test_asr_backend_config_defaults_to_nemotron(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     monkeypatch.delenv("BRAIN_SIDECAR_ASR_BACKEND", raising=False)
+    monkeypatch.delenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS", raising=False)
+    monkeypatch.delenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS", raising=False)
 
     settings = load_settings()
 
     assert settings.asr_backend == "nemotron_streaming"
     assert settings.nemotron_chunk_ms == 160
+    assert settings.streaming_min_final_words == 10
+    assert settings.streaming_min_final_seconds == 2.8
 
 
 def test_asr_backend_config_accepts_nemotron(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     monkeypatch.setenv("BRAIN_SIDECAR_ASR_BACKEND", "nemotron_streaming")
     monkeypatch.setenv("BRAIN_SIDECAR_NEMOTRON_CHUNK_MS", "1120")
+    monkeypatch.setenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS", "12")
+    monkeypatch.setenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS", "3.5")
 
     settings = load_settings()
 
@@ -135,6 +141,8 @@ def test_asr_backend_config_accepts_nemotron(monkeypatch: pytest.MonkeyPatch, tm
     assert settings.nemotron_chunk_ms == 1120
     assert settings.nemotron_dtype == "float32"
     assert settings.streaming_partials_enabled is True
+    assert settings.streaming_min_final_words == 12
+    assert settings.streaming_min_final_seconds == 3.5
 
 
 def test_asr_backend_config_rejects_invalid_values(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -190,12 +198,50 @@ def test_stable_prefix_finalizer_emits_partials_and_nonduplicated_finals() -> No
 
     assert [event.kind for event in first] == ["partial"]
     assert [event.text for event in second if event.kind == "final"] == []
-    assert [event.text for event in third if event.kind == "final"] == ["Confirm the relay settings"]
-    assert [event.text for event in flushed] == ["are correct"]
+    assert [event.text for event in third if event.kind == "final"] == []
+    assert [event.text for event in flushed] == ["Confirm the relay settings are correct"]
+
+
+def test_stable_prefix_finalizer_emits_phrase_sized_finals() -> None:
+    finalizer = StablePrefixFinalizer(stable_chunks=2, partials_enabled=True)
+
+    finalizer.accept_text(
+        "Confirm the relay settings are correct before close today please",
+        start_s=0.0,
+        end_s=1.0,
+        model="fake",
+    )
+    events = finalizer.accept_text(
+        "Confirm the relay settings are correct before close today please now",
+        start_s=1.0,
+        end_s=1.5,
+        model="fake",
+    )
+
+    finals = [event.text for event in events if event.kind == "final"]
+
+    assert finals == ["Confirm the relay settings are correct before close today please"]
+    assert len(finals[0].split()) == 10
+
+
+def test_stable_prefix_finalizer_does_not_emit_tiny_punctuated_finals() -> None:
+    finalizer = StablePrefixFinalizer(stable_chunks=2, partials_enabled=True)
+
+    finalizer.accept_text("Okay done.", start_s=0.0, end_s=0.5, model="fake")
+    events = finalizer.accept_text("Okay done. Next", start_s=0.5, end_s=1.0, model="fake")
+    flushed = finalizer.flush(final_offset_s=1.2, model="fake")
+
+    assert [event.text for event in events if event.kind == "final"] == []
+    assert [event.text for event in flushed] == ["Okay done. Next"]
 
 
 def test_stable_prefix_finalizer_advances_uncommitted_timing() -> None:
-    finalizer = StablePrefixFinalizer(stable_chunks=2, partials_enabled=True)
+    finalizer = StablePrefixFinalizer(
+        stable_chunks=2,
+        partials_enabled=True,
+        min_final_words=4,
+        min_final_seconds=1.2,
+    )
 
     finalizer.accept_text("Confirm the relay", start_s=0.0, end_s=0.56, model="fake")
     second = finalizer.accept_text("Confirm the relay settings", start_s=0.56, end_s=1.12, model="fake")
@@ -221,7 +267,12 @@ def test_stable_prefix_finalizer_advances_uncommitted_timing() -> None:
 
 
 def test_stable_prefix_finalizer_skips_single_word_partials() -> None:
-    finalizer = StablePrefixFinalizer(stable_chunks=2, partials_enabled=True)
+    finalizer = StablePrefixFinalizer(
+        stable_chunks=2,
+        partials_enabled=True,
+        min_final_words=4,
+        min_final_seconds=1.2,
+    )
 
     finalizer.accept_text("Confirm the relay", start_s=0.0, end_s=0.56, model="fake")
     finalizer.accept_text("Confirm the relay settings", start_s=0.56, end_s=1.12, model="fake")

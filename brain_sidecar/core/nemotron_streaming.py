@@ -27,8 +27,9 @@ NEMOTRON_INSTALL_HELP = (
     "`libsndfile1` and `ffmpeg`, then `pip install -e '.[nemotron]'` and "
     "`pip install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'`."
 )
-STREAMING_MIN_FINAL_WORDS = 4
-STREAMING_MIN_FINAL_SECONDS = 1.2
+DEFAULT_STREAMING_MIN_FINAL_WORDS = 10
+DEFAULT_STREAMING_MIN_FINAL_SECONDS = 2.8
+STREAMING_MIN_SHORT_FINAL_WORDS = 6
 STREAMING_MIN_PARTIAL_WORDS = 2
 
 
@@ -83,9 +84,19 @@ class StreamingPcmChunker:
 class StablePrefixFinalizer:
     """Turn cumulative streaming hypotheses into non-duplicated final text."""
 
-    def __init__(self, *, stable_chunks: int, partials_enabled: bool) -> None:
+    def __init__(
+        self,
+        *,
+        stable_chunks: int,
+        partials_enabled: bool,
+        min_final_words: int = DEFAULT_STREAMING_MIN_FINAL_WORDS,
+        min_final_seconds: float = DEFAULT_STREAMING_MIN_FINAL_SECONDS,
+    ) -> None:
         self.stable_chunks = max(1, int(stable_chunks))
         self.partials_enabled = partials_enabled
+        self.min_final_words = max(4, int(min_final_words))
+        self.min_final_seconds = max(1.0, float(min_final_seconds))
+        self.min_short_final_words = min(self.min_final_words, STREAMING_MIN_SHORT_FINAL_WORDS)
         self._last_text = ""
         self._committed_words = 0
         self._stream_start_s: float | None = None
@@ -205,14 +216,17 @@ class StablePrefixFinalizer:
         )
 
     def _pending_final_ready(self) -> bool:
-        if len(self._pending_final_words) >= STREAMING_MIN_FINAL_WORDS:
+        word_count = len(self._pending_final_words)
+        if word_count >= self.min_final_words:
             return True
+        if word_count < self.min_short_final_words:
+            return False
         text = " ".join(self._pending_final_words).strip()
         if text.endswith((".", "?", "!")):
             return True
         if self._pending_final_start_s is None or self._pending_final_end_s is None:
             return False
-        return self._pending_final_end_s - self._pending_final_start_s >= STREAMING_MIN_FINAL_SECONDS
+        return self._pending_final_end_s - self._pending_final_start_s >= self.min_final_seconds
 
     def _should_emit_partial(self, text: str) -> bool:
         words = _words(text)
@@ -337,6 +351,8 @@ class NemotronStreamingSession:
         self.finalizer = StablePrefixFinalizer(
             stable_chunks=settings.streaming_stable_final_chunks,
             partials_enabled=settings.streaming_partials_enabled,
+            min_final_words=settings.streaming_min_final_words,
+            min_final_seconds=settings.streaming_min_final_seconds,
         )
         self.start_offset_s = start_offset_s
         self._step_num = 0

@@ -68,6 +68,8 @@ class Settings:
     nemotron_local_files_only: bool = False
     streaming_partials_enabled: bool = True
     streaming_stable_final_chunks: int = 3
+    streaming_min_final_words: int = 10
+    streaming_min_final_seconds: float = 2.8
     audio_sample_rate: int = 16_000
     audio_chunk_ms: int = 250
     transcription_window_seconds: float = 3.4
@@ -161,6 +163,11 @@ def load_settings() -> Settings:
             asr_backend == ASR_BACKEND_NEMOTRON_STREAMING,
         ),
         streaming_stable_final_chunks=max(1, int(_env("BRAIN_SIDECAR_STREAMING_STABLE_FINAL_CHUNKS", "3"))),
+        streaming_min_final_words=max(4, int(_env("BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS", "10"))),
+        streaming_min_final_seconds=max(
+            1.0,
+            float(_env("BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS", "2.8")),
+        ),
         audio_chunk_ms=max(50, int(_env("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250"))),
         transcription_window_seconds=transcription_window_seconds,
         transcription_overlap_seconds=transcription_overlap_seconds,
