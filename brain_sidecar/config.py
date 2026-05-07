@@ -99,13 +99,13 @@ class Settings:
     sidecar_max_cards_per_5min: int = 8
     sidecar_max_cards_per_generation_pass: int = 3
     asr_min_free_vram_mb: int = 3500
-    asr_unload_ollama_on_start: bool = True
+    asr_unload_ollama_on_start: bool = False
     asr_gpu_free_timeout_seconds: float = 10.0
     speaker_enrollment_sample_seconds: float = 8.0
     speaker_identity_label: str = "BP"
     speaker_retain_raw_enrollment_audio: bool = False
     disable_live_embeddings: bool = False
-    ollama_keep_alive: str = "10m"
+    ollama_keep_alive: str = "30m"
     web_context_enabled: bool = False
     brave_search_api_key: str = ""
     web_context_min_interval_seconds: float = 90.0
@@ -126,7 +126,7 @@ def load_settings() -> Settings:
     cwd_runtime = Path.cwd() / "runtime"
     asr_backend = validate_asr_backend(_env("BRAIN_SIDECAR_ASR_BACKEND", ASR_BACKEND_NEMOTRON_STREAMING))
     ollama_host = _env("BRAIN_SIDECAR_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
-    ollama_keep_alive = _env("BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE", "10m")
+    ollama_keep_alive = _env("BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE", "30m")
     transcription_window_seconds = max(
         1.0,
         float(_env("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")),
@@ -148,7 +148,7 @@ def load_settings() -> Settings:
         ollama_chat_host=_env("BRAIN_SIDECAR_OLLAMA_CHAT_HOST", ollama_host).rstrip("/"),
         ollama_embed_host=_env("BRAIN_SIDECAR_OLLAMA_EMBED_HOST", ollama_host).rstrip("/"),
         ollama_chat_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE", ollama_keep_alive),
-        ollama_embed_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE", ollama_keep_alive),
+        ollama_embed_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE", "0"),
         asr_backend=asr_backend,
         nemotron_model_id=_env("BRAIN_SIDECAR_NEMOTRON_MODEL_ID", "nvidia/nemotron-speech-streaming-en-0.6b"),
         nemotron_chunk_ms=validate_nemotron_chunk_ms(int(_env("BRAIN_SIDECAR_NEMOTRON_CHUNK_MS", "160"))),
@@ -188,7 +188,7 @@ def load_settings() -> Settings:
             float(_env("BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS", "2.0")),
         ),
         asr_min_free_vram_mb=max(0, int(_env("BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB", "3500"))),
-        asr_unload_ollama_on_start=_env_bool("BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START", True),
+        asr_unload_ollama_on_start=_env_bool("BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START", False),
         asr_gpu_free_timeout_seconds=max(
             0.0,
             float(_env("BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS", "10")),

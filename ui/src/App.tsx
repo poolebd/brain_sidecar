@@ -2496,8 +2496,8 @@ export function App() {
               ) : (
                 gpu.ollama_gpu_models?.map((model) => <span key={model} className="chip">{model}</span>)
               )}
-              <span className="chip">keep chat {gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "10m"}</span>
-              <span className="chip">keep embed {gpu.ollama_embed_keep_alive ?? gpu.ollama_keep_alive ?? "10m"}</span>
+              <span className="chip">keep chat {gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"}</span>
+              <span className="chip">keep embed {gpu.ollama_embed_keep_alive ?? "0"}</span>
               <span className="chip">dedupe {gpu.dedupe_similarity_threshold ?? "?"}</span>
             </div>
             <label className="field">

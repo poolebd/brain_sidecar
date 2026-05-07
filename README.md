@@ -118,14 +118,14 @@ Useful knobs:
 - `BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD`: reject repetitive/compressed ASR spans, default `2.4`.
 - `BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS`: skip near-silent audio windows before ASR, default `0.006`.
 - `BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB`: free VRAM target before loading the selected ASR backend, default `3500`.
-- `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before ASR load when VRAM is tight, default `true`.
+- `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before ASR load when VRAM is tight, default `false` so Nemotron and `phi3:mini` can stay resident together.
 - `BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS`: wait budget after unloading Ollama, default `10`.
 - `BRAIN_SIDECAR_OLLAMA_HOST`: default Ollama host used when split hosts are unset, default `http://127.0.0.1:11434`.
-- `BRAIN_SIDECAR_OLLAMA_CHAT_HOST`: Ollama host for note/card synthesis. Set this to a LAN laptop, for example `http://192.168.86.219:11434`, to keep Phi off the ASR GPU.
+- `BRAIN_SIDECAR_OLLAMA_CHAT_HOST`: Ollama host for note/card synthesis, default local `http://127.0.0.1:11434`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_HOST`: Ollama host for recall embeddings, default local.
-- `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`: fallback Ollama `keep_alive`, default `10m`.
+- `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`: fallback Ollama `keep_alive`, default `30m`.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE`: chat-specific keepalive, default follows `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`.
-- `BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE`: embedding-specific keepalive, set to `0` during live ASR if embeddings run on the ASR GPU.
+- `BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE`: embedding-specific keepalive, default `0` so embeddings do not stay resident beside Nemotron and Phi.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_TIMEOUT_SECONDS`: local note/card synthesis timeout, default `20`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_TIMEOUT_SECONDS`: local embedding timeout, default `12`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE`: number of pending audio windows before stale windows are dropped, default `8`.
@@ -334,6 +334,10 @@ verified integration path is NVIDIA NeMo/PyTorch using
 `nvidia/nemotron-speech-streaming-en-0.6b`, a 600M parameter cache-aware
 FastConformer-RNNT checkpoint. The model card lists mono audio input and
 non-overlapping streaming chunks at 80 ms, 160 ms, 560 ms, and 1120 ms.
+The normal local model pair is Nemotron for ASR plus Ollama `phi3:mini` for
+note/card synthesis on the same GPU. Brain Sidecar does not unload Ollama before
+ASR by default; set `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true` only if VRAM
+pressure makes co-residency unstable.
 
 `./start.sh` installs the Nemotron Python extras and NeMo ASR stack when the
 backend is set to `nemotron_streaming`, which is now the default. For manual
@@ -359,9 +363,9 @@ to return to the windowed ASR path.
 
 ## Split Ollama Over LAN
 
-For best live-call stability on a single desktop GPU, keep Nemotron on the
-desktop and run the chat model on another machine. On the laptop, expose Ollama
-on the LAN:
+The default path keeps Nemotron and `phi3:mini` on the desktop GPU. If that GPU
+is too tight for a longer call, keep Nemotron on the desktop and run the chat
+model on another machine. On the laptop, expose Ollama on the LAN:
 
 ```bash
 OLLAMA_HOST=0.0.0.0:11434 ollama serve

@@ -81,6 +81,36 @@ def test_ollama_split_host_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.ollama_embed_keep_alive == "0"
 
 
+def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    for name in [
+        "BRAIN_SIDECAR_ASR_BACKEND",
+        "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START",
+        "BRAIN_SIDECAR_OLLAMA_HOST",
+        "BRAIN_SIDECAR_OLLAMA_CHAT_HOST",
+        "BRAIN_SIDECAR_OLLAMA_EMBED_HOST",
+        "BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE",
+        "BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE",
+        "BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE",
+        "BRAIN_SIDECAR_OLLAMA_CHAT_MODEL",
+        "BRAIN_SIDECAR_OLLAMA_EMBED_MODEL",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+
+    settings = load_settings()
+
+    assert settings.asr_backend == "nemotron_streaming"
+    assert settings.asr_unload_ollama_on_start is False
+    assert settings.ollama_host == "http://127.0.0.1:11434"
+    assert settings.ollama_chat_host == "http://127.0.0.1:11434"
+    assert settings.ollama_embed_host == "http://127.0.0.1:11434"
+    assert settings.ollama_chat_model == "phi3:mini"
+    assert settings.ollama_embed_model == "embeddinggemma"
+    assert settings.ollama_keep_alive == "30m"
+    assert settings.ollama_chat_keep_alive == "30m"
+    assert settings.ollama_embed_keep_alive == "0"
+
+
 def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     monkeypatch.setenv("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250")

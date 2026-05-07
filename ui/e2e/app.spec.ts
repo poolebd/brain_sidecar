@@ -61,7 +61,7 @@ test("shows Nemotron streaming ASR status compactly", async ({ page }) => {
   await expect(system).toContainText("ASR Nemotron Streaming");
   await expect(system).toContainText("Stream 160 ms");
   await expect(system).toContainText("Nemotron loaded");
-  await expect(system).toContainText("Chat llama3.1 @ 192.168.86.219");
+  await expect(system).toContainText("Chat phi3:mini @ local");
   await expect(system).toContainText("Embed embeddinggemma @ local");
 });
 
