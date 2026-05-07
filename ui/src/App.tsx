@@ -2584,11 +2584,12 @@ export function App() {
                       onChange={(event) => setFixturePath(event.target.value)}
                       placeholder="/absolute/path/to/mono-16khz.wav"
                     />
-                    <input
-                      aria-label="Browse fixture WAV"
-                      className="file-picker"
-                      type="file"
+                    <FilePickAction
+                      label="Browse fixture WAV"
+                      actionLabel="Upload WAV"
                       accept=".wav,audio/wav,audio/x-wav"
+                      path={fixturePath}
+                      busy={fileUploadBusy === "fixture"}
                       disabled={Boolean(fileUploadBusy)}
                       onChange={(event) => handleInputFilePick(event, "fixture", setFixturePath)}
                     />
@@ -2615,11 +2616,12 @@ export function App() {
                       onChange={(event) => setTestSourcePath(event.target.value)}
                       placeholder="/absolute/path/to/recording.m4a"
                     />
-                    <input
-                      aria-label="Browse source audio"
-                      className="file-picker"
-                      type="file"
+                    <FilePickAction
+                      label="Browse source audio"
+                      actionLabel="Upload audio"
                       accept="audio/*,.wav,.mp3,.m4a,.mp4,.aac,.flac,.ogg,.webm"
+                      path={testSourcePath}
+                      busy={fileUploadBusy === "test-audio"}
                       disabled={Boolean(fileUploadBusy) || testBusy === "preparing" || captureActive || captureStarting}
                       onChange={(event) => handleInputFilePick(event, "test-audio", setTestSourcePath)}
                     />
@@ -3423,6 +3425,11 @@ function ModelsPage({
         : "Dross setup needed";
   const embeddingKeepalive = gpu.ollama_embed_keep_alive ?? "0";
   const embeddingKeepaliveLabel = embeddingKeepalive === "0" ? "not resident (0)" : embeddingKeepalive;
+  const residentChatModels = gpu.ollama_gpu_models ?? [];
+  const chatModel = gpu.ollama_chat_model ?? "phi3:mini";
+  const sameGpuInterpretation = runtimeReady
+    ? `Same-GPU default looks healthy: ${asrBackendLabel} handles hearing locally, ${chatModel} is ${residentChatModels.includes(chatModel) ? "resident" : "reachable"}, and embeddings ${embeddingKeepalive === "0" ? "load on demand" : "stay resident"}.`
+    : "Health checks show which part of Dross needs attention before a meeting.";
   return (
     <main className="page models-page" aria-label="Models">
       <header className="page-header">
@@ -3443,6 +3450,7 @@ function ModelsPage({
             <span><strong>Memory</strong>{memoryReady ? `${gpu.ollama_embed_model ?? "embeddinggemma"} · ${ollamaEmbedHostLabel}` : "embeddings offline"}</span>
             <span><strong>VRAM</strong>{gpuFreeLabel}</span>
           </div>
+          <p className="readiness-interpretation">{sameGpuInterpretation}</p>
         </div>
         <span className={`readiness-pill ${readinessTone}`}>{readinessPill}</span>
       </section>
@@ -3520,6 +3528,39 @@ function RuntimeRow({ label, value }: { label: string; value: string }) {
       {" "}
       <strong>{value}</strong>
     </span>
+  );
+}
+
+function FilePickAction({
+  label,
+  actionLabel,
+  accept,
+  path,
+  busy,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  actionLabel: string;
+  accept: string;
+  path: string;
+  busy: boolean;
+  disabled: boolean;
+  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <label className={`file-action ${disabled ? "disabled" : ""} ${busy ? "busy" : ""}`}>
+      <input
+        aria-label={label}
+        className="file-picker-native"
+        type="file"
+        accept={accept}
+        disabled={disabled}
+        onChange={onChange}
+      />
+      <span>{busy ? "Uploading..." : actionLabel}</span>
+      <small title={path || "No local file selected"}>{path ? PathLabel(path) : "No local file selected"}</small>
+    </label>
   );
 }
 
@@ -3718,6 +3759,9 @@ function MemoryPage({
                 placeholder="project, document, phrase"
               />
             </label>
+            <p className="memory-search-note" aria-label="Memory search behavior">
+              Type filters the open category. Search runs source-grounded work-memory lookup.
+            </p>
             <div className="memory-search-actions">
               <button className="secondary" type="submit" disabled={!memoryQuery.trim() || memoryBusy === "searching"}>
                 {memoryBusy === "searching" ? "Searching..." : "Search"}
