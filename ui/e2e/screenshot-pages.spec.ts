@@ -60,6 +60,19 @@ test("captures meeting cockpit page screenshots", async ({ page }) => {
   await page.getByRole("button", { name: "Tools" }).click();
   await expect(page.getByRole("main", { name: "Tools" })).toContainText("Voice & Input");
   await page.screenshot({ path: path.join(screenshotDir, "tools.png"), fullPage: true, animations: "disabled" });
+  await page.screenshot({ path: path.join(screenshotDir, "tools-voice-input.png"), fullPage: true, animations: "disabled" });
+  await page.getByRole("navigation", { name: "Tool sections" }).getByRole("button", { name: "Speaker Identity" }).click();
+  await expect(page.getByLabel("BP label readiness")).toBeVisible();
+  await page.screenshot({ path: path.join(screenshotDir, "tools-speaker-identity.png"), fullPage: true, animations: "disabled" });
+  await page.getByRole("navigation", { name: "Tool sections" }).getByRole("button", { name: "Test Mode" }).click();
+  await expect(page.getByRole("region", { name: "Recorded audio test" })).toBeVisible();
+  await page.screenshot({ path: path.join(screenshotDir, "tools-test-mode.png"), fullPage: true, animations: "disabled" });
+  await page.getByRole("navigation", { name: "Tool sections" }).getByRole("button", { name: "Logs & Debug" }).click();
+  await expect(page.getByRole("region", { name: "Logs & Debug" })).toBeVisible();
+  await page.screenshot({ path: path.join(screenshotDir, "tools-logs-debug.png"), fullPage: true, animations: "disabled" });
+  await page.getByRole("navigation", { name: "Tool sections" }).getByRole("button", { name: "Appearance" }).click();
+  await expect(page.getByRole("region", { name: "Appearance" })).toBeVisible();
+  await page.screenshot({ path: path.join(screenshotDir, "tools-appearance.png"), fullPage: true, animations: "disabled" });
 
   await page.getByRole("button", { name: "Models" }).click();
   await expect(page.getByRole("main", { name: "Models" })).toContainText("Dross runtime ready");

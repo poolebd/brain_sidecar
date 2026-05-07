@@ -7,6 +7,11 @@ These PNGs are intentionally committed UI review artifacts for the dark-mode mee
 | Live | ![Live page](live.png) |
 | Sessions | ![Sessions page](sessions.png) |
 | Tools | ![Tools page](tools.png) |
+| Tools - Voice & Input | ![Tools Voice & Input panel](tools-voice-input.png) |
+| Tools - Speaker Identity | ![Tools Speaker Identity panel](tools-speaker-identity.png) |
+| Tools - Test Mode | ![Tools Test Mode panel](tools-test-mode.png) |
+| Tools - Logs & Debug | ![Tools Logs & Debug panel](tools-logs-debug.png) |
+| Tools - Appearance | ![Tools Appearance panel](tools-appearance.png) |
 | Models | ![Models page](models.png) |
 | Memory | ![Memory page](memory.png) |
 
