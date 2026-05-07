@@ -1,6 +1,6 @@
 # Meeting Cockpit Screenshots
 
-These screenshots document the dark-mode meeting cockpit integration pass using mocked local data.
+These PNGs are intentionally committed UI review artifacts for the dark-mode meeting cockpit. They are generated with mocked local data and are not runtime product assets.
 
 | Page | Screenshot |
 | --- | --- |
@@ -11,3 +11,11 @@ These screenshots document the dark-mode meeting cockpit integration pass using 
 | Memory | ![Memory page](memory.png) |
 
 Captured at `1440 x 900` with Playwright.
+
+Regenerate explicitly from the repo root:
+
+```bash
+BRAIN_SIDECAR_CAPTURE_SCREENSHOTS=1 npm --prefix ui run test:e2e -- ui/e2e/screenshot-pages.spec.ts
+```
+
+Normal e2e runs skip screenshot regeneration so these files do not churn accidentally.

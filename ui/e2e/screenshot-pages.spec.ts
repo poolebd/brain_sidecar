@@ -4,8 +4,18 @@ import { expect, test } from "@playwright/test";
 import { emitSessionEvent, installMockEventSource, mockApi } from "./mocks";
 
 const screenshotDir = path.resolve(process.cwd(), "../docs/screenshots/meeting-cockpit");
+const captureScreenshots = process.env.BRAIN_SIDECAR_CAPTURE_SCREENSHOTS === "1";
 
 test("captures meeting cockpit page screenshots", async ({ page }) => {
+  if (!captureScreenshots) {
+    test.info().annotations.push({
+      type: "screenshot regeneration",
+      description: "Set BRAIN_SIDECAR_CAPTURE_SCREENSHOTS=1 to update committed screenshots.",
+    });
+    expect(captureScreenshots).toBe(false);
+    return;
+  }
+
   mkdirSync(screenshotDir, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 900 });
   await installMockEventSource(page);
@@ -52,7 +62,7 @@ test("captures meeting cockpit page screenshots", async ({ page }) => {
   await page.screenshot({ path: path.join(screenshotDir, "tools.png"), fullPage: true, animations: "disabled" });
 
   await page.getByRole("button", { name: "Models" }).click();
-  await expect(page.getByRole("main", { name: "Models" })).toContainText("Dross can hear and think now");
+  await expect(page.getByRole("main", { name: "Models" })).toContainText("Dross runtime ready");
   await page.screenshot({ path: path.join(screenshotDir, "models.png"), fullPage: true, animations: "disabled" });
 
   await page.getByRole("button", { name: "Memory" }).click();

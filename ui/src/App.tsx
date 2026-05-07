@@ -808,9 +808,6 @@ export function App() {
     [activeMeetingContract, usefulContextCards],
   );
 
-  const workMemoryLabel = workMemoryStatus
-    ? `${workMemoryStatus.projects} projects / ${workMemoryStatus.sources} sources`
-    : "not indexed";
   const asrBackendLabel = gpu.asr_backend === "nemotron_streaming"
     ? "Nemotron Streaming"
     : "Faster-Whisper";
@@ -912,18 +909,32 @@ export function App() {
   const serverMicStatus = selectedServerMic
     ? `${selectedServerMic.label}${selectedServerMic.in_use ? " (in use)" : selectedServerMic.healthy === false ? " (not usable)" : ""}`
     : "No healthy server microphone detected";
+  const inputReadinessTitle = missingServerDevice
+    ? "Missing mic"
+    : micTest && micTest.recommendation.status !== "good"
+      ? "Needs tuning"
+      : "Ready";
+  const inputReadinessDetail = missingServerDevice
+    ? serverMicStatus
+    : `${serverMicStatus} · gain ${micTuning.input_gain_db > 0 ? "+" : ""}${micTuning.input_gain_db.toFixed(0)} dB · ${micTuning.speech_sensitivity}`;
   const activeRetention = activeSessionRetention ?? sessionRetention;
   const captureModeLabel = audioSource === "fixture"
     ? "Recording playback"
     : "Server mic";
   const sessionRetentionStatus = sessionRetention === "saved" ? "Saved transcript" : "Not saved";
   const activeRetentionStatus = activeRetention === "saved" ? "Saved transcript" : "Not saved";
-  const sessionRetentionDetail = sessionRetention === "saved"
-    ? "Transcript text and notes will be available for future recall. Raw audio is not saved."
-    : "Ephemeral: transcript text and notes stay on screen only. Raw audio is not saved.";
+  const gpuFreeLabel = gpu.memory_free_mb != null && gpu.memory_total_mb != null
+    ? `${gpu.memory_free_mb}/${gpu.memory_total_mb} MB free`
+    : "VRAM check";
   const captureStatusSummary = missingServerDevice
     ? "No healthy server mic"
     : `${captureModeLabel} · ${captureActive ? activeRetentionStatus : sessionRetentionStatus} · raw audio discarded`;
+  const topRuntimeSummary = captureActive || captureStarting
+    ? captureStatusSummary
+    : `${asrBackendLabel} · ${gpuFreeLabel}`;
+  const topRuntimeDetail = captureActive || captureStarting
+    ? `${asrBackendLabel} · ${gpuFreeLabel}`
+    : captureStatusSummary;
   const headerQueueLabel = pipeline.queueDepth > 0 || captureActive || captureStarting
     ? `Queue ${pipeline.queueDepth}`
     : "";
@@ -956,9 +967,6 @@ export function App() {
       ? "Playing..."
       : "Start Playback";
   const prepareButtonLabel = testBusy === "preparing" ? "Preparing..." : testPrepared ? "Prepared" : "Prepare Audio";
-  const gpuFreeLabel = gpu.memory_free_mb != null && gpu.memory_total_mb != null
-    ? `${gpu.memory_free_mb}/${gpu.memory_total_mb} MB free`
-    : "VRAM check";
   const statusTone = status === "listening" || status === "catching_up"
     ? "live"
     : status === "error"
@@ -966,14 +974,6 @@ export function App() {
       : captureStarting
         ? "busy"
         : "idle";
-  const pageContext: Record<AppPage, { eyebrow: string; title: string; detail: string }> = {
-    live: { eyebrow: "Live", title: "Meeting cockpit", detail: captureStatusSummary },
-    sessions: { eyebrow: "Saved Work", title: "Sessions", detail: `${sessionCatalog.length} saved / ${sessionSearch.trim() ? "filtered" : "all"}` },
-    tools: { eyebrow: "Tools", title: "Meeting utilities", detail: "Voice, identity, tests, logs, and theme" },
-    models: { eyebrow: "Runtime", title: "Models", detail: `${asrBackendLabel} / ${gpuFreeLabel}` },
-    memory: { eyebrow: "Index", title: "Memory", detail: workMemoryLabel },
-  };
-  const currentPageContext = pageContext[activePage];
   const liveTitleDirty = Boolean(
     sessionId
     && currentSessionTitle.trim()
@@ -2172,10 +2172,10 @@ export function App() {
       />
       <div className="app-main">
       <header className="top-bar">
-        <div className="top-page-context">
-          <span>{currentPageContext.eyebrow}</span>
-          <strong>{currentPageContext.title}</strong>
-          <small>{currentPageContext.detail}</small>
+        <div className="top-runtime-context" aria-label="Runtime summary">
+          <span>Dross</span>
+          <strong>{topRuntimeSummary}</strong>
+          <small>{topRuntimeDetail}</small>
         </div>
         <div className="top-actions">
           <span className={`status-pill ${statusTone}`} aria-label="Runtime status">
@@ -2200,22 +2200,40 @@ export function App() {
       {activePage === "live" && (
       <main className="workspace-grid page live-page" aria-label="Live">
         <section className="transcript-pane" aria-label="Live field pane">
-          <SessionSelectorBar
-            sessionId={sessionId}
-            title={currentSessionTitle}
-            sessions={sessionCatalog}
-            status={status}
-            retention={sessionRetention}
-            activeRetention={activeRetention}
-            disabled={captureActive || captureStarting}
-            dirty={liveTitleDirty}
-            onSelect={selectLiveSession}
-            onNew={newLiveSession}
-            onTitleChange={setCurrentSessionTitle}
-            onTitleSave={updateLiveSessionTitle}
-            onRetentionChange={setSessionRetention}
-          />
-          <div className="field-toolbar">
+          <section className="live-cockpit-header" aria-label="Live cockpit setup">
+            <SessionSelectorBar
+              sessionId={sessionId}
+              title={currentSessionTitle}
+              sessions={sessionCatalog}
+              status={status}
+              retention={sessionRetention}
+              activeRetention={activeRetention}
+              disabled={captureActive || captureStarting}
+              dirty={liveTitleDirty}
+              onSelect={selectLiveSession}
+              onNew={newLiveSession}
+              onTitleChange={setCurrentSessionTitle}
+              onTitleSave={updateLiveSessionTitle}
+              onRetentionChange={setSessionRetention}
+            />
+            <div className="cockpit-control-row">
+              <CaptureControlBar
+                statusSummary={captureStatusSummary}
+                warning={missingServerDevice ? serverMicStatus : ""}
+              />
+
+              <MeetingFocusControl
+                value={meetingFocus}
+                expanded={meetingFocusExpanded}
+                activeContract={activeMeetingContract}
+                captureActive={captureActive || captureStarting}
+                onChange={setMeetingFocus}
+                onEdit={() => setMeetingFocusExpanded(true)}
+                onDone={() => setMeetingFocusExpanded(false)}
+              />
+            </div>
+          </section>
+          <div className="field-toolbar live-field-toolbar">
             <div>
               <p className="label">Live Field</p>
               <h1>Live field</h1>
@@ -2225,27 +2243,6 @@ export function App() {
               <span>{currentMeetingCards.length} current</span>
               <span>{gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "GPU check"}</span>
             </div>
-          </div>
-
-          <div className="cockpit-control-row">
-            <CaptureControlBar
-              retention={sessionRetention}
-              disabled={captureStarting || captureActive}
-              statusSummary={captureStatusSummary}
-              detail={sessionRetentionDetail}
-              warning={missingServerDevice ? serverMicStatus : ""}
-              onChange={setSessionRetention}
-            />
-
-            <MeetingFocusControl
-              value={meetingFocus}
-              expanded={meetingFocusExpanded}
-              activeContract={activeMeetingContract}
-              captureActive={captureActive || captureStarting}
-              onChange={setMeetingFocus}
-              onEdit={() => setMeetingFocusExpanded(true)}
-              onDone={() => setMeetingFocusExpanded(false)}
-            />
           </div>
 
           {errors.length > 0 && (
@@ -2316,6 +2313,7 @@ export function App() {
             <div className="field-toolbar-status">
               <span>{currentMeetingCards.length} current</span>
               <span>{gpu.sidecar_quality_gate_enabled !== false ? "Quality gate on" : "Quality gate off"}</span>
+              {captureActive && currentMeetingCards.length === 0 && <span>Silent by design</span>}
             </div>
           </div>
           <ContractActiveBadge contract={activeMeetingContract} />
@@ -2379,6 +2377,7 @@ export function App() {
             setSessionRetention("saved");
             setActivePage("live");
           }}
+          onGoLive={() => setActivePage("live")}
         />
       )}
 
@@ -2433,8 +2432,8 @@ export function App() {
           <div className="utility-header page-header">
             <div>
               <p className="label">Tools</p>
-              <h2>Meeting utilities</h2>
-              <span>Speaker identity, microphone tuning, tests, theme, and system logs.</span>
+              <h1>Tools</h1>
+              <span>Calibrate input, train BP speaker identity, run test audio, inspect logs, and adjust appearance.</span>
             </div>
           </div>
           <nav className="utility-tabs" aria-label="Tool sections">
@@ -2460,8 +2459,18 @@ export function App() {
           {toolView === "voice" && (
           <section className="utility-section" id="capture" aria-label="Voice & Input">
             <div className="utility-section-heading">
-              <h3>Input</h3>
+              <h3>Voice & Input</h3>
               <span>{devices.length || "No"} devices</span>
+            </div>
+            <div className={`tool-readiness-card ${inputReadinessTitle === "Ready" ? "ready" : "warning"}`} aria-label="Input readiness">
+              <div>
+                <p className="label">Input readiness</p>
+                <strong>{inputReadinessTitle}</strong>
+                <span>{inputReadinessDetail}</span>
+              </div>
+              <button className="primary subtle" onClick={testMicrophone} disabled={micTestBusy || audioSource !== "server_device" || missingServerDevice}>
+                {micTestBusy ? "Testing..." : "Test Mic"}
+              </button>
             </div>
             {ENABLE_FIXTURE_AUDIO && (
               <label className="field field-wide">
@@ -2565,15 +2574,8 @@ export function App() {
               ) : null}
             </div>
             <div className="button-row">
-              <button className="secondary" onClick={testMicrophone} disabled={micTestBusy || audioSource !== "server_device" || missingServerDevice}>
-                {micTestBusy ? "Testing..." : "Test Mic"}
-              </button>
-              <button className="primary" onClick={() => start()} disabled={captureStartDisabled}>
-                {captureButtonLabel}
-              </button>
-              <button className="danger" onClick={stop} disabled={captureStopDisabled}>
-                End Capture
-              </button>
+              <button className="secondary" onClick={refreshDevices}>Refresh devices</button>
+              <button className="secondary" onClick={() => setMicTuning(defaultMicTuning())}>Reset Auto</button>
             </div>
             {ENABLE_FIXTURE_AUDIO && (
               <div className="compact-tool" role="region" aria-label="Fixture audio test controls">
@@ -2687,6 +2689,22 @@ export function App() {
               <h3>Speaker Identity</h3>
               <span>{speakerStatusLabel}</span>
             </div>
+            <div className={`tool-readiness-card ${speakerStatus?.ready ? "ready" : "warning"}`} aria-label="BP label readiness">
+              <div>
+                <p className="label">BP label readiness</p>
+                <strong>{speakerReadinessTitle}</strong>
+                <span>{speakerReadinessDetail}</span>
+              </div>
+              {!speakerEnrollment && !speakerStatus?.ready && (
+                <button
+                  className="primary subtle"
+                  onClick={startSpeakerEnrollment}
+                  disabled={Boolean(speakerBusy) || speakerStatus?.backend.available === false || missingServerDevice}
+                >
+                  {speakerTrainingButtonLabel}
+                </button>
+              )}
+            </div>
 
             <div className={`speaker-training-card ${speakerStage}`} aria-label="Speaker training next step">
               <div className="speaker-training-status">
@@ -2708,16 +2726,6 @@ export function App() {
                 <span className={speakerStage === "finish" ? "active" : speakerStage === "ready" ? "done" : ""}>3 Finish</span>
               </div>
             </div>
-
-            {!speakerEnrollment && !speakerStatus?.ready && (
-              <button
-                className="primary speaker-primary-action"
-                onClick={startSpeakerEnrollment}
-                disabled={Boolean(speakerBusy) || speakerStatus?.backend.available === false || missingServerDevice}
-              >
-                {speakerTrainingButtonLabel}
-              </button>
-            )}
 
             {speakerEnrollment && !speakerStatus?.ready && (
               <div className="speaker-record-flow">
@@ -3061,7 +3069,7 @@ function SessionSelectorBar({
           onChange={(event) => onTitleChange(event.target.value)}
           placeholder="New meeting"
         />
-        <small>{status === "idle" || status === "stopped" ? "stopped" : status} · {activeRetention === "saved" ? "saved" : "temporary"}</small>
+        <small>{status === "idle" || status === "stopped" ? "standby" : status} · {activeRetention === "saved" ? "transcript saved" : "screen only"}</small>
       </label>
       <label className="field compact-field">
         <span>Session</span>
@@ -3079,7 +3087,7 @@ function SessionSelectorBar({
           ))}
         </select>
       </label>
-      <div className="mode-control compact" role="group" aria-label="Live retention">
+      <div className="mode-control compact" role="group" aria-label="Session save mode">
         <button
           type="button"
           aria-pressed={retention === "temporary"}
@@ -3088,7 +3096,7 @@ function SessionSelectorBar({
           onClick={() => onRetentionChange("temporary")}
         >
           <span>Temporary</span>
-          <small>listen only</small>
+          <small>screen only</small>
         </button>
         <button
           type="button"
@@ -3098,7 +3106,7 @@ function SessionSelectorBar({
           onClick={() => onRetentionChange("saved")}
         >
           <span>Saved</span>
-          <small>record text</small>
+          <small>transcript saved</small>
         </button>
       </div>
       <div className="session-selector-actions">
@@ -3135,6 +3143,7 @@ function SessionsPage({
   onSaveTitle,
   onHighlightSources,
   onCreateSavedSession,
+  onGoLive,
 }: {
   sessions: SessionSummary[];
   selectedSession: SessionDetail | null;
@@ -3150,6 +3159,7 @@ function SessionsPage({
   onSaveTitle: () => void;
   onHighlightSources: (ids: Set<string>) => void;
   onCreateSavedSession: () => void;
+  onGoLive: () => void;
 }) {
   const transcriptText = selectedSession?.transcript_segments.map((segment) => segment.text).join("\n") ?? "";
   const briefText = selectedSession?.summary?.summary ?? selectedSession?.note_cards.map((card) => `${card.title}\n${card.body}`).join("\n\n") ?? "";
@@ -3166,6 +3176,33 @@ function SessionsPage({
     && titleDraft.trim()
     && titleDraft.trim() !== selectedSession.title.trim(),
   );
+  if (sessions.length === 0) {
+    return (
+      <main className="page sessions-page" aria-label="Sessions">
+        <header className="page-header">
+          <div>
+            <p className="label">Saved Work</p>
+            <h1>Sessions</h1>
+            <span>Browse saved transcripts, cards, and post-call summaries.</span>
+          </div>
+          {busy === "loading" && <span className="inline-loading">Refreshing saved sessions</span>}
+        </header>
+        <section className="empty-state session-empty-state" aria-label="No saved sessions">
+          <h2>No saved sessions yet</h2>
+          <p>Use Saved mode on Live to keep transcript text, Meeting Output cards, and summaries. Raw audio is still discarded.</p>
+          <div className="button-row centered">
+            <button className="primary subtle" type="button" onClick={onCreateSavedSession}>
+              Start with Saved
+            </button>
+            <button className="secondary" type="button" onClick={onGoLive}>
+              Go to Live
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="page sessions-page" aria-label="Sessions">
       <header className="page-header">
@@ -3174,7 +3211,10 @@ function SessionsPage({
           <h1>Sessions</h1>
           <span>Browse saved transcripts, cards, and post-call summaries.</span>
         </div>
-        <button className="secondary" type="button" onClick={onRefresh} disabled={busy === "loading"}>{busy === "loading" ? "Refreshing..." : "Refresh"}</button>
+        <div className="page-header-actions">
+          {busy === "loading" && <span className="inline-loading">Refreshing saved sessions</span>}
+          <button className="secondary" type="button" onClick={onRefresh} disabled={busy === "loading"}>Refresh</button>
+        </div>
       </header>
       <div className="split-pane">
         <section className="session-list" aria-label="Session list">
@@ -3190,16 +3230,7 @@ function SessionsPage({
               placeholder="meeting title"
             />
           </label>
-          <button className="secondary" type="button" onClick={onRefresh}>Search</button>
-          {sessions.length === 0 ? (
-            <div className="empty-panel session-empty-state">
-              <h2>No saved sessions yet</h2>
-              <p>Saved mode keeps transcript text, Meeting Output cards, and summaries here. Raw audio is still discarded.</p>
-              <button className="primary subtle" type="button" onClick={onCreateSavedSession}>
-                Start with Saved
-              </button>
-            </div>
-          ) : filteredSessions.length === 0 ? (
+          {filteredSessions.length === 0 ? (
             <p className="empty-note">No sessions match this filter.</p>
           ) : (
             filteredSessions.map((session) => (
@@ -3210,10 +3241,12 @@ function SessionsPage({
                 onClick={() => onSelect(session.id)}
               >
                 <strong>{session.title}</strong>
-                <span>{formatDateTime(session.started_at)} · {session.transcript_count} lines</span>
+                <span>{formatDateTime(session.started_at)}</span>
                 <small className="chip-row">
                   <span className="status-badge">{session.status}</span>
                   <span className="status-badge">{session.retention ?? "empty"}</span>
+                  <span className="status-badge">{session.transcript_count} lines</span>
+                  <span className="status-badge">{session.note_count} cards</span>
                 </small>
               </button>
             ))
@@ -3357,19 +3390,16 @@ function ModelsPage({
   const hearingReady = !gpu.asr_backend_error && gpu.asr_cuda_available !== false;
   const thinkingReady = gpu.ollama_chat_reachable !== false;
   const memoryReady = gpu.ollama_embed_reachable !== false;
-  const readyCount = [hearingReady, thinkingReady, memoryReady].filter(Boolean).length;
-  const readinessTitle = hearingReady && thinkingReady
-    ? "Dross can hear and think now"
-    : hearingReady
-      ? "Dross can hear; thinking is not confirmed"
-      : thinkingReady
-        ? "Dross can think; hearing needs attention"
-        : "Dross is not ready yet";
-  const readinessDetail = [
-    hearingReady ? `${asrBackendLabel} available` : (gpu.asr_backend_error || gpu.asr_cuda_error || "ASR check needed"),
-    thinkingReady ? `chat ${gpu.ollama_chat_model ?? "phi3:mini"} reachable` : "chat offline",
-    memoryReady ? `embed ${gpu.ollama_embed_model ?? "embeddinggemma"} reachable` : "embeddings offline",
-  ].join(" / ");
+  const runtimeReady = hearingReady && thinkingReady && memoryReady;
+  const readinessTone = runtimeReady ? "ready" : hearingReady || thinkingReady || memoryReady ? "warning" : "danger";
+  const readinessPill = runtimeReady ? "Ready" : hearingReady || thinkingReady || memoryReady ? "Degraded" : "Setup needed";
+  const readinessTitle = runtimeReady
+    ? "Dross runtime ready"
+    : hearingReady && !thinkingReady
+      ? "Dross hearing ready; thinking offline"
+      : thinkingReady && !hearingReady
+        ? "Dross thinking ready; hearing needs setup"
+        : "Dross setup needed";
   return (
     <main className="page models-page" aria-label="Models">
       <header className="page-header">
@@ -3380,16 +3410,18 @@ function ModelsPage({
         </div>
         <button className="secondary" type="button" onClick={onRefresh}>Refresh status</button>
       </header>
-      <section className={`readiness-summary ${hearingReady && thinkingReady ? "ready" : "warning"}`} aria-label="Dross readiness summary">
+      <section className={`readiness-summary ${readinessTone}`} aria-label="Dross readiness summary">
         <div>
           <p className="label">Readiness</p>
           <h2>{readinessTitle}</h2>
-          <span>{readinessDetail}</span>
+          <div className="readiness-kv" aria-label="Dross readiness details">
+            <span><strong>Hearing</strong>{hearingReady ? `${asrBackendLabel} · ${streamingMetricLabel}` : (gpu.asr_backend_error || gpu.asr_cuda_error || "ASR check needed")}</span>
+            <span><strong>Thinking</strong>{thinkingReady ? `${gpu.ollama_chat_model ?? "phi3:mini"} · ${ollamaChatHostLabel}` : "chat offline"}</span>
+            <span><strong>Memory</strong>{memoryReady ? `${gpu.ollama_embed_model ?? "embeddinggemma"} · ${ollamaEmbedHostLabel}` : "embeddings offline"}</span>
+            <span><strong>VRAM</strong>{gpuFreeLabel}</span>
+          </div>
         </div>
-        <div className="readiness-score" aria-label={`${readyCount} of 3 runtime lanes ready`}>
-          <strong>{readyCount}/3</strong>
-          <span>ready</span>
-        </div>
+        <span className={`readiness-pill ${readinessTone}`}>{readinessPill}</span>
       </section>
       <div className="models-grid">
         <ModelCard title="Hearing / ASR" status={gpu.asr_backend_error ? "error" : gpu.nemotron_loaded ? "loaded" : "cold"}>
@@ -3429,13 +3461,14 @@ function ModelsPage({
           <span>Restart required after .env changes</span>
         </summary>
         {[
-          ["Switch to Faster-Whisper", "BRAIN_SIDECAR_ASR_BACKEND=faster_whisper"],
-          ["Unload Ollama before ASR", "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true"],
-          ["Split chat to LAN", "BRAIN_SIDECAR_OLLAMA_CHAT_HOST=http://192.168.86.219:11434"],
-          ["Nemotron chunk", "BRAIN_SIDECAR_NEMOTRON_CHUNK_MS=160"],
-        ].map(([label, snippet]) => (
+          ["Switch to Faster-Whisper", "Use when Nemotron streaming is unavailable or the GPU needs the older ASR path.", "BRAIN_SIDECAR_ASR_BACKEND=faster_whisper"],
+          ["Unload Ollama before ASR", "Use when ASR needs more free VRAM than resident chat models leave available.", "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true"],
+          ["Split chat to LAN", "Use when a LAN Ollama host should carry chat while this machine keeps hearing local.", "BRAIN_SIDECAR_OLLAMA_CHAT_HOST=http://192.168.86.219:11434"],
+          ["Nemotron chunk", "Use when tuning streaming latency against final transcript stability.", "BRAIN_SIDECAR_NEMOTRON_CHUNK_MS=160"],
+        ].map(([label, detail, snippet]) => (
           <button key={label} className="secondary" type="button" onClick={() => navigator.clipboard?.writeText(snippet)}>
             <span>{label}</span>
+            <small>{detail}</small>
             <code>{snippet}</code>
             <small>Set in .env · restart required</small>
           </button>
@@ -3541,13 +3574,17 @@ function MemoryPage({
   const selectedProject = selectedMemoryItem?.view === "projects" ? selectedMemoryItem.project : null;
   const selectedSearchResult = selectedMemoryItem?.view === "search" ? selectedMemoryItem.result : null;
   const selectedRoot = selectedMemoryItem?.view === "roots" ? selectedMemoryItem.root : null;
-  const categoryItems: { view: MemoryView; label: string; count: number }[] = [
+  const searchReady = memoryQuery.trim().length > 0 || memorySearchResults.length > 0;
+  const selectedRootIndexedCount = selectedRoot
+    ? librarySources.filter((source) => source.source_path.startsWith(selectedRoot)).length
+    : 0;
+  const categoryItems: { view: MemoryView; label: string; count: number; disabled?: boolean }[] = [
     { view: "overview", label: "Overview", count: (workMemoryStatus?.sources ?? 0) + librarySources.length },
     { view: "roots", label: "Library Roots", count: libraryRoots.length },
     { view: "documents", label: "Documents", count: librarySources.length },
     { view: "work_sources", label: "Work Sources", count: workMemorySources.length },
     { view: "projects", label: "Projects", count: workMemoryProjects.length },
-    { view: "search", label: "Search", count: memorySearchResults.length },
+    { view: "search", label: "Search Results", count: memorySearchResults.length, disabled: !searchReady },
   ];
 
   useEffect(() => {
@@ -3599,8 +3636,17 @@ function MemoryPage({
   }
 
   function runMemorySearch() {
+    if (!memoryQuery.trim()) {
+      return;
+    }
     setMemoryView("search");
     onSearch();
+  }
+
+  function clearMemorySearch() {
+    onMemoryQueryChange("");
+    setSelectedMemoryItem(null);
+    setMemoryView("overview");
   }
 
   return (
@@ -3632,15 +3678,25 @@ function MemoryPage({
                 placeholder="project, document, phrase"
               />
             </label>
-            <button className="secondary" type="submit">{memoryBusy === "searching" ? "Searching..." : "Search"}</button>
+            <div className="memory-search-actions">
+              <button className="secondary" type="submit" disabled={!memoryQuery.trim() || memoryBusy === "searching"}>
+                {memoryBusy === "searching" ? "Searching..." : "Search"}
+              </button>
+              {searchReady && (
+                <button className="secondary" type="button" onClick={clearMemorySearch}>
+                  Clear
+                </button>
+              )}
+            </div>
           </form>
           <nav className="memory-category-nav" aria-label="Memory category navigation">
             {categoryItems.map((item) => (
               <button
                 key={item.view}
                 type="button"
-                className={`memory-category-item ${memoryView === item.view ? "active" : ""}`}
+                className={`memory-category-item ${memoryView === item.view ? "active" : ""} ${item.disabled ? "disabled" : ""}`}
                 aria-current={memoryView === item.view ? "page" : undefined}
+                disabled={item.disabled}
                 onClick={() => activateMemoryView(item.view)}
               >
                 <span>{item.label}</span>
@@ -3676,20 +3732,37 @@ function MemoryPage({
                 <span><strong>{librarySources.length}</strong> documents</span>
                 <span><strong>{workMemoryStatus?.disabled_sources ?? 0}</strong> guarded</span>
               </div>
-              <div className="project-grid">
-                {workMemoryProjects.slice(0, 6).map((project) => (
+              <div className="memory-short-list" aria-label="Recent sources">
+                <div className="section-heading-row">
+                  <h3>Recent sources</h3>
+                  <span>{Math.min(4, librarySources.length + workMemorySources.length)} shown</span>
+                </div>
+                {[...librarySources.slice(0, 2).map((source) => ({
+                  id: `doc:${source.source_path}`,
+                  title: source.title,
+                  meta: `${source.chunk_count} chunks · ${PathHint(source.source_path)}`,
+                  onClick: () => {
+                    setMemoryView("documents");
+                    setSelectedMemoryItem({ view: "documents", id: source.source_path, source });
+                    onSelectLibrarySource(source.source_path);
+                  },
+                })), ...workMemorySources.slice(0, 2).map((source) => ({
+                  id: `work:${source.id}`,
+                  title: source.title,
+                  meta: `${source.source_group} · ${source.status}`,
+                  onClick: () => {
+                    setMemoryView("work_sources");
+                    setSelectedMemoryItem({ view: "work_sources", id: source.id, source });
+                  },
+                }))].map((item) => (
                   <button
-                    key={project.id}
+                    key={item.id}
                     type="button"
-                    className="memory-item-card"
-                    onClick={() => {
-                      setMemoryView("projects");
-                      setSelectedMemoryItem({ view: "projects", id: project.id, project });
-                    }}
+                    className="memory-item-row"
+                    onClick={item.onClick}
                   >
-                    <strong>{project.title}</strong>
-                    <span>{project.organization} · {project.date_range}</span>
-                    <p>{project.summary}</p>
+                    <strong>{item.title}</strong>
+                    <span>{item.meta}</span>
                   </button>
                 ))}
               </div>
@@ -3725,7 +3798,7 @@ function MemoryPage({
                   onClick={() => setSelectedMemoryItem({ view: "roots", id: `root:${root}`, root })}
                 >
                   <strong>{PathLabel(root)}</strong>
-                  <span>{root}</span>
+                  <span>{PathHint(root)}</span>
                 </button>
               ))}
             </>
@@ -3748,8 +3821,8 @@ function MemoryPage({
                 }}
               >
                 <strong>{source.title}</strong>
-                <span>{source.source_path}</span>
-                <small>{source.chunk_count} chunks · updated {formatDateTime(source.updated_at)}</small>
+                <span>{source.chunk_count} chunks · updated {formatDateTime(source.updated_at)}</span>
+                <small>{PathHint(source.source_path)}</small>
               </button>
             ))
           )}
@@ -3768,8 +3841,8 @@ function MemoryPage({
                 onClick={() => setSelectedMemoryItem({ view: "work_sources", id: source.id, source })}
               >
                 <strong>{source.title}</strong>
-                <span>{source.path}</span>
-                <small>{source.source_group} · {source.status} · {source.sensitivity}</small>
+                <span>{source.source_group} · {source.status} · {source.sensitivity}</span>
+                <small>{source.disabled ? "guarded source" : "available source"} · {PathHint(source.path)}</small>
               </button>
             ))
           )}
@@ -3781,18 +3854,17 @@ function MemoryPage({
                 <p>Project memory appears after the work-memory index has usable project evidence.</p>
               </div>
             ) : (
-              <div className="project-grid">
+              <div className="memory-short-list compact-project-list">
                 {visibleProjects.map((project) => (
                   <button
                     key={project.id}
                     type="button"
-                    className={`memory-item-card ${selectedProject?.id === project.id ? "active" : ""}`}
+                    className={`memory-item-row ${selectedProject?.id === project.id ? "active" : ""}`}
                     onClick={() => setSelectedMemoryItem({ view: "projects", id: project.id, project })}
                   >
                     <strong>{project.title}</strong>
                     <span>{project.organization} · {project.date_range}</span>
-                    <p>{project.summary}</p>
-                    <small>{project.source_group} · {Math.round(project.confidence * 100)}%</small>
+                    <small>{project.source_group} · {project.domain} · {Math.round(project.confidence * 100)}% confidence</small>
                   </button>
                 ))}
               </div>
@@ -3803,20 +3875,29 @@ function MemoryPage({
             memorySearchResults.length === 0 ? (
               <div className="empty-panel">
                 <h2>{memoryBusy === "searching" ? "Searching memory" : "No search results yet"}</h2>
-                <p>Run a search to gather matching work-memory cards without mixing them into documents or projects.</p>
+                <p>{memoryQuery.trim() ? `No source-grounded results for "${memoryQuery.trim()}".` : "Run a search to gather matching work-memory cards without mixing them into documents or projects."}</p>
               </div>
-            ) : memorySearchResults.map((result, index) => (
-              <button
-                key={`${result.project_id}-${result.title}-${index}`}
-                type="button"
-                className={`memory-item-row ${selectedSearchResult === result ? "active" : ""}`}
-                onClick={() => setSelectedMemoryItem({ view: "search", id: `search:${result.project_id}:${index}`, result })}
-              >
-                <strong>{result.title}</strong>
-                <span>{result.text}</span>
-                <small>{Math.round(result.score * 100)}% match · {result.organization}</small>
-              </button>
-            ))
+            ) : (
+              <>
+                <div className="search-result-head">
+                  <span>Results for "{memoryQuery.trim()}"</span>
+                  <button className="secondary" type="button" onClick={clearMemorySearch}>Clear search</button>
+                </div>
+                {memorySearchResults.map((result, index) => (
+                  <button
+                    key={`${result.project_id}-${result.title}-${index}`}
+                    type="button"
+                    className={`memory-item-row ${selectedSearchResult === result ? "active" : ""}`}
+                    onClick={() => setSelectedMemoryItem({ view: "search", id: `search:${result.project_id}:${index}`, result })}
+                  >
+                    <strong>{result.title}</strong>
+                    <span>{result.organization} · {result.date_range}</span>
+                    <small>{result.text}</small>
+                    <small>{Math.round(result.score * 100)}% match · {result.reason || "source evidence"}</small>
+                  </button>
+                ))}
+              </>
+            )
           )}
         </section>
 
@@ -3835,8 +3916,14 @@ function MemoryPage({
 
           {memoryView !== "overview" && !selectedMemoryItem && (
             <div className="empty-panel">
-              <h2>Select an item</h2>
-              <p>Metadata, paths, chunks, snippets, and contextual actions will appear here.</p>
+              <h2>
+                {memoryView === "roots" ? "No root selected"
+                  : memoryView === "documents" ? "No document selected"
+                    : memoryView === "work_sources" ? "No work source selected"
+                      : memoryView === "projects" ? "No project selected"
+                        : "No search result selected"}
+              </h2>
+              <p>Select a row to inspect metadata, full paths, chunks, snippets, and contextual actions for this category.</p>
             </div>
           )}
 
@@ -3845,6 +3932,9 @@ function MemoryPage({
               <p className="label">Library Root</p>
               <h2>{PathLabel(selectedRoot)}</h2>
               <code>{selectedRoot}</code>
+              <div className="chip-row">
+                <span className="chip">{selectedRootIndexedCount} indexed documents</span>
+              </div>
               <div className="button-row">
                 <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex Library</button>
               </div>
@@ -3860,7 +3950,7 @@ function MemoryPage({
                 <span className="chip">{selectedDocument.chunk_count} chunks</span>
                 <span className="chip">first chunk {selectedDocument.first_chunk_index}</span>
               </div>
-              <div className="library-chunk-list scroll" aria-label="Document chunks">
+              <div className="library-chunk-list memory-chunk-list" aria-label="Document chunks">
                 {libraryChunks.length === 0 ? <p className="empty-note">No chunks loaded for this document yet.</p> : libraryChunks.map((chunk) => (
                   <article key={chunk.id} className="library-chunk-card">
                     <span className="status-badge">chunk {chunk.chunk_index}</span>
@@ -3950,47 +4040,17 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 }
 
 function CaptureControlBar({
-  retention,
-  disabled,
   statusSummary,
-  detail,
   warning,
-  onChange,
 }: {
-  retention: SessionRetention;
-  disabled: boolean;
   statusSummary: string;
-  detail: string;
   warning: string;
-  onChange: (value: SessionRetention) => void;
 }) {
   return (
     <section className={`capture-control-bar ${warning ? "warning" : ""}`} aria-label="Capture controls">
-      <div className="mode-control compact capture-mode-control" role="group" aria-label="Session save mode">
-        <button
-          type="button"
-          aria-pressed={retention === "temporary"}
-          className={retention === "temporary" ? "active" : ""}
-          disabled={disabled}
-          onClick={() => onChange("temporary")}
-        >
-          <span>Listen</span>
-          <small>Ephemeral</small>
-        </button>
-        <button
-          type="button"
-          aria-pressed={retention === "saved"}
-          className={retention === "saved" ? "active" : ""}
-          disabled={disabled}
-          onClick={() => onChange("saved")}
-        >
-          <span>Record</span>
-          <small>Saved transcript</small>
-        </button>
-      </div>
       <div className="capture-control-summary" aria-label="Selected capture mode">
         <strong>{statusSummary}</strong>
-        <span>{warning || detail}</span>
+        {warning && <span>{warning}</span>}
       </div>
     </section>
   );
@@ -5343,6 +5403,14 @@ function formatSeconds(value: number): string {
 function PathLabel(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) ?? path;
+}
+
+function PathHint(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) {
+    return path;
+  }
+  return parts.slice(Math.max(0, parts.length - 3), -1).join(" / ");
 }
 
 function isAppPage(value: string | null): value is AppPage {

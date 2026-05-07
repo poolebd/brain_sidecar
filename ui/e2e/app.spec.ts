@@ -18,14 +18,17 @@ test("loads mocked device and GPU state", async ({ page }) => {
   expect(liveBox).not.toBeNull();
   expect(liveBox!.y).toBeLessThan(360);
   await expect(page.getByRole("search")).toBeVisible();
-  await expect(page.getByRole("banner").getByRole("button", { name: "Utilities" })).toHaveCount(0);
+  const genericToolNoun = new RegExp("Utilit" + "(y|ies)");
+  await expect(page.locator("body")).not.toContainText(genericToolNoun);
   const toolsButton = page.getByRole("button", { name: "Tools" });
   await toolsButton.click();
   await expect(page.getByRole("main", { name: "Tools" })).toBeVisible();
+  await expect(page.getByRole("main", { name: "Tools" }).getByRole("heading", { name: "Tools" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Tool sections" })).toContainText("Voice & Input");
   await expect(page.getByLabel("Audio source")).toHaveCount(0);
   await expect(page.getByLabel("USB microphone")).toHaveCount(0);
   await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
+  await expect(page.getByLabel("Input readiness")).toContainText("Ready");
   await expect(page.getByLabel("Guided mic tuning")).toContainText("Auto Level");
   await expect(page.getByRole("main", { name: "Tools" }).getByRole("button", { name: "Close" })).toHaveCount(0);
   const debug = await openToolSection(page, "Logs & Debug");
@@ -94,7 +97,7 @@ test("shows a saved-session empty state with a Saved-mode CTA", async ({ page })
   await page.getByRole("button", { name: "Sessions" }).click();
   const sessionsPage = page.getByRole("main", { name: "Sessions" });
   await expect(sessionsPage).toContainText("No saved sessions yet");
-  await expect(sessionsPage).toContainText("Saved mode keeps transcript text");
+  await expect(sessionsPage).toContainText("Use Saved mode on Live");
   await sessionsPage.getByRole("button", { name: "Start with Saved" }).click();
   await expect(page.getByRole("main", { name: "Live" })).toBeVisible();
   await expect(page.getByLabel("Session save mode status")).toContainText("Saved transcript");
@@ -106,7 +109,9 @@ test("shows model residency and memory management pages", async ({ page }) => {
   await nav.getByRole("button", { name: "Models" }).click();
   const modelsPage = page.getByRole("main", { name: "Models" });
   await expect(modelsPage).toBeVisible();
-  await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("Dross can hear and think now");
+  await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("Dross runtime ready");
+  await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("Ready");
+  await expect(modelsPage.getByLabel("Dross readiness summary")).not.toContainText("3/3");
   await expect(modelsPage).toContainText("Nemotron Streaming");
   await expect(modelsPage).toContainText("160 ms");
   await expect(modelsPage).toContainText("phi3:mini");
@@ -120,7 +125,7 @@ test("shows model residency and memory management pages", async ({ page }) => {
   const memoryPage = page.getByRole("main", { name: "Memory" });
   await expect(memoryPage).toBeVisible();
   const memoryCategories = page.getByRole("navigation", { name: "Memory category navigation" });
-  for (const label of ["Overview", "Library Roots", "Documents", "Work Sources", "Projects", "Search"]) {
+  for (const label of ["Overview", "Library Roots", "Documents", "Work Sources", "Projects", "Search Results"]) {
     await expect(memoryCategories.getByRole("button", { name: new RegExp(label) })).toBeVisible();
   }
   await expect(memoryPage.getByLabel("Browse index file")).toHaveCount(0);
@@ -139,7 +144,7 @@ test("shows model residency and memory management pages", async ({ page }) => {
   expect(JSON.parse((await searchRequest).postData() ?? "{}")).toMatchObject({
     query: "generator monitoring",
   });
-  await expect(memoryCategories.getByRole("button", { name: /Search/ })).toHaveAttribute("aria-current", "page");
+  await expect(memoryCategories.getByRole("button", { name: /Search Results/ })).toHaveAttribute("aria-current", "page");
   await expect(memoryPage.getByLabel("Memory items")).toContainText("Monitoring signals are useful when they map to decisions.");
 
   await memoryCategories.getByRole("button", { name: /Library Roots/ }).click();
@@ -589,11 +594,11 @@ test("keeps showing newer streaming previews that overlap older finals", async (
 
 test("makes saved transcript recording an explicit capture mode", async ({ page }) => {
   const modeGroup = page.getByRole("group", { name: "Session save mode" });
-  await expect(modeGroup.getByRole("button", { name: /Listen/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(modeGroup.getByRole("button", { name: /Temporary/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByLabel("Session save mode status")).toContainText("Not saved");
 
-  await modeGroup.getByRole("button", { name: /Record/ }).click();
-  await expect(modeGroup.getByRole("button", { name: /Record/ })).toHaveAttribute("aria-pressed", "true");
+  await modeGroup.getByRole("button", { name: /Saved/ }).click();
+  await expect(modeGroup.getByRole("button", { name: /Saved/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByLabel("Session save mode status")).toContainText("Saved transcript");
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Recording" })).toBeVisible();
 
@@ -606,7 +611,7 @@ test("makes saved transcript recording an explicit capture mode", async ({ page 
   const body = JSON.parse(request.postData() ?? "{}");
   expect(body.save_transcript).toBe(true);
   await expect(page.getByLabel("Session save mode status")).toContainText("Recording");
-  await expect(modeGroup.getByRole("button", { name: /Listen/ })).toBeDisabled();
+  await expect(modeGroup.getByRole("button", { name: /Temporary/ })).toBeDisabled();
 });
 
 test("shows speaker identity controls instead of legacy ASR voice training", async ({ page }) => {
@@ -1046,7 +1051,7 @@ test("locks live capture to the auto-selected server microphone", async ({ page 
   const startRequest = page.waitForRequest((request) => (
     request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
   ));
-  await drawer.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("banner").getByRole("button", { name: "Start Listening" }).click();
   const request = await startRequest;
 
   expect(JSON.parse(request.postData() ?? "{}")).toMatchObject({
@@ -1079,7 +1084,7 @@ test("blocks capture and speaker training when no healthy server microphone is a
   await expect(drawer.getByLabel("Server microphone")).toContainText("No healthy server microphone detected");
   await expect(drawer.getByRole("status")).toContainText("No healthy server microphone detected");
   await expect(drawer.getByRole("button", { name: "Test Mic" })).toBeDisabled();
-  await expect(drawer.getByRole("button", { name: "Start Listening" })).toBeDisabled();
+  await expect(drawer.getByRole("button", { name: "Start Listening" })).toHaveCount(0);
   await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeDisabled();
   const speaker = await openToolSection(page, "Speaker Identity", "Speaker identity");
   await expect(speaker.getByRole("button", { name: "Set Up BP Label" }).first()).toBeDisabled();
