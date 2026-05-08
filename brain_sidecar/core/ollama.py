@@ -68,6 +68,25 @@ class OllamaClient:
         except Exception:
             return False
 
+    def list_models(self, host: str | None = None, *, timeout_s: float = 2.0) -> list[dict[str, Any]]:
+        response = self._get_json(host or self._chat_host(), "/api/tags", timeout_s)
+        models: list[dict[str, Any]] = []
+        for item in response.get("models", []):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("model") or "").strip()
+            if not name:
+                continue
+            models.append(
+                {
+                    "name": name,
+                    "size": item.get("size"),
+                    "digest": item.get("digest"),
+                    "modified_at": item.get("modified_at"),
+                }
+            )
+        return sorted(models, key=lambda item: item["name"].lower())
+
     def _post_json(
         self,
         path: str,
@@ -101,6 +120,15 @@ class OllamaClient:
         except TypeError:
             # Test doubles and older callers may override _post_json(path, payload).
             return self._post_json(path, payload)  # type: ignore[misc]
+
+    def _get_json(self, host: str, path: str, timeout_s: float) -> dict[str, Any]:
+        host = host.rstrip("/")
+        request = urllib.request.Request(f"{host}{path}", method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_s) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Ollama request failed for {host}{path}: {exc}") from exc
 
     def _chat_host(self) -> str:
         return (getattr(self.settings, "ollama_chat_host", "") or self.settings.ollama_host).rstrip("/")

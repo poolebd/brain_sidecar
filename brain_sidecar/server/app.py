@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from brain_sidecar.config import load_settings
+from brain_sidecar.config import load_settings, update_dotenv_value
 from brain_sidecar.core.devices import list_audio_devices
 from brain_sidecar.core.gpu import read_gpu_status
 from brain_sidecar.core.meeting_contract import normalize_meeting_contract
@@ -28,6 +28,7 @@ BROWSER_STREAM_REMOVED = (
 )
 FIXTURE_TEST_MODE_REQUIRED = "Fixture audio is only available when recorded audio test mode is enabled."
 SSE_HEARTBEAT = ": heartbeat\n\n"
+OLLAMA_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$")
 
 
 def encode_sse_event(event) -> str:
@@ -126,6 +127,10 @@ class TestModeReportRequest(BaseModel):
     report: dict[str, Any] = Field(default_factory=dict)
 
 
+class OllamaChatModelRequest(BaseModel):
+    model: Annotated[str, Field(min_length=1, max_length=160)]
+
+
 def _safe_upload_name(filename: str | None) -> str:
     original = Path(filename or "input-file").name
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", original).strip("._")
@@ -158,6 +163,54 @@ def _meeting_contract_payload(contract: MeetingContractRequest | None) -> dict[s
         return normalize_meeting_contract().to_dict()
     payload = contract.model_dump() if hasattr(contract, "model_dump") else contract.dict()
     return normalize_meeting_contract(payload).to_dict()
+
+
+def _normalize_ollama_model_name(model: str) -> str:
+    clean_model = model.strip()
+    if not OLLAMA_MODEL_NAME_RE.fullmatch(clean_model):
+        raise HTTPException(status_code=400, detail="Ollama model names may only use letters, numbers, _, -, ., :, and /.")
+    return clean_model
+
+
+def _ollama_models_payload(settings, models: list[dict[str, Any]], *, error: str | None = None) -> dict:
+    selected = settings.ollama_chat_model
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for model in models:
+        name = str(model.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        size = model.get("size")
+        normalized.append(
+            {
+                "name": name,
+                "size": size if isinstance(size, int) else None,
+                "digest": model.get("digest") if isinstance(model.get("digest"), str) else None,
+                "modified_at": model.get("modified_at") if isinstance(model.get("modified_at"), str) else None,
+                "cloud": name.endswith(":cloud") or size is None,
+                "current": name == selected,
+            }
+        )
+    if selected and selected not in seen:
+        normalized.insert(
+            0,
+            {
+                "name": selected,
+                "size": None,
+                "digest": None,
+                "modified_at": None,
+                "cloud": selected.endswith(":cloud"),
+                "current": True,
+                "configured": True,
+            },
+        )
+    return {
+        "selected_chat_model": selected,
+        "chat_host": settings.ollama_chat_host or settings.ollama_host,
+        "models": normalized,
+        "error": error,
+    }
 
 
 async def _ollama_reachability(manager: SessionManager, chat_host: str, embed_host: str) -> tuple[bool, bool]:
@@ -227,6 +280,7 @@ def create_app() -> FastAPI:
         status.update(manager._asr_status_fields(None))
         status["asr_primary_model"] = settings.asr_primary_model
         status["asr_fallback_model"] = settings.asr_fallback_model
+        status["asr_device"] = settings.asr_device
         status["asr_backend"] = settings.asr_backend
         status["asr_streaming_chunk_ms"] = settings.nemotron_chunk_ms if settings.asr_backend == "nemotron_streaming" else None
         status["streaming_partials_enabled"] = settings.streaming_partials_enabled
@@ -285,6 +339,33 @@ def create_app() -> FastAPI:
         status["test_mode_enabled"] = settings.test_mode_enabled
         status["test_audio_run_dir"] = str(settings.test_audio_run_dir)
         return status
+
+    async def _list_ollama_models() -> tuple[list[dict[str, Any]], str | None]:
+        chat_host = settings.ollama_chat_host or settings.ollama_host
+        try:
+            return await asyncio.to_thread(app.state.manager.ollama.list_models, chat_host), None
+        except Exception as exc:
+            return [], str(exc)
+
+    @app.get("/api/models/ollama")
+    async def list_ollama_models() -> dict:
+        models, error = await _list_ollama_models()
+        return _ollama_models_payload(settings, models, error=error)
+
+    @app.post("/api/models/ollama/chat")
+    async def select_ollama_chat_model(request: OllamaChatModelRequest) -> dict:
+        model = _normalize_ollama_model_name(request.model)
+        models, error = await _list_ollama_models()
+        available_names = {str(item.get("name") or "").strip() for item in models}
+        available_names.discard("")
+        if available_names and model not in available_names:
+            raise HTTPException(status_code=400, detail=f"Ollama model is not available on the chat host: {model}")
+        if not available_names and model != settings.ollama_chat_model:
+            raise HTTPException(status_code=503, detail=error or "Ollama model list is unavailable.")
+
+        object.__setattr__(settings, "ollama_chat_model", model)
+        update_dotenv_value("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", model, settings.env_path)
+        return _ollama_models_payload(settings, models, error=error)
 
     @app.post("/api/input-files")
     async def upload_input_file(file: UploadFile = File(...)) -> dict:

@@ -575,6 +575,30 @@ blockquote {
   color: var(--text);
 }
 
+.model-select-field {
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.model-selector-meta {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+.model-selector-meta .secondary {
+  min-height: 2.15rem;
+  padding: 0.45rem 0.65rem;
+}
+
+.muted-text {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  margin: 0;
+}
+
 .readiness-summary {
   align-items: center;
   background: color-mix(in srgb, var(--surface) 90%, var(--bg));

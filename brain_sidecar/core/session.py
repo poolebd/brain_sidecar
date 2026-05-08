@@ -308,6 +308,7 @@ class SessionManager:
                     **read_gpu_status().to_dict(),
                     **self._asr_status_fields(active),
                     "asr_model": self._asr_model_name(),
+                    "asr_device": self.settings.asr_device,
                     "asr_compute_type": self.settings.asr_compute_type,
                     "asr_beam_size": self.settings.asr_beam_size,
                     "queue_size": self.settings.transcription_queue_size,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from brain_sidecar.core.asr import (
 )
 
 _DEFAULT_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+_DOTENV_SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:@+-]+$")
 
 
 def _env(name: str, default: str) -> str:
@@ -24,6 +26,14 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_choice(name: str, default: str, allowed: set[str]) -> str:
+    value = _env(name, default).strip().lower()
+    if value not in allowed:
+        allowed_values = ", ".join(sorted(allowed))
+        raise ValueError(f"Unsupported {name}={value!r}; expected one of: {allowed_values}.")
+    return value
 
 
 def _load_dotenv(path: Path | None = None) -> None:
@@ -44,6 +54,37 @@ def _load_dotenv(path: Path | None = None) -> None:
         os.environ.setdefault(name, value)
 
 
+def _configured_env_path() -> Path:
+    return Path(os.environ.get("BRAIN_SIDECAR_ENV_PATH", str(_DEFAULT_ENV_PATH))).expanduser()
+
+
+def _dotenv_literal(value: str) -> str:
+    if _DOTENV_SAFE_VALUE_RE.match(value):
+        return value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def update_dotenv_value(name: str, value: str, path: Path | None = None) -> None:
+    env_path = (path or _configured_env_path()).expanduser()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    prefix_pattern = re.compile(rf"^(\s*(?:export\s+)?{re.escape(name)}\s*=).*$")
+    replacement = f"{name}={_dotenv_literal(value)}"
+    if not env_path.exists():
+        env_path.write_text(f"{replacement}\n", encoding="utf-8")
+        return
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        match = prefix_pattern.match(line)
+        if match:
+            lines[index] = f"{match.group(1)}{_dotenv_literal(value)}"
+            break
+    else:
+        lines.append(replacement)
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -55,6 +96,8 @@ class Settings:
     ollama_host: str
     ollama_chat_model: str
     ollama_embed_model: str
+    env_path: Path = _DEFAULT_ENV_PATH
+    asr_device: str = "cuda"
     ollama_chat_fallback_model: str = ""
     ollama_chat_min_free_vram_mb: int = 0
     ollama_chat_host: str = ""
@@ -130,7 +173,8 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    _load_dotenv()
+    env_path = _configured_env_path()
+    _load_dotenv(env_path)
     cwd_runtime = Path.cwd() / "runtime"
     asr_backend = validate_asr_backend(_env("BRAIN_SIDECAR_ASR_BACKEND", ASR_BACKEND_NEMOTRON_STREAMING))
     ollama_host = _env("BRAIN_SIDECAR_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
@@ -144,12 +188,14 @@ def load_settings() -> Settings:
         max(0.0, transcription_window_seconds - 0.1),
     )
     return Settings(
+        env_path=env_path,
         data_dir=Path(_env("BRAIN_SIDECAR_DATA_DIR", str(cwd_runtime))).expanduser(),
         host=_env("BRAIN_SIDECAR_HOST", "127.0.0.1"),
         port=int(_env("BRAIN_SIDECAR_PORT", "8765")),
         asr_primary_model=_env("BRAIN_SIDECAR_ASR_PRIMARY_MODEL", "medium.en"),
         asr_fallback_model=_env("BRAIN_SIDECAR_ASR_FALLBACK_MODEL", "small.en"),
         asr_compute_type=_env("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "float16"),
+        asr_device=_env_choice("BRAIN_SIDECAR_ASR_DEVICE", "cuda", {"cuda", "cpu"}),
         ollama_host=ollama_host,
         ollama_chat_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", "phi3:mini"),
         ollama_chat_fallback_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL", ""),

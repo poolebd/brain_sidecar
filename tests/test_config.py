@@ -101,6 +101,7 @@ def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     for name in [
         "BRAIN_SIDECAR_ASR_BACKEND",
+        "BRAIN_SIDECAR_ASR_DEVICE",
         "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START",
         "BRAIN_SIDECAR_OLLAMA_HOST",
         "BRAIN_SIDECAR_OLLAMA_CHAT_HOST",
@@ -118,6 +119,7 @@ def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
     settings = load_settings()
 
     assert settings.asr_backend == "nemotron_streaming"
+    assert settings.asr_device == "cuda"
     assert settings.asr_unload_ollama_on_start is False
     assert settings.ollama_host == "http://127.0.0.1:11434"
     assert settings.ollama_chat_host == "http://127.0.0.1:11434"
@@ -129,6 +131,19 @@ def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
     assert settings.ollama_keep_alive == "30m"
     assert settings.ollama_chat_keep_alive == "30m"
     assert settings.ollama_embed_keep_alive == "0"
+
+
+def test_asr_cpu_fallback_env_overrides(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_ASR_BACKEND", "faster_whisper")
+    monkeypatch.setenv("BRAIN_SIDECAR_ASR_DEVICE", "cpu")
+    monkeypatch.setenv("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "int8")
+
+    settings = load_settings()
+
+    assert settings.asr_backend == "faster_whisper"
+    assert settings.asr_device == "cpu"
+    assert settings.asr_compute_type == "int8"
 
 
 def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:

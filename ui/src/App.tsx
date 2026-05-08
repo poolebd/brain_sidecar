@@ -365,6 +365,7 @@ type GpuHealth = {
   nemotron_loaded?: boolean;
   asr_model?: string | null;
   asr_dtype?: string;
+  asr_device?: string;
   asr_backend_error?: string | null;
   asr_primary_model?: string;
   asr_fallback_model?: string;
@@ -402,6 +403,23 @@ type GpuHealth = {
   test_mode_enabled?: boolean;
   sidecar_quality_gate_enabled?: boolean;
   test_audio_run_dir?: string;
+};
+
+type OllamaModelOption = {
+  name: string;
+  size?: number | null;
+  digest?: string | null;
+  modified_at?: string | null;
+  cloud?: boolean;
+  current?: boolean;
+  configured?: boolean;
+};
+
+type OllamaModelsResponse = {
+  selected_chat_model: string;
+  chat_host: string;
+  models: OllamaModelOption[];
+  error?: string | null;
 };
 
 type PipelineState = {
@@ -606,6 +624,9 @@ export function App() {
   const [toolView, setToolView] = useState<ToolView>("voice");
   const [status, setStatus] = useState("idle");
   const [gpu, setGpu] = useState<GpuHealth>({});
+  const [ollamaModels, setOllamaModels] = useState<OllamaModelsResponse | null>(null);
+  const [ollamaModelBusy, setOllamaModelBusy] = useState("");
+  const [ollamaModelNotice, setOllamaModelNotice] = useState("");
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [notes, setNotes] = useState<NoteCard[]>([]);
   const [recall, setRecall] = useState<RecallHit[]>([]);
@@ -698,6 +719,7 @@ export function App() {
     }
     if (activePage === "models") {
       refreshGpu();
+      refreshOllamaModels();
     }
   }, [activePage]);
 
@@ -1007,6 +1029,61 @@ export function App() {
   async function refreshGpu() {
     const response = await fetch(`${API_BASE}/api/health/gpu`);
     setGpu(await response.json());
+  }
+
+  async function refreshOllamaModels() {
+    setOllamaModelBusy((current) => current || "loading");
+    try {
+      const response = await fetch(`${API_BASE}/api/models/ollama`);
+      if (!response.ok) {
+        setOllamaModelNotice("Model list unavailable");
+        return;
+      }
+      const payload = await response.json() as OllamaModelsResponse;
+      setOllamaModels(payload);
+      if (payload.error) {
+        setOllamaModelNotice("Model list degraded");
+      } else if (ollamaModelNotice === "Model list unavailable" || ollamaModelNotice === "Model list degraded") {
+        setOllamaModelNotice("");
+      }
+    } catch {
+      setOllamaModelNotice("Model list unavailable");
+    } finally {
+      setOllamaModelBusy((current) => current === "loading" ? "" : current);
+    }
+  }
+
+  async function selectOllamaChatModel(model: string) {
+    const cleanModel = model.trim();
+    if (!cleanModel || cleanModel === (gpu.ollama_chat_model ?? ollamaModels?.selected_chat_model)) {
+      return;
+    }
+    setOllamaModelBusy("saving");
+    setOllamaModelNotice("");
+    try {
+      const response = await fetch(`${API_BASE}/api/models/ollama/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: cleanModel }),
+      });
+      const payload = await response.json() as OllamaModelsResponse & { detail?: string };
+      if (!response.ok) {
+        setOllamaModelNotice(payload.detail || "Model update failed");
+        return;
+      }
+      setOllamaModels(payload);
+      setGpu((current) => ({
+        ...current,
+        ollama_chat_model: payload.selected_chat_model,
+        ollama_chat_host: payload.chat_host,
+      }));
+      setOllamaModelNotice(`Saved ${payload.selected_chat_model} to .env`);
+      await refreshGpu();
+    } catch {
+      setOllamaModelNotice("Model update failed");
+    } finally {
+      setOllamaModelBusy("");
+    }
   }
 
   async function refreshSpeakerStatus() {
@@ -2415,7 +2492,12 @@ export function App() {
           ollamaEmbedHostLabel={ollamaEmbedHostLabel}
           ollamaChatReachabilityLabel={ollamaChatReachabilityLabel}
           ollamaEmbedReachabilityLabel={ollamaEmbedReachabilityLabel}
+          ollamaModels={ollamaModels}
+          ollamaModelBusy={ollamaModelBusy}
+          ollamaModelNotice={ollamaModelNotice}
           onRefresh={refreshGpu}
+          onRefreshOllamaModels={refreshOllamaModels}
+          onSelectOllamaChatModel={selectOllamaChatModel}
         />
       )}
 
@@ -3412,7 +3494,12 @@ function ModelsPage({
   ollamaEmbedHostLabel,
   ollamaChatReachabilityLabel,
   ollamaEmbedReachabilityLabel,
+  ollamaModels,
+  ollamaModelBusy,
+  ollamaModelNotice,
   onRefresh,
+  onRefreshOllamaModels,
+  onSelectOllamaChatModel,
 }: {
   gpu: GpuHealth;
   pipeline: PipelineState;
@@ -3427,7 +3514,12 @@ function ModelsPage({
   ollamaEmbedHostLabel: string;
   ollamaChatReachabilityLabel: string;
   ollamaEmbedReachabilityLabel: string;
+  ollamaModels: OllamaModelsResponse | null;
+  ollamaModelBusy: string;
+  ollamaModelNotice: string;
   onRefresh: () => void;
+  onRefreshOllamaModels: () => void;
+  onSelectOllamaChatModel: (model: string) => void;
 }) {
   const hearingReady = !gpu.asr_backend_error && gpu.asr_cuda_available !== false;
   const thinkingReady = gpu.ollama_chat_reachable !== false;
@@ -3446,8 +3538,19 @@ function ModelsPage({
   const embeddingKeepaliveLabel = embeddingKeepalive === "0" ? "not resident (0)" : embeddingKeepalive;
   const residentChatModels = gpu.ollama_gpu_models ?? [];
   const chatModel = gpu.ollama_chat_model ?? "phi3:mini";
+  const selectedChatModel = ollamaModels?.selected_chat_model ?? chatModel;
+  const modelOptions = (ollamaModels?.models.length ? ollamaModels.models : [{ name: selectedChatModel, current: true }])
+    .reduce<OllamaModelOption[]>((options, model) => {
+      if (!model.name || options.some((option) => option.name === model.name)) {
+        return options;
+      }
+      return [...options, model];
+    }, []);
+  if (selectedChatModel && !modelOptions.some((model) => model.name === selectedChatModel)) {
+    modelOptions.unshift({ name: selectedChatModel, current: true, configured: true });
+  }
   const sameGpuInterpretation = runtimeReady
-    ? `Same-GPU default looks healthy: ${asrBackendLabel} handles hearing locally, ${chatModel} is ${residentChatModels.includes(chatModel) ? "resident" : "reachable"}, and embeddings ${embeddingKeepalive === "0" ? "load on demand" : "stay resident"}.`
+    ? `Same-GPU default looks healthy: ${asrBackendLabel} handles hearing locally, ${selectedChatModel} is ${residentChatModels.includes(selectedChatModel) ? "resident" : "reachable"}, and embeddings ${embeddingKeepalive === "0" ? "load on demand" : "stay resident"}.`
     : "Health checks show which part of Dross needs attention before a meeting.";
   return (
     <main className="page models-page" aria-label="Models">
@@ -3455,7 +3558,7 @@ function ModelsPage({
         <div>
           <p className="label">Runtime</p>
           <h1>Models</h1>
-          <span>Local model residency and restart-required configuration.</span>
+          <span>Local model residency and runtime model selection.</span>
         </div>
         <button className="secondary" type="button" onClick={onRefresh}>Refresh status</button>
       </header>
@@ -3465,7 +3568,7 @@ function ModelsPage({
           <h2>{readinessTitle}</h2>
           <div className="readiness-kv" aria-label="Dross readiness details">
             <span><strong>Hearing</strong>{hearingReady ? `${asrBackendLabel} · ${streamingMetricLabel}` : (gpu.asr_backend_error || gpu.asr_cuda_error || "ASR check needed")}</span>
-            <span><strong>Thinking</strong>{thinkingReady ? `${gpu.ollama_chat_model ?? "phi3:mini"} · ${ollamaChatHostLabel}` : "chat offline"}</span>
+            <span><strong>Thinking</strong>{thinkingReady ? `${selectedChatModel} · ${ollamaChatHostLabel}` : "chat offline"}</span>
             <span><strong>Memory</strong>{memoryReady ? `${gpu.ollama_embed_model ?? "embeddinggemma"} · ${ollamaEmbedHostLabel}` : "embeddings offline"}</span>
             <span><strong>VRAM</strong>{gpuFreeLabel}</span>
           </div>
@@ -3477,13 +3580,36 @@ function ModelsPage({
         <ModelCard title="Hearing / ASR" status={gpu.asr_backend_error ? "error" : gpu.nemotron_loaded ? "loaded" : "cold"}>
           <RuntimeRow label="Backend" value={asrBackendLabel} />
           <RuntimeRow label="Model" value={asrModelLabel} />
+          <RuntimeRow label="Device" value={gpu.asr_device ?? (gpu.asr_cuda_available === false ? "cpu" : "cuda")} />
           <RuntimeRow label="Stream" value={streamingModeLabel} />
           <RuntimeRow label="Latency" value={streamingMetricLabel} />
           <RuntimeRow label="Dtype" value={gpu.asr_dtype ?? "configured in .env"} />
           {gpu.asr_backend_error && <p className="warning-text">{gpu.asr_backend_error}</p>}
         </ModelCard>
         <ModelCard title="Thinking / Chat" status={gpu.ollama_chat_reachable === false ? "offline" : "ready"}>
-          <RuntimeRow label="Model" value={gpu.ollama_chat_model ?? "phi3:mini"} />
+          <label className="field model-select-field">
+            Ollama model
+            <select
+              aria-label="Ollama chat model"
+              value={selectedChatModel}
+              disabled={ollamaModelBusy === "saving" || modelOptions.length === 0}
+              onChange={(event) => onSelectOllamaChatModel(event.target.value)}
+            >
+              {modelOptions.map((model) => (
+                <option key={model.name} value={model.name}>
+                  {formatOllamaModelOption(model)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="model-selector-meta">
+            <small>{ollamaModelBusy === "loading" ? "Loading models" : `${modelOptions.length} available`}</small>
+            <button className="secondary" type="button" onClick={onRefreshOllamaModels} disabled={ollamaModelBusy !== ""}>
+              Refresh list
+            </button>
+          </div>
+          {ollamaModelNotice && <p className={ollamaModelNotice.includes("failed") || ollamaModelNotice.includes("unavailable") ? "warning-text" : "muted-text"}>{ollamaModelNotice}</p>}
+          <RuntimeRow label="Active" value={selectedChatModel} />
           <RuntimeRow label="Host" value={ollamaChatHostLabel} />
           <RuntimeRow label="Reachability" value={ollamaChatReachabilityLabel} />
           <RuntimeRow label="Keepalive" value={gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"} />
@@ -3538,6 +3664,25 @@ function ModelCard({ title, status, children }: { title: string; status: string;
       <div className="model-card-body">{children}</div>
     </article>
   );
+}
+
+function formatOllamaModelOption(model: OllamaModelOption): string {
+  if (model.cloud) {
+    return `${model.name} · cloud`;
+  }
+  if (model.size && model.size > 0) {
+    return `${model.name} · ${formatBytes(model.size)}`;
+  }
+  return model.configured ? `${model.name} · configured` : model.name;
+}
+
+function formatBytes(bytes: number): string {
+  const gib = bytes / (1024 ** 3);
+  if (gib >= 1) {
+    return `${gib.toFixed(gib >= 10 ? 0 : 1)} GB`;
+  }
+  const mib = bytes / (1024 ** 2);
+  return `${Math.max(1, Math.round(mib))} MB`;
 }
 
 function RuntimeRow({ label, value }: { label: string; value: string }) {

@@ -202,6 +202,12 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     summary_exists: true,
     raw_audio_retained: false,
   };
+  let ollamaChatModel = String(options.gpuHealthResponse?.ollama_chat_model ?? "phi3:mini");
+  const ollamaModels = [
+    { name: "gpt-oss:120b-cloud", size: null, cloud: true, current: false },
+    { name: "phi3:mini", size: 2_200_000_000, cloud: false, current: true },
+    { name: "qwen3.5:9b", size: 6_600_000_000, cloud: false, current: false },
+  ];
 
   await page.route(`${API_ORIGIN}/api/**`, async (route) => {
     const request = route.request();
@@ -235,6 +241,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         asr_backend: "nemotron_streaming",
         asr_streaming_supported: true,
         asr_streaming_chunk_ms: 160,
+        asr_device: "cuda",
         nemotron_model_id: "nvidia/nemotron-speech-streaming-en-0.6b",
         nemotron_loaded: false,
         asr_model: "nvidia/nemotron-speech-streaming-en-0.6b",
@@ -245,7 +252,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         asr_min_free_vram_mb: 3500,
         asr_unload_ollama_on_start: false,
         ollama_gpu_models: ["phi3:mini"],
-        ollama_chat_model: "phi3:mini",
+        ollama_chat_model: ollamaChatModel,
         ollama_embed_model: "embeddinggemma",
         ollama_host: "http://127.0.0.1:11434",
         ollama_chat_host: "http://127.0.0.1:11434",
@@ -282,6 +289,28 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         test_mode_enabled: testModeEnabled,
         test_audio_run_dir: "/tmp/brain-sidecar-tests",
         ...(options.gpuHealthResponse ?? {}),
+      });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/models/ollama") {
+      await json(route, {
+        selected_chat_model: ollamaChatModel,
+        chat_host: "http://127.0.0.1:11434",
+        models: ollamaModels.map((model) => ({ ...model, current: model.name === ollamaChatModel })),
+        error: null,
+      });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/models/ollama/chat") {
+      const payload = request.postDataJSON() as { model?: string };
+      ollamaChatModel = String(payload.model ?? ollamaChatModel);
+      await json(route, {
+        selected_chat_model: ollamaChatModel,
+        chat_host: "http://127.0.0.1:11434",
+        models: ollamaModels.map((model) => ({ ...model, current: model.name === ollamaChatModel })),
+        error: null,
       });
       return;
     }

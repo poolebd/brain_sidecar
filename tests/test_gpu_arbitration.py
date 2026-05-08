@@ -114,3 +114,37 @@ def test_transcriber_retries_once_after_cuda_oom(monkeypatch: pytest.MonkeyPatch
     assert prepare_calls == [False, True]
     assert transcriber.model_size == "medium.en"
     assert FakeWhisperModel.attempts == 3
+
+
+def test_transcriber_can_load_cpu_fallback_without_gpu_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepare_calls = 0
+    created: list[tuple[str, str, str]] = []
+
+    def fake_prepare(_settings: Settings, *, force_unload: bool = False):
+        nonlocal prepare_calls
+        prepare_calls += 1
+
+    class FakeWhisperModel:
+        def __init__(self, model_size: str, *, device: str, compute_type: str) -> None:
+            created.append((model_size, device, compute_type))
+
+    settings = make_settings(tmp_path)
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "asr_backend": "faster_whisper",
+            "asr_device": "cpu",
+            "asr_compute_type": "float16",
+        }
+    )
+    monkeypatch.setattr("brain_sidecar.core.transcription.prepare_asr_gpu", fake_prepare)
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeWhisperModel))
+
+    transcriber = FasterWhisperTranscriber(settings)
+    transcriber._load_sync()
+
+    assert prepare_calls == 0
+    assert created == [("medium.en", "cpu", "int8")]

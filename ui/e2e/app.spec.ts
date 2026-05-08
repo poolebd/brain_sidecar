@@ -132,6 +132,12 @@ test("shows model residency and memory management pages", async ({ page }) => {
   await expect(modelsPage).toContainText("Keepalive 30m");
   await expect(modelsPage).toContainText("Keepalive not resident (0)");
   await expect(modelsPage).toContainText("GPU Residency");
+  const modelSelector = modelsPage.getByLabel("Ollama chat model");
+  await expect(modelSelector).toHaveValue("phi3:mini");
+  await modelSelector.selectOption("gpt-oss:120b-cloud");
+  await expect(modelSelector).toHaveValue("gpt-oss:120b-cloud");
+  await expect(modelsPage).toContainText("Saved gpt-oss:120b-cloud to .env");
+  await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("gpt-oss:120b-cloud");
   await expect(modelsPage.getByLabel("Config recipes")).toHaveJSProperty("open", false);
 
   await nav.getByRole("button", { name: "Memory" }).click();

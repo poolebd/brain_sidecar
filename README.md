@@ -117,6 +117,7 @@ Useful knobs:
 - `BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD`: reject low-confidence ASR segments, default `-1.0`.
 - `BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD`: reject repetitive/compressed ASR spans, default `2.4`.
 - `BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS`: skip near-silent audio windows before ASR, default `0.006`.
+- `BRAIN_SIDECAR_ASR_DEVICE`: Faster-Whisper device, `cuda` or `cpu`, default `cuda`. Use `cpu` with `BRAIN_SIDECAR_ASR_BACKEND=faster_whisper` after CUDA driver faults.
 - `BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB`: free VRAM target before loading the selected ASR backend, default `3500`.
 - `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before ASR load when VRAM is tight, default `false` so Nemotron and `phi3:mini` can stay resident together.
 - `BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS`: wait budget after unloading Ollama, default `10`.
