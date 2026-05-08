@@ -254,15 +254,29 @@ def heuristic_project_review_cards(session_id: str, recent_segments: list[Transc
                 priority="high",
             )
         )
-    if "rfi" in clean and ("comment" in clean or "comments" in clean or "scope" in clean or "deviation" in clean):
-        selected = select_evidence_segments(recent_segments, ["rfi", "comment", "comments", "scope", "deviation", "deviations"])
+    if "rfi" in clean and (
+        "comment" in clean
+        or "comments" in clean
+        or "scope" in clean
+        or "deviation" in clean
+        or "deviations" in clean
+        or "answer" in clean
+        or "answers" in clean
+        or "response" in clean
+        or "responses" in clean
+    ):
+        body = "Review the RFI responses." if any(term in clean for term in ["answer", "answers", "response", "responses"]) else "Review the RFI log."
+        selected = select_evidence_segments(
+            recent_segments,
+            ["rfi", "comment", "comments", "scope", "deviation", "deviations", "answer", "answers", "response", "responses"],
+        )
         cards.append(
             heuristic_card(
                 session_id,
                 selected,
                 category="action",
                 title="RFI log review",
-                body="Review the RFI log.",
+                body=body,
                 evidence_hint="rfi",
                 priority="normal",
             )

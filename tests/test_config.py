@@ -13,6 +13,7 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
         "BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS",
         "BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS",
         "BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE",
+        "BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS",
         "BRAIN_SIDECAR_ASR_VAD_MIN_SILENCE_MS",
         "BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED",
         "BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS",
@@ -30,6 +31,7 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
     assert settings.transcription_window_seconds == 3.4
     assert settings.transcription_overlap_seconds == 0.8
     assert settings.transcription_queue_size == 8
+    assert settings.notes_every_segments == 2
     assert settings.asr_vad_min_silence_ms == 300
     assert settings.partial_transcripts_enabled is False
     assert settings.partial_window_seconds == 2.0
@@ -37,7 +39,7 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
     assert settings.energy_lens_enabled is True
     assert settings.energy_lens_min_confidence == "medium"
     assert settings.energy_lens_max_keywords == 6
-    assert settings.energy_lens_max_cards_per_pass == 1
+    assert settings.energy_lens_max_cards_per_pass == 2
     assert settings.recall_min_score == 0.58
     assert settings.recall_max_live_hits == 4
     assert settings.recall_prefer_summaries is True
@@ -153,6 +155,7 @@ def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250")
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS", "0.8")
+    monkeypatch.setenv("BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS", "1")
     monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_ENABLED", "false")
     monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE", "high")
     monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS", "4")
@@ -163,6 +166,7 @@ def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.audio_chunk_ms == 250
     assert settings.transcription_window_seconds == 3.4
     assert settings.transcription_overlap_seconds == 0.8
+    assert settings.notes_every_segments == 1
     assert settings.energy_lens_enabled is False
     assert settings.energy_lens_min_confidence == "high"
     assert settings.energy_lens_max_keywords == 4

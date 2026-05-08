@@ -327,7 +327,12 @@ def create_app() -> FastAPI:
         status["recall_min_score"] = settings.recall_min_score
         status["recall_max_live_hits"] = settings.recall_max_live_hits
         status["recall_prefer_summaries"] = settings.recall_prefer_summaries
+        status["notes_every_segments"] = settings.notes_every_segments
         status["sidecar_quality_gate_enabled"] = settings.sidecar_quality_gate_enabled
+        status["sidecar_min_evidence_segments"] = settings.sidecar_min_evidence_segments
+        status["sidecar_max_cards_per_5min"] = settings.sidecar_max_cards_per_5min
+        status["sidecar_max_cards_per_generation_pass"] = settings.sidecar_max_cards_per_generation_pass
+        status["energy_lens_max_cards_per_pass"] = settings.energy_lens_max_cards_per_pass
         status["work_memory_job_history_root"] = str(settings.work_memory_job_history_root)
         status["work_memory_past_work_root"] = str(settings.work_memory_past_work_root)
         status["work_memory_pas_root"] = str(settings.work_memory_pas_root) if settings.work_memory_pas_root else None

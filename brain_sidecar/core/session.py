@@ -35,7 +35,7 @@ from brain_sidecar.core.meeting_agents import ContractCriticAgent, diagnostics_f
 from brain_sidecar.core.meeting_contract import MeetingContract, normalize_meeting_contract
 from brain_sidecar.core.models import SidecarCard, TranscriptSegment, new_id
 from brain_sidecar.core.note_quality import NoteQualityGate
-from brain_sidecar.core.notes import NoteSynthesizer, note_from_sidecar
+from brain_sidecar.core.notes import NoteSynthesizer, heuristic_meeting_cards, note_from_sidecar
 from brain_sidecar.core.ollama import OllamaClient
 from brain_sidecar.core.recall import RecallIndex
 from brain_sidecar.core.speaker_identity import SpeakerIdentityService, analyze_pcm16
@@ -1209,13 +1209,13 @@ class SessionManager:
         active = self._active.get(session_id)
         save_transcript = True if active is None else active.save_transcript
         if active is not None and active.note_segments:
-            recent_segments = active.note_segments[-12:]
+            recent_segments = active.note_segments[-24:]
         elif active is not None and active.recent_segments:
-            recent_segments = active.recent_segments[-10:]
+            recent_segments = active.recent_segments[-24:]
         else:
-            recent_segments = self.storage.recent_segments(session_id, limit=10)
+            recent_segments = self.storage.recent_segments(session_id, limit=24)
         source_segment_ids = source_ids_for_segments(recent_segments)
-        query = " ".join(segment.text for segment in recent_segments[-4:])
+        query = " ".join(segment.text for segment in recent_segments[-6:])
         self._maybe_enqueue_web_context(session_id, recent_segments)
         recall_hits = []
         note_context_hits = []
@@ -1261,6 +1261,26 @@ class SessionManager:
         except Exception as exc:
             await self._publish_error(session_id, f"Work memory recall skipped: {exc}", fatal=False)
 
+        fast_cards = heuristic_meeting_cards(session_id, recent_segments)
+        if active is not None and active.energy_conversation_frame is not None:
+            energy_cards = self.energy_agent.cards(
+                session_id,
+                recent_segments,
+                active.energy_conversation_frame,
+                active.meeting_contract,
+                max_cards=self.settings.energy_lens_max_cards_per_pass,
+            )
+            if energy_cards:
+                active.energy_lens_last_card_at = time.time()
+                fast_cards = [*energy_cards, *fast_cards]
+        await self._publish_accepted_generated_cards(
+            session_id,
+            active,
+            fast_cards,
+            recent_segments,
+            save_transcript=save_transcript,
+        )
+
         try:
             synthesize_params = inspect.signature(self.notes.synthesize).parameters
             synthesize_kwargs = (
@@ -1276,17 +1296,25 @@ class SessionManager:
             return
 
         generated_cards = self._cards_from_note_result(session_id, result, save_transcript=save_transcript)
-        if active is not None and active.energy_conversation_frame is not None:
-            energy_cards = self.energy_agent.cards(
-                session_id,
-                recent_segments,
-                active.energy_conversation_frame,
-                active.meeting_contract,
-                max_cards=self.settings.energy_lens_max_cards_per_pass,
-            )
-            if energy_cards:
-                active.energy_lens_last_card_at = time.time()
-                generated_cards = [*energy_cards, *generated_cards]
+        await self._publish_accepted_generated_cards(
+            session_id,
+            active,
+            generated_cards,
+            recent_segments,
+            save_transcript=save_transcript,
+        )
+
+    async def _publish_accepted_generated_cards(
+        self,
+        session_id: str,
+        active: ActiveSession | None,
+        generated_cards: list[SidecarCard],
+        recent_segments: list[TranscriptSegment],
+        *,
+        save_transcript: bool,
+    ) -> None:
+        if not generated_cards:
+            return
         accepted_cards = self._accepted_generated_cards(active, generated_cards, recent_segments)
         for card in accepted_cards:
             note = note_from_sidecar(card)

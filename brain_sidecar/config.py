@@ -108,7 +108,7 @@ class Settings:
     transcription_overlap_seconds: float = 0.8
     transcription_queue_size: int = 8
     postprocess_queue_size: int = 8
-    notes_every_segments: int = 3
+    notes_every_segments: int = 2
     min_segment_chars: int = 8
     dedupe_recent_segments: int = 18
     dedupe_similarity_threshold: float = 0.88
@@ -130,12 +130,12 @@ class Settings:
     sidecar_min_evidence_segments: int = 2
     sidecar_duplicate_window_seconds: float = 120.0
     sidecar_generic_clarify_window_seconds: float = 300.0
-    sidecar_max_cards_per_5min: int = 8
-    sidecar_max_cards_per_generation_pass: int = 3
+    sidecar_max_cards_per_5min: int = 12
+    sidecar_max_cards_per_generation_pass: int = 4
     energy_lens_enabled: bool = True
     energy_lens_min_confidence: str = "medium"
     energy_lens_max_keywords: int = 6
-    energy_lens_max_cards_per_pass: int = 1
+    energy_lens_max_cards_per_pass: int = 2
     asr_min_free_vram_mb: int = 3500
     asr_unload_ollama_on_start: bool = False
     asr_gpu_free_timeout_seconds: float = 10.0
@@ -198,7 +198,7 @@ def load_settings() -> Settings:
         transcription_overlap_seconds=transcription_overlap_seconds,
         transcription_queue_size=max(1, int(_env("BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE", "8"))),
         postprocess_queue_size=max(1, int(_env("BRAIN_SIDECAR_POSTPROCESS_QUEUE_SIZE", "8"))),
-        notes_every_segments=max(1, int(_env("BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS", "3"))),
+        notes_every_segments=max(1, int(_env("BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS", "2"))),
         min_segment_chars=max(1, int(_env("BRAIN_SIDECAR_MIN_SEGMENT_CHARS", "8"))),
         dedupe_recent_segments=max(1, int(_env("BRAIN_SIDECAR_DEDUPE_RECENT_SEGMENTS", "18"))),
         dedupe_similarity_threshold=float(_env("BRAIN_SIDECAR_DEDUPE_SIMILARITY_THRESHOLD", "0.88")),
@@ -247,15 +247,15 @@ def load_settings() -> Settings:
             1.0,
             float(_env("BRAIN_SIDECAR_SIDECAR_GENERIC_CLARIFY_WINDOW_SECONDS", "300")),
         ),
-        sidecar_max_cards_per_5min=max(1, int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN", "8"))),
+        sidecar_max_cards_per_5min=max(1, int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN", "12"))),
         sidecar_max_cards_per_generation_pass=max(
             1,
-            int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS", "3")),
+            int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS", "4")),
         ),
         energy_lens_enabled=_env_bool("BRAIN_SIDECAR_ENERGY_LENS_ENABLED", True),
         energy_lens_min_confidence=_env("BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE", "medium").strip().lower(),
         energy_lens_max_keywords=max(1, int(_env("BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS", "6"))),
-        energy_lens_max_cards_per_pass=max(1, int(_env("BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS", "1"))),
+        energy_lens_max_cards_per_pass=max(1, int(_env("BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS", "2"))),
         speaker_enrollment_sample_seconds=max(
             2.0,
             float(_env("BRAIN_SIDECAR_SPEAKER_ENROLLMENT_SAMPLE_SECONDS", "8.0")),

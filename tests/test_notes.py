@@ -217,6 +217,40 @@ def test_project_review_heuristics_pass_quality_gate(event_loop) -> None:
     assert any(card.title == "Send by Monday" and decision.action == "accept" for card, decision in zip(result.sidecar_cards, decisions))
 
 
+def test_rfi_response_heuristic_uses_response_language_and_passes_gate() -> None:
+    segments = [
+        TranscriptSegment(
+            id="seg_rfi",
+            session_id="ses_1",
+            start_s=0.0,
+            end_s=2.0,
+            text="We are working on the RFI you sent our way.",
+        ),
+        TranscriptSegment(
+            id="seg_answers",
+            session_id="ses_1",
+            start_s=2.1,
+            end_s=4.0,
+            text="We should go through the answers and give you a chance to comment.",
+        ),
+        TranscriptSegment(
+            id="seg_final",
+            session_id="ses_1",
+            start_s=4.1,
+            end_s=6.0,
+            text="Then we can incorporate those comments into our final response.",
+        ),
+    ]
+    gate = NoteQualityGate()
+
+    cards = heuristic_project_review_cards("ses_1", segments)
+    card = next(card for card in cards if card.title == "RFI log review")
+    decision = gate.evaluate(card, segments, {"ready": False, "enrollment_status": "not_enrolled"})
+
+    assert "RFI responses" in card.body
+    assert decision.action == "accept"
+
+
 def test_review_path_heuristic_uses_stable_title_for_supported_reviewer_evidence() -> None:
     segments = [
         TranscriptSegment(

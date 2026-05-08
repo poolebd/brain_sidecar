@@ -132,6 +132,7 @@ Useful knobs:
 - `BRAIN_SIDECAR_OLLAMA_CHAT_TIMEOUT_SECONDS`: local note/card synthesis timeout, default `20`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_TIMEOUT_SECONDS`: local embedding timeout, default `12`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE`: number of pending audio windows before stale windows are dropped, default `8`.
+- `BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS`: final transcript cadence for live Meeting Output refreshes, default `2`.
 - `BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED`: publish guarded provisional transcript previews, default `false`. Preview ASR is opt-in because final windows must never wait behind preview work.
 - `BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS`: preview ASR window length, capped to the final ASR window, default `2.0`.
 - `BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS`: minimum spacing between preview ASR jobs, default `2.0`.
@@ -151,12 +152,12 @@ Useful knobs:
 - `BRAIN_SIDECAR_SIDECAR_MIN_EVIDENCE_SEGMENTS`: supporting transcript segments normally required for generated live cards, default `2`.
 - `BRAIN_SIDECAR_SIDECAR_DUPLICATE_WINDOW_SECONDS`: duplicate-card suppression window, default `120`.
 - `BRAIN_SIDECAR_SIDECAR_GENERIC_CLARIFY_WINDOW_SECONDS`: rate limit for generic clarification cards, default `300`.
-- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN`: rolling live-card volume cap, default `8`.
-- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS`: maximum generated cards emitted from one note refresh, default `3`.
+- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN`: rolling live-card volume cap, default `12`.
+- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS`: maximum generated cards emitted from one note refresh, default `4`.
 - `BRAIN_SIDECAR_ENERGY_LENS_ENABLED`: enables the local Energy Consulting Lens, default `true`.
 - `BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE`: minimum confidence shown in Live, default `medium`.
 - `BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS`: compact status keyword cap, default `6`.
-- `BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS`: deterministic energy-card cap, default `1`.
+- `BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS`: deterministic energy-card cap, default `2`.
 - `BRAIN_SIDECAR_WEB_CONTEXT_ENABLED`: set to `true` to allow selective Brave web context for explicit current-tech questions.
 - `BRAIN_SIDECAR_BRAVE_SEARCH_API_KEY`: Brave Search API key; without this, web context stays disabled.
 - `BRAIN_SIDECAR_WEB_CONTEXT_MIN_INTERVAL_SECONDS`: cooldown between live web lookups, default `90`.
