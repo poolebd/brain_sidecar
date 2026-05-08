@@ -1,0 +1,2442 @@
+{
+  "entries": [
+    {
+      "ambiguous": false,
+      "category": "commercial",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy consultant",
+      "phrase": "energy consultant",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "advisory",
+      "synonyms": [
+        "energy advisor",
+        "energy consulting firm"
+      ],
+      "weight": 0.95
+    },
+    {
+      "ambiguous": false,
+      "category": "commercial",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy consulting",
+      "phrase": "energy consulting",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "advisory",
+      "synonyms": [
+        "energy advisory",
+        "energy consultancy",
+        "engery consulting"
+      ],
+      "weight": 0.99
+    },
+    {
+      "ambiguous": false,
+      "category": "commercial",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy cost reduction",
+      "phrase": "energy cost reduction",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "value proposition",
+      "synonyms": [
+        "lower energy costs",
+        "utility cost reduction"
+      ],
+      "weight": 0.93
+    },
+    {
+      "ambiguous": false,
+      "category": "commercial",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy savings",
+      "phrase": "energy savings",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "value proposition",
+      "synonyms": [
+        "save energy",
+        "savings potential"
+      ],
+      "weight": 0.96
+    },
+    {
+      "ambiguous": false,
+      "category": "commercial",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy service company",
+      "phrase": "energy service company",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "delivery model",
+      "synonyms": [
+        "energy services firm",
+        "ESCO"
+      ],
+      "weight": 0.82
+    },
+    {
+      "ambiguous": false,
+      "category": "commercial",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "proposal",
+      "phrase": "proposal",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "sales",
+      "synonyms": [
+        "commercial proposal",
+        "quote"
+      ],
+      "weight": 0.82
+    },
+    {
+      "ambiguous": false,
+      "category": "commercial",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "request for proposal",
+      "phrase": "request for proposal",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "sales",
+      "synonyms": [
+        "RFP",
+        "tender request"
+      ],
+      "weight": 0.84
+    },
+    {
+      "ambiguous": false,
+      "category": "commercial",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "scope of work",
+      "phrase": "scope of work",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "sales",
+      "synonyms": [
+        "project scope",
+        "SOW",
+        "work scope"
+      ],
+      "weight": 0.86
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "business case",
+      "phrase": "business case",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "project justification",
+      "synonyms": [
+        "investment case",
+        "project justification"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "capital expenditure",
+      "phrase": "capital expenditure",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "budgeting",
+      "synonyms": [
+        "CAPEX",
+        "capital cost",
+        "upfront capital"
+      ],
+      "weight": 0.81
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy savings performance contract",
+      "phrase": "energy savings performance contract",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "performance contracting",
+      "synonyms": [
+        "ESPC",
+        "performance contract"
+      ],
+      "weight": 0.84
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy service agreement",
+      "phrase": "energy service agreement",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "service contracting",
+      "synonyms": [
+        "as-a-service energy contract",
+        "ESA"
+      ],
+      "weight": 0.79
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "internal rate of return",
+      "phrase": "internal rate of return",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "capital budgeting",
+      "synonyms": [
+        "hurdle-rate proxy",
+        "IRR"
+      ],
+      "weight": 0.77
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "net present value",
+      "phrase": "net present value",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "capital budgeting",
+      "synonyms": [
+        "discounted cash flow value",
+        "NPV"
+      ],
+      "weight": 0.8
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "operating expenditure",
+      "phrase": "operating expenditure",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "budgeting",
+      "synonyms": [
+        "operating cost",
+        "OPEX",
+        "run cost"
+      ],
+      "weight": 0.8
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "performance guarantee",
+      "phrase": "performance guarantee",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "service contracting",
+      "synonyms": [
+        "guaranteed savings",
+        "savings guarantee"
+      ],
+      "weight": 0.78
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "return on investment",
+      "phrase": "return on investment",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "capital budgeting",
+      "synonyms": [
+        "investment return",
+        "ROI"
+      ],
+      "weight": 0.86
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "shared savings",
+      "phrase": "shared savings",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "service contracting",
+      "synonyms": [
+        "gain share",
+        "savings share"
+      ],
+      "weight": 0.79
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "simple payback",
+      "phrase": "simple payback",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "capital budgeting",
+      "synonyms": [
+        "pay back",
+        "payback period"
+      ],
+      "weight": 0.83
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "total cost of ownership",
+      "phrase": "total cost of ownership",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "budgeting",
+      "synonyms": [
+        "TCO",
+        "whole-life cost"
+      ],
+      "weight": 0.82
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "utility incentive",
+      "phrase": "utility incentive",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "incentives",
+      "synonyms": [
+        "efficiency incentive",
+        "program incentive"
+      ],
+      "weight": 0.87
+    },
+    {
+      "ambiguous": false,
+      "category": "finance",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "utility rebate",
+      "phrase": "utility rebate",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "incentives",
+      "synonyms": [
+        "energy rebate",
+        "rebate program"
+      ],
+      "weight": 0.89
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "behind the meter",
+      "phrase": "behind-the-meter",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "der placement",
+      "synonyms": [
+        "behind the meter",
+        "BTM",
+        "customer-sited"
+      ],
+      "weight": 0.82
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "demand charge management",
+      "phrase": "demand charge management",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Market, technology, systems, and flexibility keywords",
+      "subcategory": "billing and grid",
+      "synonyms": [
+        "demand charge reduction",
+        "demand cost control"
+      ],
+      "weight": 0.91
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "demand flexibility",
+      "phrase": "demand flexibility",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Market, technology, systems, and flexibility keywords",
+      "subcategory": "flexibility",
+      "synonyms": [
+        "flexible demand",
+        "load flexibility"
+      ],
+      "weight": 0.92
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "demand response",
+      "phrase": "demand response",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Market, technology, systems, and flexibility keywords",
+      "subcategory": "flexibility",
+      "synonyms": [
+        "demand side response",
+        "demand-side response",
+        "DR"
+      ],
+      "weight": 0.94
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "der aggregation",
+      "phrase": "DER aggregation",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "der participation",
+      "synonyms": [
+        "aggregated DER",
+        "DER aggregator"
+      ],
+      "weight": 0.8
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "compliance"
+      ],
+      "normalized_token": "energy attribute certificate",
+      "phrase": "energy attribute certificate",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "environmental attribute",
+      "synonyms": [
+        "certificate of origin",
+        "EAC"
+      ],
+      "weight": 0.79
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy procurement",
+      "phrase": "energy procurement",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Market, technology, systems, and flexibility keywords",
+      "subcategory": "sourcing",
+      "synonyms": [
+        "energy sourcing",
+        "power procurement"
+      ],
+      "weight": 0.95
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "green tariff",
+      "phrase": "green tariff",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "utility sourcing",
+      "synonyms": [
+        "green rate",
+        "utility green tariff"
+      ],
+      "weight": 0.83
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "load shifting",
+      "phrase": "load shifting",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "flexibility action",
+      "synonyms": [
+        "load shift",
+        "shift load"
+      ],
+      "weight": 0.89
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "peak demand",
+      "phrase": "peak demand",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "billing and grid",
+      "synonyms": [
+        "billing demand",
+        "max demand",
+        "peak load"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "peak shaving",
+      "phrase": "peak shaving",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "flexibility action",
+      "synonyms": [
+        "peak clipping",
+        "peak reduction"
+      ],
+      "weight": 0.9
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "physical ppa",
+      "phrase": "physical PPA",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "contracting",
+      "synonyms": [
+        "bundled PPA",
+        "sleeved PPA"
+      ],
+      "weight": 0.77
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "power purchase agreement",
+      "phrase": "power purchase agreement",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Market, technology, systems, and flexibility keywords",
+      "subcategory": "contracting",
+      "synonyms": [
+        "power offtake agreement",
+        "PPA"
+      ],
+      "weight": 0.92
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "rate optimization",
+      "phrase": "rate optimization",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "tariff",
+      "synonyms": [
+        "bill optimization",
+        "tariff optimization"
+      ],
+      "weight": 0.89
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "real time pricing",
+      "phrase": "real-time pricing",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "tariff",
+      "synonyms": [
+        "dynamic pricing",
+        "RTP",
+        "spot pricing"
+      ],
+      "weight": 0.79
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "compliance"
+      ],
+      "normalized_token": "renewable energy certificate",
+      "phrase": "renewable energy certificate",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "environmental attribute",
+      "synonyms": [
+        "REC",
+        "renewable certificate"
+      ],
+      "weight": 0.87
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "renewable energy procurement",
+      "phrase": "renewable energy procurement",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "sourcing",
+      "synonyms": [
+        "clean electricity procurement",
+        "renewable sourcing"
+      ],
+      "weight": 0.91
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "tariff analysis",
+      "phrase": "tariff analysis",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Market, technology, systems, and flexibility keywords",
+      "subcategory": "tariff",
+      "synonyms": [
+        "rate analysis",
+        "tariff review"
+      ],
+      "weight": 0.91
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "time of use rate",
+      "phrase": "time-of-use rate",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "tariff",
+      "synonyms": [
+        "time-of-day pricing",
+        "TOU rate"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": false,
+      "category": "market",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "virtual ppa",
+      "phrase": "virtual PPA",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "contracting",
+      "synonyms": [
+        "financial PPA",
+        "synthetic PPA",
+        "VPPA"
+      ],
+      "weight": 0.82
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "commissioning",
+      "phrase": "commissioning",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "commissioning",
+      "synonyms": [
+        "building commissioning",
+        "Cx"
+      ],
+      "weight": 0.91
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "continuous commissioning",
+      "phrase": "continuous commissioning",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "commissioning",
+      "synonyms": [
+        "continuous commisioning",
+        "ongoing commissioning"
+      ],
+      "weight": 0.8
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "support",
+        "compliance"
+      ],
+      "normalized_token": "energy baseline",
+      "phrase": "energy baseline",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "kpi",
+      "synonyms": [
+        "baseline",
+        "baseline period",
+        "EnB"
+      ],
+      "weight": 0.89
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy benchmarking",
+      "phrase": "energy benchmarking",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "benchmarking",
+      "synonyms": [
+        "building benchmarking",
+        "portfolio benchmarking"
+      ],
+      "weight": 0.93
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen",
+        "support"
+      ],
+      "normalized_token": "energy management",
+      "phrase": "energy management",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "program management",
+      "synonyms": [
+        "energy mgmt",
+        "energy-management"
+      ],
+      "weight": 0.98
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "support",
+        "compliance"
+      ],
+      "normalized_token": "energy performance indicator",
+      "phrase": "energy performance indicator",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "kpi",
+      "synonyms": [
+        "energy KPI",
+        "EnPI",
+        "performance metric"
+      ],
+      "weight": 0.87
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "support",
+        "compliance"
+      ],
+      "normalized_token": "energy review",
+      "phrase": "energy review",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "enms",
+      "synonyms": [
+        "energy review process",
+        "management review"
+      ],
+      "weight": 0.82
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "support",
+        "compliance"
+      ],
+      "normalized_token": "energy use intensity",
+      "phrase": "energy use intensity",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "kpi",
+      "synonyms": [
+        "energy intensity",
+        "energy usage intensity",
+        "EUI"
+      ],
+      "weight": 0.91
+    },
+    {
+      "ambiguous": true,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "support",
+        "compliance"
+      ],
+      "normalized_token": "eui",
+      "phrase": "EUI",
+      "requires_context": true,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "kpi acronym",
+      "synonyms": [
+        "energy usage intensity",
+        "energy use intensity"
+      ],
+      "weight": 0.8
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "load profile",
+      "phrase": "load profile",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "metering",
+      "synonyms": [
+        "demand profile",
+        "load shape",
+        "usage profile"
+      ],
+      "weight": 0.89
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "monitoring based commissioning",
+      "phrase": "monitoring-based commissioning",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "commissioning",
+      "synonyms": [
+        "analytics-based commissioning",
+        "MBCx"
+      ],
+      "weight": 0.84
+    },
+    {
+      "ambiguous": true,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "rcx",
+      "phrase": "RCx",
+      "requires_context": true,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "commissioning acronym",
+      "synonyms": [
+        "retro-commissioning",
+        "retrocommissioning"
+      ],
+      "weight": 0.77
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "retro commissioning",
+      "phrase": "retro-commissioning",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "commissioning",
+      "synonyms": [
+        "RCx",
+        "retro commisioning",
+        "retrocommissioning"
+      ],
+      "weight": 0.93
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "sequence of operations",
+      "phrase": "sequence of operations",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "controls",
+      "synonyms": [
+        "control sequence",
+        "sequence of operation",
+        "SOO"
+      ],
+      "weight": 0.79
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "support",
+        "compliance"
+      ],
+      "normalized_token": "significant energy use",
+      "phrase": "significant energy use",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "enms",
+      "synonyms": [
+        "major energy use",
+        "SEU"
+      ],
+      "weight": 0.84
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "strategic energy management",
+      "phrase": "strategic energy management",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "program management",
+      "synonyms": [
+        "SEM program",
+        "strategic energy plan"
+      ],
+      "weight": 0.91
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "submetering",
+      "phrase": "submetering",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "metering",
+      "synonyms": [
+        "sub-metering",
+        "submeters"
+      ],
+      "weight": 0.85
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "support"
+      ],
+      "normalized_token": "utility bill analysis",
+      "phrase": "utility bill analysis",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "billing analytics",
+      "synonyms": [
+        "bill review",
+        "utility analysis"
+      ],
+      "weight": 0.95
+    },
+    {
+      "ambiguous": false,
+      "category": "operations",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "utility bill management",
+      "phrase": "utility bill management",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "billing analytics",
+      "synonyms": [
+        "bill management",
+        "invoice management"
+      ],
+      "weight": 0.83
+    },
+    {
+      "ambiguous": false,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "50001 ready",
+      "phrase": "50001 Ready",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "implementation framework",
+      "synonyms": [
+        "50001ready",
+        "ISO 50001 Ready"
+      ],
+      "weight": 0.71
+    },
+    {
+      "ambiguous": false,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "ashrae level 1 audit",
+      "phrase": "ASHRAE Level 1 audit",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "audit standard",
+      "synonyms": [
+        "level 1 audit",
+        "walkthrough energy audit"
+      ],
+      "weight": 0.84
+    },
+    {
+      "ambiguous": false,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "ashrae level 2 audit",
+      "phrase": "ASHRAE Level 2 audit",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "audit standard",
+      "synonyms": [
+        "energy survey and analysis",
+        "level 2 audit"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": false,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "ashrae level 3 audit",
+      "phrase": "ASHRAE Level 3 audit",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "audit standard",
+      "synonyms": [
+        "detailed analysis",
+        "level 3 audit"
+      ],
+      "weight": 0.82
+    },
+    {
+      "ambiguous": false,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "building performance standard",
+      "phrase": "building performance standard",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "building policy",
+      "synonyms": [
+        "BPS",
+        "building emissions performance standard"
+      ],
+      "weight": 0.78
+    },
+    {
+      "ambiguous": true,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "support",
+        "compliance"
+      ],
+      "normalized_token": "ipmvp",
+      "phrase": "IPMVP",
+      "requires_context": true,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "performance protocol",
+      "synonyms": [
+        "International Performance Measurement and Verification Protocol"
+      ],
+      "weight": 0.8
+    },
+    {
+      "ambiguous": false,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "iso 50001",
+      "phrase": "ISO 50001",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "energy management standard",
+      "synonyms": [
+        "energy management system standard",
+        "iso50001"
+      ],
+      "weight": 0.9
+    },
+    {
+      "ambiguous": false,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "iso 50002",
+      "phrase": "ISO 50002",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "energy audit standard",
+      "synonyms": [
+        "energy audit standard",
+        "iso50002"
+      ],
+      "weight": 0.76
+    },
+    {
+      "ambiguous": false,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "compliance"
+      ],
+      "normalized_token": "iso 50015",
+      "phrase": "ISO 50015",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "mv measurement and verification standard",
+      "synonyms": [
+        "measurement and verification standard"
+      ],
+      "weight": 0.64
+    },
+    {
+      "ambiguous": false,
+      "category": "regulatory",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "superior energy performance",
+      "phrase": "Superior Energy Performance",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "certification program",
+      "synonyms": [
+        "SEP",
+        "superior energy performance certification"
+      ],
+      "weight": 0.68
+    },
+    {
+      "ambiguous": false,
+      "category": "service",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy audit",
+      "phrase": "energy audit",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "audit",
+      "synonyms": [
+        "energy assessment",
+        "engery audit",
+        "site audit"
+      ],
+      "weight": 0.98
+    },
+    {
+      "ambiguous": false,
+      "category": "service",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy strategy",
+      "phrase": "energy strategy",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "strategy",
+      "synonyms": [
+        "energy roadmap",
+        "strategic energy plan"
+      ],
+      "weight": 0.94
+    },
+    {
+      "ambiguous": false,
+      "category": "service",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "feasibility study",
+      "phrase": "feasibility study",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "assessment",
+      "synonyms": [
+        "feasibility assessment",
+        "technoeconomic study"
+      ],
+      "weight": 0.86
+    },
+    {
+      "ambiguous": false,
+      "category": "service",
+      "intent_tags": [
+        "lead-gen",
+        "support",
+        "complaint"
+      ],
+      "normalized_token": "high energy bill",
+      "phrase": "high energy bill",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "client pain point",
+      "synonyms": [
+        "expensive energy bill",
+        "high electric bill",
+        "high utility bill"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": false,
+      "category": "service",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "implementation roadmap",
+      "phrase": "implementation roadmap",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "strategy",
+      "synonyms": [
+        "execution roadmap",
+        "implementation plan"
+      ],
+      "weight": 0.87
+    },
+    {
+      "ambiguous": false,
+      "category": "service",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "investment grade audit",
+      "phrase": "investment grade audit",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "audit",
+      "synonyms": [
+        "bankable audit",
+        "IGA",
+        "investment-grade audit"
+      ],
+      "weight": 0.85
+    },
+    {
+      "ambiguous": false,
+      "category": "service",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "portfolio assessment",
+      "phrase": "portfolio assessment",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "portfolio planning",
+      "synonyms": [
+        "multi-site assessment",
+        "portfolio review"
+      ],
+      "weight": 0.83
+    },
+    {
+      "ambiguous": false,
+      "category": "service",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "resilience assessment",
+      "phrase": "resilience assessment",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "resilience",
+      "synonyms": [
+        "resilience study",
+        "resiliency assessment"
+      ],
+      "weight": 0.84
+    },
+    {
+      "ambiguous": false,
+      "category": "service",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "site assessment",
+      "phrase": "site assessment",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "assessment",
+      "synonyms": [
+        "facility assessment",
+        "onsite assessment"
+      ],
+      "weight": 0.86
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "carbon accounting",
+      "phrase": "carbon accounting",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "carbon accounting",
+      "synonyms": [
+        "climate accounting",
+        "emissions accounting"
+      ],
+      "weight": 0.89
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "climate disclosure",
+      "phrase": "climate disclosure",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "reporting",
+      "synonyms": [
+        "carbon disclosure",
+        "climate-related disclosure"
+      ],
+      "weight": 0.83
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "climate transition plan",
+      "phrase": "climate transition plan",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "transition strategy",
+      "synonyms": [
+        "climate plan",
+        "transition plan"
+      ],
+      "weight": 0.81
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "decarbonization",
+      "phrase": "decarbonization",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "transition strategy",
+      "synonyms": [
+        "carbon reduction",
+        "decarbonisation",
+        "emissions reduction"
+      ],
+      "weight": 0.97
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "decarbonization roadmap",
+      "phrase": "decarbonization roadmap",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "transition strategy",
+      "synonyms": [
+        "decarb roadmap",
+        "decarbonisation roadmap",
+        "net-zero roadmap"
+      ],
+      "weight": 0.95
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "support",
+        "compliance"
+      ],
+      "normalized_token": "emissions factor",
+      "phrase": "emissions factor",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "carbon accounting",
+      "synonyms": [
+        "carbon factor",
+        "emission factor",
+        "grid factor"
+      ],
+      "weight": 0.83
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "esg reporting",
+      "phrase": "ESG reporting",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "reporting",
+      "synonyms": [
+        "ESG disclosure",
+        "sustainability reporting"
+      ],
+      "weight": 0.82
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "ghg inventory",
+      "phrase": "GHG inventory",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "carbon accounting acronym",
+      "synonyms": [
+        "emissions inventory",
+        "greenhouse gas inventory"
+      ],
+      "weight": 0.77
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "greenhouse gas inventory",
+      "phrase": "greenhouse gas inventory",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "carbon accounting",
+      "synonyms": [
+        "carbon inventory",
+        "emissions inventory",
+        "GHG inventory"
+      ],
+      "weight": 0.9
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "compliance"
+      ],
+      "normalized_token": "location based emissions",
+      "phrase": "location-based emissions",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "scope 2 method",
+      "synonyms": [
+        "grid-average method",
+        "location based method"
+      ],
+      "weight": 0.77
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "marginal abatement cost curve",
+      "phrase": "marginal abatement cost curve",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "analytics",
+      "synonyms": [
+        "abatement cost curve",
+        "MACC"
+      ],
+      "weight": 0.77
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "compliance"
+      ],
+      "normalized_token": "market based emissions",
+      "phrase": "market-based emissions",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "scope 2 method",
+      "synonyms": [
+        "contract-based electricity emissions",
+        "market-based method"
+      ],
+      "weight": 0.77
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "net zero",
+      "phrase": "net zero",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "target setting",
+      "synonyms": [
+        "net zero target",
+        "net-zero"
+      ],
+      "weight": 0.9
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "science based target",
+      "phrase": "science-based target",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "target setting",
+      "synonyms": [
+        "SBT",
+        "science based target"
+      ],
+      "weight": 0.8
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "compliance"
+      ],
+      "normalized_token": "scope 1 emissions",
+      "phrase": "scope 1 emissions",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "carbon accounting",
+      "synonyms": [
+        "direct emissions",
+        "scope one"
+      ],
+      "weight": 0.86
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "compliance"
+      ],
+      "normalized_token": "scope 2 emissions",
+      "phrase": "scope 2 emissions",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "carbon accounting",
+      "synonyms": [
+        "purchased electricity emissions",
+        "scope two"
+      ],
+      "weight": 0.89
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "compliance"
+      ],
+      "normalized_token": "scope 3 emissions",
+      "phrase": "scope 3 emissions",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "carbon accounting",
+      "synonyms": [
+        "scope three",
+        "value chain emissions"
+      ],
+      "weight": 0.84
+    },
+    {
+      "ambiguous": false,
+      "category": "sustainability",
+      "intent_tags": [
+        "informational",
+        "lead-gen",
+        "compliance"
+      ],
+      "normalized_token": "sustainability reporting",
+      "phrase": "sustainability reporting",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Sustainability, finance, standards, contracting, and pain-point keywords",
+      "subcategory": "reporting",
+      "synonyms": [
+        "climate reporting",
+        "nonfinancial reporting"
+      ],
+      "weight": 0.84
+    },
+    {
+      "ambiguous": false,
+      "category": "technical",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "building electrification",
+      "phrase": "building electrification",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "transition lever",
+      "synonyms": [
+        "all-electric building",
+        "HVAC electrification"
+      ],
+      "weight": 0.86
+    },
+    {
+      "ambiguous": false,
+      "category": "technical",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "electrification",
+      "phrase": "electrification",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "transition lever",
+      "synonyms": [
+        "electrfication",
+        "electrifying loads"
+      ],
+      "weight": 0.91
+    },
+    {
+      "ambiguous": false,
+      "category": "technical",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "energy conservation measure",
+      "phrase": "energy conservation measure",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "project measure",
+      "synonyms": [
+        "ECM",
+        "efficiency measure"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": false,
+      "category": "technical",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "energy efficiency",
+      "phrase": "energy efficiency",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Highest-weight phrases; Core advisory, audit, operations, and sales keywords",
+      "subcategory": "core concept",
+      "synonyms": [
+        "efficiency",
+        "efficient energy use",
+        "energy effeciency"
+      ],
+      "weight": 0.98
+    },
+    {
+      "ambiguous": false,
+      "category": "technical",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "industrial electrification",
+      "phrase": "industrial electrification",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "transition lever",
+      "synonyms": [
+        "heat electrification",
+        "process electrification"
+      ],
+      "weight": 0.87
+    },
+    {
+      "ambiguous": false,
+      "category": "technical",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "measurement and verification",
+      "phrase": "measurement and verification",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "performance verification",
+      "synonyms": [
+        "M&V",
+        "savings verification"
+      ],
+      "weight": 0.91
+    },
+    {
+      "ambiguous": false,
+      "category": "technical",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "mv",
+      "phrase": "M&V",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "performance verification acronym",
+      "synonyms": [
+        "measurement and verification"
+      ],
+      "weight": 0.79
+    },
+    {
+      "ambiguous": false,
+      "category": "technical",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "process heating",
+      "phrase": "process heating",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "industrial systems",
+      "synonyms": [
+        "industrial heat",
+        "process heat"
+      ],
+      "weight": 0.81
+    },
+    {
+      "ambiguous": false,
+      "category": "technical",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "waste heat recovery",
+      "phrase": "waste heat recovery",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "thermal efficiency",
+      "synonyms": [
+        "heat recovery",
+        "WHR"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "battery energy storage system",
+      "phrase": "battery energy storage system",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "storage",
+      "synonyms": [
+        "battery storage",
+        "BESS"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "building automation system",
+      "phrase": "building automation system",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "controls",
+      "synonyms": [
+        "BAS",
+        "building controls system"
+      ],
+      "weight": 0.9
+    },
+    {
+      "ambiguous": true,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "chp",
+      "phrase": "CHP",
+      "requires_context": true,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "thermal generation acronym",
+      "synonyms": [
+        "cogeneration",
+        "combined heat and power"
+      ],
+      "weight": 0.76
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "combined heat and power",
+      "phrase": "combined heat and power",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "thermal generation",
+      "synonyms": [
+        "CHP",
+        "cogen",
+        "cogeneration"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": true,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "derms",
+      "phrase": "DERMS",
+      "requires_context": true,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "grid software",
+      "synonyms": [
+        "distributed energy resource management system"
+      ],
+      "weight": 0.74
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "distributed energy resource",
+      "phrase": "distributed energy resource",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "der",
+      "synonyms": [
+        "DER",
+        "distributed resources"
+      ],
+      "weight": 0.89
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "energy management information system",
+      "phrase": "energy management information system",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "analytics platform",
+      "synonyms": [
+        "EMIS",
+        "energy analytics platform"
+      ],
+      "weight": 0.9
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "support",
+        "compliance"
+      ],
+      "normalized_token": "energy star portfolio manager",
+      "phrase": "ENERGY STAR Portfolio Manager",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "benchmarking tool",
+      "synonyms": [
+        "ENERGY STAR PM",
+        "portfolio manager"
+      ],
+      "weight": 0.82
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "fault detection and diagnostics",
+      "phrase": "fault detection and diagnostics",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Core advisory, audit, operations, and sales keywords",
+      "subcategory": "analytics",
+      "synonyms": [
+        "fault detection & diagnostics",
+        "FDD"
+      ],
+      "weight": 0.89
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "heat pump",
+      "phrase": "heat pump",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "electrification",
+      "synonyms": [
+        "air-source heat pump",
+        "heat-pump"
+      ],
+      "weight": 0.85
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "microgrid",
+      "phrase": "microgrid",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "resilience",
+      "synonyms": [
+        "campus microgrid",
+        "micro-grid"
+      ],
+      "weight": 0.88
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "support"
+      ],
+      "normalized_token": "smart meter",
+      "phrase": "smart meter",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "metering",
+      "synonyms": [
+        "advanced meter",
+        "interval meter"
+      ],
+      "weight": 0.78
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "solar pv",
+      "phrase": "solar PV",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "onsite generation",
+      "synonyms": [
+        "PV system",
+        "solar photovoltaic"
+      ],
+      "weight": 0.86
+    },
+    {
+      "ambiguous": false,
+      "category": "technology",
+      "intent_tags": [
+        "informational",
+        "transactional",
+        "lead-gen"
+      ],
+      "normalized_token": "virtual power plant",
+      "phrase": "virtual power plant",
+      "requires_context": false,
+      "source": "energy_keyword_report",
+      "source_section": "Market, technology, systems, and flexibility keywords",
+      "subcategory": "aggregation",
+      "synonyms": [
+        "flexibility aggregation",
+        "VPP"
+      ],
+      "weight": 0.87
+    }
+  ],
+  "entry_count": 121,
+  "source": "docs/research/energy-keyword-framework.md",
+  "source_type": "energy_keyword_report"
+}

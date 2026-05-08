@@ -5,8 +5,10 @@ import json
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
 from brain_sidecar.config import Settings
+from brain_sidecar.core.gpu import read_gpu_status
 
 
 class OllamaClient:
@@ -16,7 +18,7 @@ class OllamaClient:
 
     async def chat(self, system: str, user: str, *, format_json: bool = False) -> str:
         payload: dict[str, Any] = {
-            "model": self.settings.ollama_chat_model,
+            "model": self._chat_model(),
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -105,6 +107,34 @@ class OllamaClient:
 
     def _embed_host(self) -> str:
         return (getattr(self.settings, "ollama_embed_host", "") or self.settings.ollama_host).rstrip("/")
+
+    def _chat_model(self) -> str:
+        primary = self.settings.ollama_chat_model
+        min_free_mb = int(getattr(self.settings, "ollama_chat_min_free_vram_mb", 0) or 0)
+        if min_free_mb <= 0 or not self._chat_uses_local_gpu():
+            return primary
+
+        status = read_gpu_status()
+        free_mb = status.memory_free_mb
+        if free_mb is None or free_mb >= min_free_mb:
+            return primary
+
+        fallback = str(getattr(self.settings, "ollama_chat_fallback_model", "") or "").strip()
+        if fallback:
+            return fallback
+
+        raise RuntimeError(
+            f"Skipping Ollama chat model {primary}: free VRAM is {free_mb} MB, "
+            f"below the configured chat reserve of {min_free_mb} MB."
+        )
+
+    def _chat_uses_local_gpu(self) -> bool:
+        host = self._chat_host()
+        parsed = urlparse(host)
+        hostname = parsed.hostname
+        if hostname is None:
+            hostname = host.split(":", 1)[0].strip("[]/")
+        return hostname in {"", "127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
     def _chat_keep_alive(self) -> str:
         return getattr(self.settings, "ollama_chat_keep_alive", "") or self.settings.ollama_keep_alive

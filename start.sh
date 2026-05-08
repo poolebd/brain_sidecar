@@ -150,7 +150,7 @@ bootstrap_python_environment() {
     run_or_show_log_tail "[env] pip install" "$LOG_DIR/pip-install.log" "$PIP_BIN" install -e ".[$extras]"
     if [[ "${BRAIN_SIDECAR_ASR_BACKEND:-nemotron_streaming}" == "nemotron_streaming" ]]; then
       run_or_show_log_tail "[env] pip install NeMo ASR" "$LOG_DIR/pip-install-nemotron.log" \
-        "$PIP_BIN" install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'
+        "$PIP_BIN" install 'nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main'
     fi
     echo "$pyproject_hash" >"$python_stamp"
   elif [[ -z "$current_hash" ]]; then

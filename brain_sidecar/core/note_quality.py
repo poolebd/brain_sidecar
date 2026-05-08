@@ -235,7 +235,11 @@ class NoteQualityGate:
 
         selected_segments = [evidence_by_id[source_id] for source_id in card.source_segment_ids if source_id in evidence_by_id]
         evidence_text = " ".join(segment.text for segment in selected_segments)
-        if len({segment.id for segment in selected_segments}) < self.min_evidence_segments and not EXPLICIT_SIGNAL_RE.search(evidence_text):
+        if (
+            len({segment.id for segment in selected_segments}) < self.min_evidence_segments
+            and not EXPLICIT_SIGNAL_RE.search(evidence_text)
+            and not is_energy_lens_card(card)
+        ):
             return NoteQualityDecision("suppress", "insufficient_evidence_segments", fingerprint)
         if not quote_supported(evidence_quote, evidence_text):
             return NoteQualityDecision("suppress", "evidence_quote_not_supported", fingerprint)
@@ -253,9 +257,10 @@ class NoteQualityGate:
         topic_reason = unsupported_topic_reason(output_text, evidence_text)
         if topic_reason:
             return NoteQualityDecision("suppress", topic_reason, fingerprint)
-        unsupported = unsupported_material_terms(output_text, evidence_text)
-        if unsupported:
-            return NoteQualityDecision("suppress", f"unsupported_material_terms:{','.join(unsupported[:5])}", fingerprint)
+        if not is_energy_lens_card(card):
+            unsupported = unsupported_material_terms(output_text, evidence_text)
+            if unsupported:
+                return NoteQualityDecision("suppress", f"unsupported_material_terms:{','.join(unsupported[:5])}", fingerprint)
         if identity_claim_unsupported(output_text, evidence_text, speaker_identity_status):
             return NoteQualityDecision("suppress", "identity_claim_not_supported", fingerprint)
         if duplicate_recent(fingerprint, self._accepted, now, self.duplicate_window_seconds):
@@ -331,6 +336,16 @@ def unsupported_topic_reason(output_text: str, evidence_text: str) -> str | None
         if output_pattern.search(output_text) and not evidence_pattern.search(evidence_text):
             return f"unsupported_topic:{output_pattern.pattern[:48]}"
     return None
+
+
+def is_energy_lens_card(card: SidecarCard) -> bool:
+    return (
+        card.source_type == "transcript"
+        and bool(card.card_key)
+        and str(card.card_key).startswith("energy:")
+        and bool(card.evidence_quote)
+        and bool(card.source_segment_ids)
+    )
 
 
 def unsupported_material_terms(output_text: str, evidence_text: str) -> list[str]:

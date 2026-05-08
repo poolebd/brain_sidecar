@@ -2387,6 +2387,17 @@ time {
   padding-top: 0.62rem;
 }
 
+.energy-lens-badge {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+}
+
+.energy-lens-evidence {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
 .contract-badge p {
   color: var(--text-muted);
   font-size: 0.86rem;

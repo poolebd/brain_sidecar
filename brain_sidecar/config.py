@@ -55,6 +55,8 @@ class Settings:
     ollama_host: str
     ollama_chat_model: str
     ollama_embed_model: str
+    ollama_chat_fallback_model: str = ""
+    ollama_chat_min_free_vram_mb: int = 0
     ollama_chat_host: str = ""
     ollama_embed_host: str = ""
     ollama_chat_keep_alive: str = ""
@@ -100,6 +102,10 @@ class Settings:
     sidecar_generic_clarify_window_seconds: float = 300.0
     sidecar_max_cards_per_5min: int = 8
     sidecar_max_cards_per_generation_pass: int = 3
+    energy_lens_enabled: bool = True
+    energy_lens_min_confidence: str = "medium"
+    energy_lens_max_keywords: int = 6
+    energy_lens_max_cards_per_pass: int = 1
     asr_min_free_vram_mb: int = 3500
     asr_unload_ollama_on_start: bool = False
     asr_gpu_free_timeout_seconds: float = 10.0
@@ -146,6 +152,8 @@ def load_settings() -> Settings:
         asr_compute_type=_env("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "float16"),
         ollama_host=ollama_host,
         ollama_chat_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", "phi3:mini"),
+        ollama_chat_fallback_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL", ""),
+        ollama_chat_min_free_vram_mb=max(0, int(_env("BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB", "0"))),
         ollama_embed_model=_env("BRAIN_SIDECAR_OLLAMA_EMBED_MODEL", "embeddinggemma"),
         ollama_chat_host=_env("BRAIN_SIDECAR_OLLAMA_CHAT_HOST", ollama_host).rstrip("/"),
         ollama_embed_host=_env("BRAIN_SIDECAR_OLLAMA_EMBED_HOST", ollama_host).rstrip("/"),
@@ -227,6 +235,10 @@ def load_settings() -> Settings:
             1,
             int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS", "3")),
         ),
+        energy_lens_enabled=_env_bool("BRAIN_SIDECAR_ENERGY_LENS_ENABLED", True),
+        energy_lens_min_confidence=_env("BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE", "medium").strip().lower(),
+        energy_lens_max_keywords=max(1, int(_env("BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS", "6"))),
+        energy_lens_max_cards_per_pass=max(1, int(_env("BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS", "1"))),
         speaker_enrollment_sample_seconds=max(
             2.0,
             float(_env("BRAIN_SIDECAR_SPEAKER_ENROLLMENT_SAMPLE_SECONDS", "8.0")),

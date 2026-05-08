@@ -233,6 +233,8 @@ def create_app() -> FastAPI:
         status["streaming_stable_final_chunks"] = settings.streaming_stable_final_chunks
         status["streaming_min_final_words"] = settings.streaming_min_final_words
         status["streaming_min_final_seconds"] = settings.streaming_min_final_seconds
+        status["energy_lens_enabled"] = settings.energy_lens_enabled
+        status["energy_lens_keyword_count"] = getattr(manager.energy_detector, "keyword_count", 0)
         status["asr_beam_size"] = settings.asr_beam_size
         status["asr_vad_min_silence_ms"] = settings.asr_vad_min_silence_ms
         status["asr_no_speech_threshold"] = settings.asr_no_speech_threshold
@@ -257,6 +259,8 @@ def create_app() -> FastAPI:
         status["speaker_retain_raw_enrollment_audio"] = settings.speaker_retain_raw_enrollment_audio
         status["dedupe_similarity_threshold"] = settings.dedupe_similarity_threshold
         status["ollama_chat_model"] = settings.ollama_chat_model
+        status["ollama_chat_fallback_model"] = settings.ollama_chat_fallback_model
+        status["ollama_chat_min_free_vram_mb"] = settings.ollama_chat_min_free_vram_mb
         status["ollama_embed_model"] = settings.ollama_embed_model
         status["ollama_host"] = settings.ollama_host
         status["ollama_chat_host"] = settings.ollama_chat_host or settings.ollama_host

@@ -47,6 +47,9 @@ brain-sidecar-speaker = "brain_sidecar.tools.speaker_admin:main"
 [tool.setuptools.packages.find]
 include = ["brain_sidecar*"]
 
+[tool.setuptools.package-data]
+brain_sidecar = ["data/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

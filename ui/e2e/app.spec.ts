@@ -14,6 +14,7 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.getByLabel("Meeting Focus summary")).toContainText("Focus");
   await expect(page.getByLabel("Meeting Focus goal")).toHaveCount(0);
   await expect(page.getByLabel("Live field empty state")).toContainText("Ready. Start listening or ask Sidecar.");
+  await expect(page.getByLabel("Energy lens")).toHaveCount(0);
   await expect(page.getByRole("banner").getByRole("button", { name: "Stop" })).toHaveCount(0);
   const liveBox = await page.locator("#transcript").boundingBox();
   expect(liveBox).not.toBeNull();
@@ -485,6 +486,126 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   expect(transcriptBox).not.toBeNull();
   expect(backendBox).not.toBeNull();
   expect(backendBox!.x).toBeGreaterThan(transcriptBox!.x);
+});
+
+test("shows energy lens badge only from supported final transcript evidence", async ({ page }) => {
+  await page.getByRole("button", { name: "Start Listening" }).click();
+  await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
+    "http://127.0.0.1:8765/api/sessions/session-123/events",
+  );
+
+  await emitSessionEvent(page, {
+    type: "transcript_partial",
+    payload: {
+      id: "energy-preview",
+      text: "utility bill analysis and tariff analysis",
+      start_s: 0.0,
+      end_s: 1.2,
+      is_final: false,
+      asr_model: "nemotron",
+      raw_audio_retained: false,
+    },
+  });
+  await expect(page.getByLabel("Energy lens")).toHaveCount(0);
+
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "ppa-only",
+      text: "PPA",
+      start_s: 1.2,
+      end_s: 2.0,
+      asr_model: "nemotron",
+      energy_lens_active: false,
+      energy_lens_confidence: "low",
+      raw_audio_retained: false,
+    },
+  });
+  await expect(page.getByLabel("Energy lens")).toHaveCount(0);
+
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "energy-line",
+      text: "We need utility bill analysis and tariff analysis before pricing this site.",
+      start_s: 2.0,
+      end_s: 5.0,
+      asr_model: "nemotron",
+      energy_lens_active: true,
+      energy_lens_score: 1.86,
+      energy_lens_confidence: "high",
+      energy_lens_categories: ["operations", "market"],
+      energy_lens_keywords: ["utility bill analysis", "tariff analysis"],
+      energy_lens_evidence_segment_ids: ["energy-line"],
+      energy_lens_evidence_quote: "We need utility bill analysis and tariff analysis before pricing this site.",
+      energy_lens_summary_label: "Energy lens: operations + market",
+      raw_audio_retained: false,
+    },
+  });
+
+  const badge = page.getByLabel("Energy lens");
+  await expect(badge).toContainText("Energy lens");
+  await expect(badge).toHaveJSProperty("open", false);
+  await badge.getByText("Energy lens").click();
+  await expect(badge).toContainText("Detected from current transcript evidence");
+  await expect(badge).toContainText("operations");
+  await expect(badge).toContainText("utility bill analysis");
+  await expect(badge).toContainText("tariff analysis");
+});
+
+test("renders energy-generated cards with evidence jump", async ({ page }) => {
+  await page.getByRole("button", { name: "Start Listening" }).click();
+  await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
+    "http://127.0.0.1:8765/api/sessions/session-123/events",
+  );
+
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "energy-card-line",
+      text: "We need utility bill analysis and tariff analysis before pricing this site.",
+      start_s: 0.0,
+      end_s: 4.0,
+      asr_model: "nemotron",
+      energy_lens_active: true,
+      energy_lens_score: 1.86,
+      energy_lens_confidence: "high",
+      energy_lens_categories: ["operations", "market"],
+      energy_lens_keywords: ["utility bill analysis", "tariff analysis"],
+      energy_lens_evidence_segment_ids: ["energy-card-line"],
+      energy_lens_evidence_quote: "We need utility bill analysis and tariff analysis before pricing this site.",
+      energy_lens_summary_label: "Energy lens: operations + market",
+      raw_audio_retained: false,
+    },
+  });
+  await emitSessionEvent(page, {
+    type: "sidecar_card",
+    payload: {
+      id: "energy-card-1",
+      session_id: "session-123",
+      category: "clarification",
+      title: "Tariff inputs",
+      body: "Recent transcript points to utility billing or tariff analysis.",
+      suggested_ask: "Can we get the rate schedule, 12 months of bills, and interval data?",
+      why_now: "Energy lens: operations + market is active from current transcript evidence.",
+      priority: "high",
+      confidence: 0.84,
+      source_segment_ids: ["energy-card-line"],
+      source_type: "transcript",
+      evidence_quote: "utility bill analysis and tariff analysis",
+      card_key: "energy:billing-tariff:energy-card-line",
+      raw_audio_retained: false,
+    },
+  });
+
+  const transcriptItem = page.getByLabel("Mic transcript item").filter({ hasText: "utility bill analysis" });
+  const card = page.getByRole("feed", { name: "Live field" }).getByLabel("Clarify context card").filter({ hasText: "Tariff inputs" });
+  await expect(card).toContainText("Evidence-backed");
+  await expect(card).toContainText("Ask this");
+  await card.getByRole("button", { name: "Evidence" }).click();
+  await expect(card.getByLabel("Evidence for Tariff inputs")).toContainText("utility bill analysis");
+  await card.getByRole("button", { name: "Jump to source" }).click();
+  await expect(transcriptItem).toHaveClass(/evidence-highlight/);
 });
 
 test("auto-scrolls the live field as transcript and sidecar rows grow", async ({ page }) => {

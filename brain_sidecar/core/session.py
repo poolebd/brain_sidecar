@@ -21,6 +21,8 @@ from brain_sidecar.core.asr import (
 from brain_sidecar.core.asr_factory import create_asr_backend
 from brain_sidecar.core.dedupe import TranscriptDeduplicator, TranscriptFinalConsolidator
 from brain_sidecar.core.devices import find_device
+from brain_sidecar.core.domain_keywords import EnergyConversationDetector, EnergyConversationFrame, inactive_energy_frame
+from brain_sidecar.core.energy_lens import EnergyConsultingAgent
 from brain_sidecar.core.event_bus import EventBus
 from brain_sidecar.core.events import (
     EVENT_AUDIO_STATUS,
@@ -179,6 +181,9 @@ class ActiveSession:
     meeting_diagnostics: dict[str, object] = field(
         default_factory=lambda: diagnostics_for_cards([], accepted_count=0, suppressed_count=0).to_dict()
     )
+    energy_conversation_frame: EnergyConversationFrame | None = None
+    energy_lens_last_active_at: float | None = None
+    energy_lens_last_card_at: float | None = None
 
 
 class SessionManager:
@@ -191,6 +196,12 @@ class SessionManager:
         self.recall = RecallIndex(self.storage, self.ollama, settings)
         self.work_memory = WorkMemoryService(self.storage, self.recall, settings)
         self.notes = NoteSynthesizer(self.ollama)
+        self.energy_detector = EnergyConversationDetector(
+            enabled=settings.energy_lens_enabled,
+            min_confidence=settings.energy_lens_min_confidence,
+            max_keywords=settings.energy_lens_max_keywords,
+        )
+        self.energy_agent = EnergyConsultingAgent()
         self.speaker_identity = SpeakerIdentityService(self.storage, settings)
         self.transcriber = create_asr_backend(settings)
         self.web_trigger_detector = WebTriggerDetector()
@@ -1218,6 +1229,7 @@ class SessionManager:
         self._accept_transcript_segment(active, segment, replaces_segment_id=replaces_segment_id)
         if active.save_transcript:
             self.storage.upsert_transcript_segment(segment, replaces_segment_id=replaces_segment_id)
+        self._update_energy_lens_frame(active)
         active.last_partial_text = ""
         if not consolidation.collapsed:
             active.final_segment_count += 1
@@ -1270,6 +1282,8 @@ class SessionManager:
         }
         if replaces_segment_id:
             payload["replaces_segment_id"] = replaces_segment_id
+        if is_final:
+            payload.update(self._energy_status(active))
         return payload
 
     def _pipeline_metrics(self, active: ActiveSession) -> dict:
@@ -1308,6 +1322,22 @@ class SessionManager:
         return {
             "meeting_contract": active.meeting_contract.to_dict(),
             "meeting_diagnostics": active.meeting_diagnostics,
+            **self._energy_status(active),
+        }
+
+    def _energy_status(self, active: ActiveSession) -> dict[str, object]:
+        frame = active.energy_conversation_frame or inactive_energy_frame()
+        payload = frame.to_dict()
+        return {
+            "energy_lens_active": payload["active"],
+            "energy_lens_score": payload["score"],
+            "energy_lens_confidence": payload["confidence"],
+            "energy_lens_categories": [item["category"] for item in payload["top_categories"]],
+            "energy_lens_keywords": [item["phrase"] for item in payload["top_keywords"]],
+            "energy_lens_evidence_segment_ids": payload["evidence_segment_ids"],
+            "energy_lens_evidence_quote": payload["evidence_quote"],
+            "energy_lens_summary_label": payload["summary_label"],
+            "raw_audio_retained": False,
         }
 
     async def _record_empty_asr_window(
@@ -1368,6 +1398,16 @@ class SessionManager:
 
     def _sync_note_evidence_segments(self, active: ActiveSession) -> None:
         active.note_segments = self._transcript_consolidator_for(active).segments()[-48:]
+
+    def _update_energy_lens_frame(self, active: ActiveSession) -> None:
+        frame = self.energy_detector.detect(
+            active.note_segments[-12:] if active.note_segments else active.recent_segments[-12:],
+            meeting_contract=active.meeting_contract,
+            save_transcript=active.save_transcript,
+        )
+        active.energy_conversation_frame = frame
+        if frame.active:
+            active.energy_lens_last_active_at = time.time()
 
     def _new_note_quality_gate(self) -> NoteQualityGate:
         return NoteQualityGate(
@@ -1549,12 +1589,25 @@ class SessionManager:
                 if active is not None and "meeting_contract" in synthesize_params
                 else {}
             )
+            if active is not None and "energy_frame" in synthesize_params:
+                synthesize_kwargs["energy_frame"] = active.energy_conversation_frame
             result = await self.notes.synthesize(session_id, recent_segments, note_context_hits, **synthesize_kwargs)
         except Exception as exc:
             await self._publish_error(session_id, f"Note synthesis failed: {exc}")
             return
 
         generated_cards = self._cards_from_note_result(session_id, result, save_transcript=save_transcript)
+        if active is not None and active.energy_conversation_frame is not None:
+            energy_cards = self.energy_agent.cards(
+                session_id,
+                recent_segments,
+                active.energy_conversation_frame,
+                active.meeting_contract,
+                max_cards=self.settings.energy_lens_max_cards_per_pass,
+            )
+            if energy_cards:
+                active.energy_lens_last_card_at = time.time()
+                generated_cards = [*energy_cards, *generated_cards]
         accepted_cards = self._accepted_generated_cards(active, generated_cards, recent_segments)
         for card in accepted_cards:
             note = note_from_sidecar(card)

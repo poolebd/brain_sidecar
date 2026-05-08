@@ -129,6 +129,17 @@ type MeetingDiagnostics = {
   source_id_coverage: number;
 };
 
+type EnergyFrame = {
+  active: boolean;
+  score: number;
+  confidence: "low" | "medium" | "high";
+  categories: string[];
+  keywords: string[];
+  evidenceSegmentIds: string[];
+  evidenceQuote: string;
+  summaryLabel: string;
+};
+
 type EventEnvelope = {
   id: string;
   type: string;
@@ -574,6 +585,7 @@ export function App() {
   const [meetingFocusExpanded, setMeetingFocusExpanded] = useState(false);
   const [activeMeetingContract, setActiveMeetingContract] = useState<MeetingContractPayload | null>(null);
   const [meetingDiagnostics, setMeetingDiagnostics] = useState<MeetingDiagnostics | null>(null);
+  const [energyFrame, setEnergyFrame] = useState<EnergyFrame | null>(null);
   const [sessionRetention, setSessionRetention] = useState<SessionRetention>(() => {
     if (typeof window === "undefined") {
       return "temporary";
@@ -1094,6 +1106,7 @@ export function App() {
     captureWarningRef.current = "";
     setActiveMeetingContract(null);
     setMeetingDiagnostics(null);
+    setEnergyFrame(null);
     setTranscriptEvents([]);
     setSidecarCards([]);
     setDismissedCardKeys(new Set());
@@ -1353,6 +1366,7 @@ export function App() {
       appendTranscriptEvent(transcriptEventFromPayload(payload, envelope));
     }
     if (envelope.type === "transcript_final") {
+      syncMeetingStatusFromPayload(payload);
       setPipeline((current) => ({
         ...current,
         queueDepth: Number(payload.queue_depth ?? current.queueDepth),
@@ -1434,6 +1448,9 @@ export function App() {
     const nextDiagnostics = meetingDiagnosticsFromPayload(payload.meeting_diagnostics);
     if (nextDiagnostics) {
       setMeetingDiagnostics(nextDiagnostics);
+    }
+    if ("energy_lens_active" in payload || "energy_lens_confidence" in payload) {
+      setEnergyFrame(energyFrameFromPayload(payload));
     }
   }
 
@@ -1680,6 +1697,7 @@ export function App() {
     setActiveSessionRetention(retentionForStart);
     setActiveMeetingContract(contractForStart);
     setMeetingDiagnostics(null);
+    setEnergyFrame(null);
     setMeetingFocusExpanded(false);
     setStatus("starting");
     setBriefVisible(false);
@@ -2317,6 +2335,7 @@ export function App() {
             </div>
           </div>
           <ContractActiveBadge contract={activeMeetingContract} />
+          <EnergyLensBadge frame={energyFrame} />
           <SessionContextPane
             groups={meetingOutputGroups}
             usefulCount={currentMeetingCards.length}
@@ -4274,6 +4293,29 @@ function ContractActiveBadge({ contract }: { contract: MeetingContractPayload | 
   );
 }
 
+function EnergyLensBadge({ frame }: { frame: EnergyFrame | null }) {
+  if (!frame?.active || frame.confidence === "low") {
+    return null;
+  }
+  const categoryLabel = frame.categories.slice(0, 2).join(" + ");
+  return (
+    <details className="contract-badge energy-lens-badge" aria-label="Energy lens">
+      <summary>
+        <span>Energy lens{categoryLabel ? ` · ${categoryLabel}` : ""}</span>
+      </summary>
+      <div className="contract-details">
+        <p>Detected from current transcript evidence.</p>
+        <div className="chip-row">
+          <span className="chip">{frame.confidence}</span>
+          {frame.categories.slice(0, 3).map((category) => <span key={category} className="chip">{category}</span>)}
+          {frame.keywords.slice(0, 6).map((keyword) => <span key={keyword} className="chip">{keyword}</span>)}
+        </div>
+        {frame.evidenceQuote && <p className="energy-lens-evidence">{frame.evidenceQuote}</p>}
+      </div>
+    </details>
+  );
+}
+
 function LiveFieldPane({
   rows,
   expandedCards,
@@ -5702,6 +5744,28 @@ function meetingDiagnosticsFromPayload(value: unknown): MeetingDiagnostics | nul
     evidence_quote_coverage: safeRatio(value.evidence_quote_coverage),
     source_id_coverage: safeRatio(value.source_id_coverage),
   };
+}
+
+function energyFrameFromPayload(payload: Record<string, unknown>): EnergyFrame | null {
+  const active = Boolean(payload.energy_lens_active);
+  const confidence = energyConfidenceFromPayload(payload.energy_lens_confidence);
+  if (!active || confidence === "low") {
+    return null;
+  }
+  return {
+    active,
+    score: Number(payload.energy_lens_score ?? 0),
+    confidence,
+    categories: parseStringList(payload.energy_lens_categories),
+    keywords: parseStringList(payload.energy_lens_keywords),
+    evidenceSegmentIds: parseStringList(payload.energy_lens_evidence_segment_ids),
+    evidenceQuote: String(payload.energy_lens_evidence_quote ?? ""),
+    summaryLabel: String(payload.energy_lens_summary_label ?? "Energy lens"),
+  };
+}
+
+function energyConfidenceFromPayload(value: unknown): EnergyFrame["confidence"] {
+  return value === "high" || value === "medium" || value === "low" ? value : "low";
 }
 
 function capitalize(value: string): string {

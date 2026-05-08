@@ -277,6 +277,8 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         web_context_enabled: true,
         web_context_configured: true,
         sidecar_quality_gate_enabled: true,
+        energy_lens_enabled: true,
+        energy_lens_keyword_count: 121,
         test_mode_enabled: testModeEnabled,
         test_audio_run_dir: "/tmp/brain-sidecar-tests",
         ...(options.gpuHealthResponse ?? {}),

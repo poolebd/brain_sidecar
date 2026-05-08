@@ -19,6 +19,10 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
         "BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS",
         "BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS",
         "BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS",
+        "BRAIN_SIDECAR_ENERGY_LENS_ENABLED",
+        "BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE",
+        "BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS",
+        "BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -34,6 +38,10 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
     assert settings.partial_min_interval_seconds == 2.0
     assert settings.streaming_min_final_words == 10
     assert settings.streaming_min_final_seconds == 2.8
+    assert settings.energy_lens_enabled is True
+    assert settings.energy_lens_min_confidence == "medium"
+    assert settings.energy_lens_max_keywords == 6
+    assert settings.energy_lens_max_cards_per_pass == 1
     assert settings.recall_min_score == 0.58
     assert settings.recall_max_live_hits == 4
     assert settings.recall_prefer_summaries is True
@@ -74,6 +82,8 @@ def test_ollama_split_host_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE", "10m")
     monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE", "15m")
     monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE", "0")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL", "smollm2:135m")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB", "9000")
 
     settings = load_settings()
 
@@ -83,6 +93,8 @@ def test_ollama_split_host_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.ollama_keep_alive == "10m"
     assert settings.ollama_chat_keep_alive == "15m"
     assert settings.ollama_embed_keep_alive == "0"
+    assert settings.ollama_chat_fallback_model == "smollm2:135m"
+    assert settings.ollama_chat_min_free_vram_mb == 9000
 
 
 def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
@@ -98,6 +110,8 @@ def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
         "BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE",
         "BRAIN_SIDECAR_OLLAMA_CHAT_MODEL",
         "BRAIN_SIDECAR_OLLAMA_EMBED_MODEL",
+        "BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL",
+        "BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -109,6 +123,8 @@ def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
     assert settings.ollama_chat_host == "http://127.0.0.1:11434"
     assert settings.ollama_embed_host == "http://127.0.0.1:11434"
     assert settings.ollama_chat_model == "phi3:mini"
+    assert settings.ollama_chat_fallback_model == ""
+    assert settings.ollama_chat_min_free_vram_mb == 0
     assert settings.ollama_embed_model == "embeddinggemma"
     assert settings.ollama_keep_alive == "30m"
     assert settings.ollama_chat_keep_alive == "30m"
@@ -122,6 +138,10 @@ def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS", "0.8")
     monkeypatch.setenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS", "12")
     monkeypatch.setenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS", "3.5")
+    monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_ENABLED", "false")
+    monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE", "high")
+    monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS", "4")
+    monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS", "2")
 
     settings = load_settings()
 
@@ -130,6 +150,10 @@ def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.transcription_overlap_seconds == 0.8
     assert settings.streaming_min_final_words == 12
     assert settings.streaming_min_final_seconds == 3.5
+    assert settings.energy_lens_enabled is False
+    assert settings.energy_lens_min_confidence == "high"
+    assert settings.energy_lens_max_keywords == 4
+    assert settings.energy_lens_max_cards_per_pass == 2
 
 
 def test_balanced_preview_env_profile(monkeypatch, tmp_path) -> None:

@@ -125,6 +125,8 @@ Useful knobs:
 - `BRAIN_SIDECAR_OLLAMA_EMBED_HOST`: Ollama host for recall embeddings, default local.
 - `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`: fallback Ollama `keep_alive`, default `30m`.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE`: chat-specific keepalive, default follows `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`.
+- `BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL`: optional smaller Ollama chat model used when the primary chat model is skipped by the VRAM guard. Leave blank to use deterministic Sidecar card fallback instead.
+- `BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB`: if greater than `0`, skip the primary chat model when free local VRAM is below this value before a chat request, default `0`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE`: embedding-specific keepalive, default `0` so embeddings do not stay resident beside Nemotron and Phi.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_TIMEOUT_SECONDS`: local note/card synthesis timeout, default `20`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_TIMEOUT_SECONDS`: local embedding timeout, default `12`.
@@ -158,6 +160,10 @@ Useful knobs:
 - `BRAIN_SIDECAR_SIDECAR_GENERIC_CLARIFY_WINDOW_SECONDS`: rate limit for generic clarification cards, default `300`.
 - `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN`: rolling live-card volume cap, default `8`.
 - `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS`: maximum generated cards emitted from one note refresh, default `3`.
+- `BRAIN_SIDECAR_ENERGY_LENS_ENABLED`: enables the local Energy Consulting Lens, default `true`.
+- `BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE`: minimum confidence shown in Live, default `medium`.
+- `BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS`: compact status keyword cap, default `6`.
+- `BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS`: deterministic energy-card cap, default `1`.
 - `BRAIN_SIDECAR_WEB_CONTEXT_ENABLED`: set to `true` to allow selective Brave web context for explicit current-tech questions.
 - `BRAIN_SIDECAR_BRAVE_SEARCH_API_KEY`: Brave Search API key; without this, web context stays disabled.
 - `BRAIN_SIDECAR_WEB_CONTEXT_MIN_INTERVAL_SECONDS`: cooldown between live web lookups, default `90`.
@@ -329,6 +335,30 @@ asyncio.run(main())
 PY
 ```
 
+## Energy Consulting Lens
+
+Brain Sidecar includes a local deterministic Energy Consulting Lens derived from
+`docs/research/energy-keyword-framework.md`. It detects energy-consulting
+meetings from final transcript evidence only, then helps Dross choose better
+ask/say/do/watch cards for categories such as tariffs, audits, procurement,
+flexibility, carbon accounting, finance, and scoping.
+
+The lens is not SEO, not a cloud classifier, and not a factual source. Report
+weights are heuristic probabilities that a phrase indicates an energy-consulting
+conversation; keyword matches never become facts by themselves. Current
+transcript evidence and the normal Sidecar quality gate still control every
+card.
+
+Disable it with:
+
+```bash
+BRAIN_SIDECAR_ENERGY_LENS_ENABLED=false
+```
+
+The compact frame is ephemeral runtime status. Raw audio is never saved, partial
+transcripts do not trigger the lens, and listen-only sessions do not persist
+keyword artifacts.
+
 ## Nemotron Streaming ASR
 
 Nemotron streaming is local/GPU only and is the normal launcher default. The
@@ -349,7 +379,7 @@ setup, use:
 sudo apt-get install -y libsndfile1 ffmpeg
 . .venv/bin/activate
 pip install -e ".[nemotron]"
-pip install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'
+pip install 'nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main'
 ```
 
 Smoke test without storing raw audio:
@@ -387,6 +417,22 @@ BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE=0
 
 `/api/health/gpu` reports the chat/embed hosts and reachability so the System
 panel can show whether the laptop model is online.
+
+For call stability on a single GPU, keep ASR first and let note synthesis fall
+back instead of forcing Phi into a tight CUDA context:
+
+```bash
+BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB=9000
+BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true
+BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE=0
+BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB=9000
+BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL=
+```
+
+With `BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL` blank, a low-VRAM chat pass
+uses the existing deterministic `model_fallback` card path. Set it to a smaller
+local Ollama model only if that model is known to fit beside Nemotron with the
+same reserve.
 
 ## Tests
 

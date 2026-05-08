@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from brain_sidecar.core.domain_keywords import EnergyConversationFrame
 from brain_sidecar.core.meeting_agents import MemoryBoundaryAgent, deterministic_meeting_cards
 from brain_sidecar.core.meeting_contract import MeetingContract, contract_prompt_block
 from brain_sidecar.core.models import NoteCard, SearchHit, SidecarCard, TranscriptSegment, compact_text, new_id
@@ -36,6 +37,7 @@ class NoteSynthesizer:
         recent_segments: list[TranscriptSegment],
         recall_hits: list[SearchHit],
         meeting_contract: MeetingContract | None = None,
+        energy_frame: EnergyConversationFrame | None = None,
     ) -> NoteSynthesisResult:
         if not recent_segments:
             return NoteSynthesisResult(notes=[])
@@ -56,8 +58,10 @@ class NoteSynthesizer:
             "something unless speaker_role=user with adequate confidence. If evidence is weak, return no cards."
         )
         contract_block = contract_prompt_block(meeting_contract)
+        energy_block = energy_prompt_block(energy_frame)
         user = f"""
 {contract_block}
+{energy_block}
 
 Transcript:
 {transcript}
@@ -209,6 +213,20 @@ def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSeg
     cards: list[SidecarCard] = heuristic_project_review_cards(session_id, recent_segments)
     cards.extend(deterministic_meeting_cards(session_id, recent_segments))
     return cards[:5]
+
+
+def energy_prompt_block(frame: EnergyConversationFrame | None) -> str:
+    if frame is None or not frame.active:
+        return ""
+    categories = ", ".join(str(item.get("category")) for item in frame.top_categories[:3]) or "unknown"
+    keywords = ", ".join(str(item.get("phrase")) for item in frame.top_keywords[:6]) or "unknown"
+    return f"""
+Energy consulting lens active.
+- Top categories: {categories}
+- Top keywords: {keywords}
+- Evidence quote: {frame.evidence_quote}
+- Use this only to choose better ask/say/do/watch cards. Do not turn keyword matches into facts. Current transcript evidence still controls what can be stated.
+"""
 
 
 def heuristic_project_review_cards(session_id: str, recent_segments: list[TranscriptSegment]) -> list[SidecarCard]:
