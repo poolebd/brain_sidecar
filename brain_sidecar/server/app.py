@@ -275,18 +275,13 @@ def create_app() -> FastAPI:
     @app.get("/api/health/gpu")
     async def gpu_health() -> dict:
         status = read_gpu_status().to_dict()
-        status["required"] = True
+        status["required"] = settings.asr_device == "cuda"
         manager = app.state.manager
         status.update(manager._asr_status_fields(None))
         status["asr_primary_model"] = settings.asr_primary_model
         status["asr_fallback_model"] = settings.asr_fallback_model
         status["asr_device"] = settings.asr_device
         status["asr_backend"] = settings.asr_backend
-        status["asr_streaming_chunk_ms"] = settings.nemotron_chunk_ms if settings.asr_backend == "nemotron_streaming" else None
-        status["streaming_partials_enabled"] = settings.streaming_partials_enabled
-        status["streaming_stable_final_chunks"] = settings.streaming_stable_final_chunks
-        status["streaming_min_final_words"] = settings.streaming_min_final_words
-        status["streaming_min_final_seconds"] = settings.streaming_min_final_seconds
         status["energy_lens_enabled"] = settings.energy_lens_enabled
         status["energy_lens_keyword_count"] = getattr(manager.energy_detector, "keyword_count", 0)
         status["asr_beam_size"] = settings.asr_beam_size

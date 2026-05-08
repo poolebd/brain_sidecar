@@ -63,8 +63,8 @@ test("navigates the app shell and browses saved sessions", async ({ page }) => {
   const sessionsPage = page.getByRole("main", { name: "Sessions" });
   await expect(sessionsPage).toBeVisible();
   await sessionsPage.getByRole("button", { name: /Saved model planning call/ }).click();
-  await expect(sessionsPage.getByLabel("Session detail")).toContainText("keep Nemotron and Phi resident");
-  await expect(sessionsPage.getByLabel("Session detail")).toContainText("Same-GPU default");
+  await expect(sessionsPage.getByLabel("Session detail")).toContainText("Faster-Whisper on CPU");
+  await expect(sessionsPage.getByLabel("Session detail")).toContainText("CPU ASR default");
 
   const patchTitle = page.waitForRequest((request) => (
     request.method() === "PATCH" && request.url().endsWith("/api/sessions/session-saved-1")
@@ -123,17 +123,18 @@ test("shows model residency and memory management pages", async ({ page }) => {
   await expect(modelsPage).toBeVisible();
   await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("Dross runtime ready");
   await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("Ready");
-  await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("Same-GPU default looks healthy");
+  await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("Runtime path looks healthy");
   await expect(modelsPage.getByLabel("Dross readiness summary")).not.toContainText("3/3");
-  await expect(modelsPage).toContainText("Nemotron Streaming");
-  await expect(modelsPage).toContainText("160 ms");
-  await expect(modelsPage).toContainText("phi3:mini");
+  await expect(modelsPage).toContainText("Faster-Whisper");
+  await expect(modelsPage).toContainText("small.en");
+  await expect(modelsPage).toContainText("CPU");
+  await expect(modelsPage).toContainText("qwen3.5:397b-cloud");
   await expect(modelsPage).toContainText("embeddinggemma");
   await expect(modelsPage).toContainText("Keepalive 30m");
   await expect(modelsPage).toContainText("Keepalive not resident (0)");
   await expect(modelsPage).toContainText("GPU Residency");
   const modelSelector = modelsPage.getByLabel("Ollama chat model");
-  await expect(modelSelector).toHaveValue("phi3:mini");
+  await expect(modelSelector).toHaveValue("qwen3.5:397b-cloud");
   await modelSelector.selectOption("gpt-oss:120b-cloud");
   await expect(modelSelector).toHaveValue("gpt-oss:120b-cloud");
   await expect(modelsPage).toContainText("Saved gpt-oss:120b-cloud to .env");
@@ -197,27 +198,26 @@ test("shows model residency and memory management pages", async ({ page }) => {
   await expect(page.getByLabel("Runtime status")).toContainText("work memory indexed 21 projects");
 });
 
-test("shows Nemotron streaming ASR status compactly", async ({ page }) => {
+test("shows Faster-Whisper ASR status compactly", async ({ page }) => {
   await page.unroute("http://127.0.0.1:8765/api/**");
   await mockApi(page, {
     gpuHealthResponse: {
-      asr_backend: "nemotron_streaming",
-      asr_streaming_supported: true,
-      asr_streaming_chunk_ms: 160,
-      nemotron_model_id: "nvidia/nemotron-speech-streaming-en-0.6b",
-      nemotron_loaded: true,
-      asr_model: "nvidia/nemotron-speech-streaming-en-0.6b",
-      asr_dtype: "float32",
+      asr_backend: "faster_whisper",
+      asr_device: "cpu",
+      asr_model: "small.en",
+      asr_primary_model: "small.en",
+      asr_fallback_model: "tiny.en",
+      asr_dtype: "int8",
     },
   });
   await page.reload();
   await page.getByRole("button", { name: "Models" }).click();
 
   const models = page.getByRole("main", { name: "Models" });
-  await expect(models).toContainText("Nemotron Streaming");
-  await expect(models).toContainText("Stream 160 ms");
-  await expect(models).toContainText("loaded");
-  await expect(models).toContainText("phi3:mini");
+  await expect(models).toContainText("Faster-Whisper");
+  await expect(models).toContainText("Preview 2.0s");
+  await expect(models).toContainText("ready");
+  await expect(models).toContainText("qwen3.5:397b-cloud");
   await expect(models).toContainText("embeddinggemma");
 });
 
@@ -508,7 +508,7 @@ test("shows energy lens badge only from supported final transcript evidence", as
       start_s: 0.0,
       end_s: 1.2,
       is_final: false,
-      asr_model: "nemotron",
+      asr_model: "faster-whisper",
       raw_audio_retained: false,
     },
   });
@@ -521,7 +521,7 @@ test("shows energy lens badge only from supported final transcript evidence", as
       text: "PPA",
       start_s: 1.2,
       end_s: 2.0,
-      asr_model: "nemotron",
+      asr_model: "faster-whisper",
       energy_lens_active: false,
       energy_lens_confidence: "low",
       raw_audio_retained: false,
@@ -536,7 +536,7 @@ test("shows energy lens badge only from supported final transcript evidence", as
       text: "We need utility bill analysis and tariff analysis before pricing this site.",
       start_s: 2.0,
       end_s: 5.0,
-      asr_model: "nemotron",
+      asr_model: "faster-whisper",
       energy_lens_active: true,
       energy_lens_score: 1.86,
       energy_lens_confidence: "high",
@@ -572,7 +572,7 @@ test("renders energy-generated cards with evidence jump", async ({ page }) => {
       text: "We need utility bill analysis and tariff analysis before pricing this site.",
       start_s: 0.0,
       end_s: 4.0,
-      asr_model: "nemotron",
+      asr_model: "faster-whisper",
       energy_lens_active: true,
       energy_lens_score: 1.86,
       energy_lens_confidence: "high",
@@ -629,7 +629,7 @@ test("auto-scrolls the live field as transcript and sidecar rows grow", async ({
         text: `Live auto-scroll test line ${index} with enough words to create a real transcript bubble.`,
         start_s: index,
         end_s: index + 0.8,
-        asr_model: "nemotron",
+        asr_model: "faster-whisper",
         transcript_retention: "temporary",
         raw_audio_retained: false,
       },
@@ -667,7 +667,7 @@ test("auto-scrolls the live field as transcript and sidecar rows grow", async ({
   ))).toBeLessThan(8);
 });
 
-test("keeps showing newer streaming previews that overlap older finals", async ({ page }) => {
+test("keeps showing newer ASR previews that overlap older finals", async ({ page }) => {
   await page.getByRole("button", { name: "Start Listening" }).click();
   await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
     "http://127.0.0.1:8765/api/sessions/session-123/events",
@@ -680,7 +680,7 @@ test("keeps showing newer streaming previews that overlap older finals", async (
       text: "Earlier committed speech is already visible.",
       start_s: 0.0,
       end_s: 4.0,
-      asr_model: "nemotron",
+      asr_model: "faster-whisper",
       transcript_retention: "temporary",
       raw_audio_retained: false,
     },
@@ -693,7 +693,7 @@ test("keeps showing newer streaming previews that overlap older finals", async (
       start_s: 0.48,
       end_s: 11.8,
       is_final: false,
-      asr_model: "nemotron",
+      asr_model: "faster-whisper",
       transcript_retention: "temporary",
       raw_audio_retained: false,
     },
@@ -709,7 +709,7 @@ test("keeps showing newer streaming previews that overlap older finals", async (
       start_s: 0.48,
       end_s: 12.0,
       is_final: false,
-      asr_model: "nemotron",
+      asr_model: "faster-whisper",
       transcript_retention: "temporary",
       raw_audio_retained: false,
     },
@@ -726,7 +726,7 @@ test("keeps showing newer streaming previews that overlap older finals", async (
       start_s: 0.48,
       end_s: 12.4,
       is_final: false,
-      asr_model: "nemotron",
+      asr_model: "faster-whisper",
       transcript_retention: "temporary",
       raw_audio_retained: false,
     },

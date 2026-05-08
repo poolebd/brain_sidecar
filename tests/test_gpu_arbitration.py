@@ -20,6 +20,7 @@ def make_settings(tmp_path: Path) -> Settings:
         asr_primary_model="medium.en",
         asr_fallback_model="small.en",
         asr_compute_type="float16",
+        asr_device="cuda",
         ollama_host="http://127.0.0.1:11434",
         ollama_chat_model="qwen3.5:9b",
         ollama_embed_model="embeddinggemma",

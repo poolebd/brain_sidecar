@@ -6,11 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sidecar.core.asr import (
-    ASR_BACKEND_NEMOTRON_STREAMING,
+    ASR_BACKEND_FASTER_WHISPER,
     validate_asr_backend,
-    validate_nemotron_chunk_ms,
-    validate_nemotron_device,
-    validate_nemotron_dtype,
 )
 
 _DEFAULT_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
@@ -97,24 +94,14 @@ class Settings:
     ollama_chat_model: str
     ollama_embed_model: str
     env_path: Path = _DEFAULT_ENV_PATH
-    asr_device: str = "cuda"
     ollama_chat_fallback_model: str = ""
     ollama_chat_min_free_vram_mb: int = 0
     ollama_chat_host: str = ""
     ollama_embed_host: str = ""
     ollama_chat_keep_alive: str = ""
     ollama_embed_keep_alive: str = ""
-    asr_backend: str = ASR_BACKEND_NEMOTRON_STREAMING
-    nemotron_model_id: str = "nvidia/nemotron-speech-streaming-en-0.6b"
-    nemotron_chunk_ms: int = 160
-    nemotron_device: str = "cuda"
-    nemotron_dtype: str = "float32"
-    nemotron_hf_token: str = ""
-    nemotron_local_files_only: bool = False
-    streaming_partials_enabled: bool = True
-    streaming_stable_final_chunks: int = 3
-    streaming_min_final_words: int = 10
-    streaming_min_final_seconds: float = 2.8
+    asr_backend: str = ASR_BACKEND_FASTER_WHISPER
+    asr_device: str = "cpu"
     audio_sample_rate: int = 16_000
     audio_chunk_ms: int = 250
     transcription_window_seconds: float = 3.4
@@ -176,7 +163,7 @@ def load_settings() -> Settings:
     env_path = _configured_env_path()
     _load_dotenv(env_path)
     cwd_runtime = Path.cwd() / "runtime"
-    asr_backend = validate_asr_backend(_env("BRAIN_SIDECAR_ASR_BACKEND", ASR_BACKEND_NEMOTRON_STREAMING))
+    asr_backend = validate_asr_backend(_env("BRAIN_SIDECAR_ASR_BACKEND", ASR_BACKEND_FASTER_WHISPER))
     ollama_host = _env("BRAIN_SIDECAR_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     ollama_keep_alive = _env("BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE", "30m")
     transcription_window_seconds = max(
@@ -192,12 +179,12 @@ def load_settings() -> Settings:
         data_dir=Path(_env("BRAIN_SIDECAR_DATA_DIR", str(cwd_runtime))).expanduser(),
         host=_env("BRAIN_SIDECAR_HOST", "127.0.0.1"),
         port=int(_env("BRAIN_SIDECAR_PORT", "8765")),
-        asr_primary_model=_env("BRAIN_SIDECAR_ASR_PRIMARY_MODEL", "medium.en"),
-        asr_fallback_model=_env("BRAIN_SIDECAR_ASR_FALLBACK_MODEL", "small.en"),
-        asr_compute_type=_env("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "float16"),
-        asr_device=_env_choice("BRAIN_SIDECAR_ASR_DEVICE", "cuda", {"cuda", "cpu"}),
+        asr_primary_model=_env("BRAIN_SIDECAR_ASR_PRIMARY_MODEL", "small.en"),
+        asr_fallback_model=_env("BRAIN_SIDECAR_ASR_FALLBACK_MODEL", "tiny.en"),
+        asr_compute_type=_env("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "int8"),
+        asr_device=_env_choice("BRAIN_SIDECAR_ASR_DEVICE", "cpu", {"cuda", "cpu"}),
         ollama_host=ollama_host,
-        ollama_chat_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", "phi3:mini"),
+        ollama_chat_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", "qwen3.5:397b-cloud"),
         ollama_chat_fallback_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL", ""),
         ollama_chat_min_free_vram_mb=max(0, int(_env("BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB", "0"))),
         ollama_embed_model=_env("BRAIN_SIDECAR_OLLAMA_EMBED_MODEL", "embeddinggemma"),
@@ -206,22 +193,6 @@ def load_settings() -> Settings:
         ollama_chat_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE", ollama_keep_alive),
         ollama_embed_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE", "0"),
         asr_backend=asr_backend,
-        nemotron_model_id=_env("BRAIN_SIDECAR_NEMOTRON_MODEL_ID", "nvidia/nemotron-speech-streaming-en-0.6b"),
-        nemotron_chunk_ms=validate_nemotron_chunk_ms(int(_env("BRAIN_SIDECAR_NEMOTRON_CHUNK_MS", "160"))),
-        nemotron_device=validate_nemotron_device(_env("BRAIN_SIDECAR_NEMOTRON_DEVICE", "cuda")),
-        nemotron_dtype=validate_nemotron_dtype(_env("BRAIN_SIDECAR_NEMOTRON_DTYPE", "float32")),
-        nemotron_hf_token=_env("BRAIN_SIDECAR_NEMOTRON_HF_TOKEN", ""),
-        nemotron_local_files_only=_env_bool("BRAIN_SIDECAR_NEMOTRON_LOCAL_FILES_ONLY", False),
-        streaming_partials_enabled=_env_bool(
-            "BRAIN_SIDECAR_STREAMING_PARTIALS_ENABLED",
-            asr_backend == ASR_BACKEND_NEMOTRON_STREAMING,
-        ),
-        streaming_stable_final_chunks=max(1, int(_env("BRAIN_SIDECAR_STREAMING_STABLE_FINAL_CHUNKS", "3"))),
-        streaming_min_final_words=max(4, int(_env("BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS", "10"))),
-        streaming_min_final_seconds=max(
-            1.0,
-            float(_env("BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS", "2.8")),
-        ),
         audio_chunk_ms=max(50, int(_env("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250"))),
         transcription_window_seconds=transcription_window_seconds,
         transcription_overlap_seconds=transcription_overlap_seconds,

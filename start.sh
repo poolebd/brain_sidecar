@@ -65,8 +65,6 @@ resolve_system_python() {
 python_dependencies_ready() {
   "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
 import importlib.util
-import os
-
 required = [
     "fastapi",
     "uvicorn",
@@ -79,9 +77,6 @@ required = [
     "docx",
     "pytest",
 ]
-
-if os.environ.get("BRAIN_SIDECAR_ASR_BACKEND", "nemotron_streaming") == "nemotron_streaming":
-    required.extend(["Cython", "nemo", "nemo.collections.asr"])
 
 def has_module(name):
     try:
@@ -142,16 +137,9 @@ bootstrap_python_environment() {
   if [[ "$install_needed" == "1" ]]; then
     local extras
     extras="gpu,speaker,recall,dev"
-    if [[ "${BRAIN_SIDECAR_ASR_BACKEND:-nemotron_streaming}" == "nemotron_streaming" ]]; then
-      extras="$extras,nemotron"
-    fi
     echo "[env] installing Python dependencies (logs in $LOG_DIR)"
     run_or_show_log_tail "[env] pip upgrade" "$LOG_DIR/pip-upgrade.log" "$PYTHON_BIN" -m pip install --upgrade pip
     run_or_show_log_tail "[env] pip install" "$LOG_DIR/pip-install.log" "$PIP_BIN" install -e ".[$extras]"
-    if [[ "${BRAIN_SIDECAR_ASR_BACKEND:-nemotron_streaming}" == "nemotron_streaming" ]]; then
-      run_or_show_log_tail "[env] pip install NeMo ASR" "$LOG_DIR/pip-install-nemotron.log" \
-        "$PIP_BIN" install 'nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main'
-    fi
     echo "$pyproject_hash" >"$python_stamp"
   elif [[ -z "$current_hash" ]]; then
     echo "$pyproject_hash" >"$python_stamp"
@@ -418,9 +406,7 @@ export BRAIN_SIDECAR_HOST="${BRAIN_SIDECAR_HOST:-127.0.0.1}"
 export BRAIN_SIDECAR_PORT="${BRAIN_SIDECAR_PORT:-8765}"
 export BRAIN_SIDECAR_UI_HOST="${BRAIN_SIDECAR_UI_HOST:-127.0.0.1}"
 export BRAIN_SIDECAR_UI_PORT="${BRAIN_SIDECAR_UI_PORT:-8766}"
-export BRAIN_SIDECAR_ASR_BACKEND="${BRAIN_SIDECAR_ASR_BACKEND:-nemotron_streaming}"
-export BRAIN_SIDECAR_NEMOTRON_CHUNK_MS="${BRAIN_SIDECAR_NEMOTRON_CHUNK_MS:-160}"
-export BRAIN_SIDECAR_NEMOTRON_DTYPE="${BRAIN_SIDECAR_NEMOTRON_DTYPE:-float32}"
+export BRAIN_SIDECAR_ASR_BACKEND="${BRAIN_SIDECAR_ASR_BACKEND:-faster_whisper}"
 
 ensure_pid_file_not_running "Backend" "$BACKEND_PID_FILE"
 ensure_pid_file_not_running "Frontend" "$FRONTEND_PID_FILE"

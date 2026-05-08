@@ -6,15 +6,14 @@ from fastapi.testclient import TestClient
 
 from brain_sidecar.config import Settings
 from brain_sidecar.core.audio import AudioCapture
+from brain_sidecar.core.asr import ASR_BACKEND_FASTER_WHISPER
+from brain_sidecar.core.dedupe import TranscriptDeduplicator
 from brain_sidecar.core.domain_keywords import EnergyConversationDetector, inactive_energy_frame
 from brain_sidecar.core.energy_lens import EnergyConsultingAgent
-from brain_sidecar.core.events import EVENT_TRANSCRIPT_PARTIAL
 from brain_sidecar.core.models import TranscriptSegment
 from brain_sidecar.core.note_quality import NoteQualityGate
 from brain_sidecar.core.notes import NoteSynthesizer, energy_prompt_block
-from brain_sidecar.core.session import ActiveSession, InMemoryPcmRingBuffer, SessionManager
-from brain_sidecar.core.dedupe import TranscriptDeduplicator
-from brain_sidecar.core.asr import ASR_BACKEND_NEMOTRON_STREAMING, StreamingAsrEvent
+from brain_sidecar.core.session import ActiveSession, SessionManager
 from brain_sidecar.server.app import create_app
 
 
@@ -38,16 +37,17 @@ class RecordingOllama:
         return '{"cards":[]}'
 
 
-def settings(tmp_path, *, save_backend: str = "nemotron_streaming") -> Settings:
+def settings(tmp_path, *, save_backend: str = ASR_BACKEND_FASTER_WHISPER) -> Settings:
     return Settings(
         data_dir=tmp_path,
         host="127.0.0.1",
         port=8765,
         asr_primary_model="tiny.en",
         asr_fallback_model="tiny.en",
-        asr_compute_type="float16",
+        asr_compute_type="int8",
+        asr_device="cpu",
         ollama_host="http://127.0.0.1:11434",
-        ollama_chat_model="phi3:mini",
+        ollama_chat_model="qwen3.5:397b-cloud",
         ollama_embed_model="embeddinggemma",
         asr_backend=save_backend,
         disable_live_embeddings=True,
@@ -74,10 +74,25 @@ def active_session(session_id: str, *, save_transcript: bool) -> ActiveSession:
         tasks=[],
         deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
         save_transcript=save_transcript,
-        asr_backend=ASR_BACKEND_NEMOTRON_STREAMING,
-        asr_model="fake-nemotron",
-        streaming_chunk_ms=160,
-        pcm_ring_buffer=InMemoryPcmRingBuffer(sample_rate=16_000, seconds=5.0),
+        asr_backend=ASR_BACKEND_FASTER_WHISPER,
+        asr_model="fake-faster-whisper",
+    )
+
+
+async def accept_final(manager: SessionManager, session_id: str, active: ActiveSession, text: str) -> None:
+    await manager._accept_final_segment(
+        session_id,
+        active,
+        TranscriptSegment(
+            id=f"seg_{len(active.recent_segments) + 1}",
+            session_id=session_id,
+            start_s=0.0,
+            end_s=2.0,
+            text=text,
+        ),
+        asr_model="fake-faster-whisper",
+        speaker_payload={},
+        asr_duration_ms=1.0,
     )
 
 
@@ -206,34 +221,20 @@ def test_note_synthesizer_includes_energy_prompt_only_when_active(event_loop) ->
     assert "Energy consulting lens active." not in ollama.user
 
 
-def test_session_final_updates_energy_frame_and_partial_does_not(event_loop, tmp_path) -> None:
+def test_session_final_updates_energy_frame(event_loop, tmp_path) -> None:
     manager = SessionManager(settings(tmp_path))
     session = manager.storage.create_session("energy")
     active = active_session(session.id, save_transcript=True)
     manager._active[session.id] = active
 
-    event_loop.run_until_complete(
-        manager._handle_streaming_asr_event(
-            session.id,
-            active,
-            StreamingAsrEvent(kind="partial", text="utility bill analysis", start_s=0.0, end_s=0.5, model="fake"),
-            asr_duration_ms=1.0,
-        )
-    )
     assert active.energy_conversation_frame is None
 
     event_loop.run_until_complete(
-        manager._handle_streaming_asr_event(
+        accept_final(
+            manager,
             session.id,
             active,
-            StreamingAsrEvent(
-                kind="final",
-                text="We need utility bill analysis and tariff analysis.",
-                start_s=0.0,
-                end_s=2.0,
-                model="fake",
-            ),
-            asr_duration_ms=1.0,
+            "We need utility bill analysis and tariff analysis.",
         )
     )
 
@@ -251,17 +252,11 @@ def test_listen_only_does_not_persist_energy_artifacts(event_loop, tmp_path) -> 
     manager._active[session.id] = active
 
     event_loop.run_until_complete(
-        manager._handle_streaming_asr_event(
+        accept_final(
+            manager,
             session.id,
             active,
-            StreamingAsrEvent(
-                kind="final",
-                text="We need utility bill analysis and tariff analysis.",
-                start_s=0.0,
-                end_s=2.0,
-                model="fake",
-            ),
-            asr_duration_ms=1.0,
+            "We need utility bill analysis and tariff analysis.",
         )
     )
 

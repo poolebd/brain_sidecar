@@ -359,10 +359,6 @@ type GpuHealth = {
   asr_cuda_available?: boolean;
   asr_cuda_error?: string;
   asr_backend?: string;
-  asr_streaming_supported?: boolean;
-  asr_streaming_chunk_ms?: number | null;
-  nemotron_model_id?: string;
-  nemotron_loaded?: boolean;
   asr_model?: string | null;
   asr_dtype?: string;
   asr_device?: string;
@@ -392,8 +388,6 @@ type GpuHealth = {
   partial_transcripts_enabled?: boolean;
   partial_window_seconds?: number;
   partial_min_interval_seconds?: number;
-  streaming_partials_enabled?: boolean;
-  streaming_stable_final_chunks?: number;
   speaker_enrollment_sample_seconds?: number;
   speaker_identity_label?: string;
   speaker_retain_raw_enrollment_audio?: boolean;
@@ -429,11 +423,8 @@ type PipelineState = {
   silentWindows: number;
   asrEmptyWindows: number;
   finalSegmentsReplaced: number;
-  streamingPartialCount: number;
-  streamingFinalCount: number;
-  streamingFlushCount: number;
-  streamingLatencyMs?: number;
-  streamingRealtimeFactor?: number;
+  asrDurationMs?: number;
+  partialAsrDurationMs?: number;
 };
 
 type SpeakerStatus = {
@@ -637,9 +628,6 @@ export function App() {
     silentWindows: 0,
     asrEmptyWindows: 0,
     finalSegmentsReplaced: 0,
-    streamingPartialCount: 0,
-    streamingFinalCount: 0,
-    streamingFlushCount: 0,
   });
   const [fixturePath, setFixturePath] = useState(DEFAULT_FIXTURE_AUDIO);
   const [testSourcePath, setTestSourcePath] = useState(DEFAULT_FIXTURE_AUDIO);
@@ -842,20 +830,20 @@ export function App() {
     [activeMeetingContract, usefulContextCards],
   );
 
-  const asrBackendLabel = gpu.asr_backend === "nemotron_streaming"
-    ? "Nemotron Streaming"
-    : "Faster-Whisper";
-  const asrModelLabel = gpu.asr_backend === "nemotron_streaming"
-    ? gpu.nemotron_model_id ?? gpu.asr_model ?? "nemotron"
-    : gpu.asr_model ?? gpu.asr_primary_model ?? "medium.en";
-  const streamingModeLabel = gpu.asr_backend === "nemotron_streaming"
-    ? `Stream ${Number(gpu.asr_streaming_chunk_ms ?? 0)} ms`
-    : gpu.partial_transcripts_enabled
-      ? `Preview ${formatSeconds(gpu.partial_window_seconds ?? 0)}`
-      : `Final ${formatSeconds(gpu.transcription_window_seconds ?? 0)}`;
-  const streamingMetricLabel = pipeline.streamingLatencyMs != null
-    ? `${pipeline.streamingLatencyMs.toFixed(0)} ms${pipeline.streamingRealtimeFactor != null ? ` / ${pipeline.streamingRealtimeFactor.toFixed(2)}x` : ""}`
-    : "stream idle";
+  const asrBackendLabel = "Faster-Whisper";
+  const asrModelLabel = gpu.asr_model ?? gpu.asr_primary_model ?? "small.en";
+  const asrDeviceLabel = gpu.asr_device ?? "cpu";
+  const asrDeviceStatusLabel = asrDeviceLabel === "cpu"
+    ? "CPU ASR"
+    : gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "CUDA check";
+  const asrCadenceLabel = gpu.partial_transcripts_enabled
+    ? `Preview ${formatSeconds(gpu.partial_window_seconds ?? 0)}`
+    : `Final ${formatSeconds(gpu.transcription_window_seconds ?? 0)}`;
+  const asrTimingLabel = pipeline.asrDurationMs != null
+    ? `${pipeline.asrDurationMs.toFixed(0)} ms final`
+    : pipeline.partialAsrDurationMs != null
+      ? `${pipeline.partialAsrDurationMs.toFixed(0)} ms preview`
+      : "ASR idle";
   const testModeVisible = Boolean(gpu.test_mode_enabled);
   const webStatusLabel = gpu.web_context_enabled
     ? gpu.web_context_configured ? "web ready" : "web key missing"
@@ -1176,9 +1164,6 @@ export function App() {
       silentWindows: 0,
       asrEmptyWindows: 0,
       finalSegmentsReplaced: 0,
-      streamingPartialCount: 0,
-      streamingFinalCount: 0,
-      streamingFlushCount: 0,
     });
     captureWarningRef.current = "";
     setActiveMeetingContract(null);
@@ -1380,11 +1365,8 @@ export function App() {
         silentWindows: Number(payload.silent_windows ?? current.silentWindows),
         asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
         finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
-        streamingPartialCount: Number(payload.asr_streaming_partial_count ?? current.streamingPartialCount),
-        streamingFinalCount: Number(payload.asr_streaming_final_count ?? current.streamingFinalCount),
-        streamingFlushCount: Number(payload.asr_streaming_flush_count ?? current.streamingFlushCount),
-        streamingLatencyMs: numberOrUndefined(payload.asr_streaming_latency_ms) ?? current.streamingLatencyMs,
-        streamingRealtimeFactor: numberOrUndefined(payload.asr_streaming_realtime_factor) ?? current.streamingRealtimeFactor,
+        asrDurationMs: numberOrUndefined(payload.asr_duration_ms) ?? current.asrDurationMs,
+        partialAsrDurationMs: numberOrUndefined(payload.partial_asr_duration_ms) ?? current.partialAsrDurationMs,
       }));
       const captureWarning = captureWarningFromPayload(payload);
       if (captureWarning && captureWarning.id !== captureWarningRef.current) {
@@ -1408,7 +1390,7 @@ export function App() {
         appendSystemLog({
           level: "status",
           title: "Loading ASR",
-          message: `${asrBackendNameFromPayload(payload)} is loading on CUDA. Target free VRAM: ${payload.asr_min_free_vram_mb ?? "unknown"} MB.`,
+          message: `${asrBackendNameFromPayload(payload)} is loading on ${payload.asr_device ?? "cpu"}. Target free VRAM: ${payload.asr_min_free_vram_mb ?? "unknown"} MB.`,
           metadata: payload,
         });
       }
@@ -1434,11 +1416,8 @@ export function App() {
         silentWindows: Number(payload.silent_windows ?? current.silentWindows),
         asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
         finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
-        streamingPartialCount: Number(payload.asr_streaming_partial_count ?? current.streamingPartialCount),
-        streamingFinalCount: Number(payload.asr_streaming_final_count ?? current.streamingFinalCount),
-        streamingFlushCount: Number(payload.asr_streaming_flush_count ?? current.streamingFlushCount),
-        streamingLatencyMs: numberOrUndefined(payload.asr_streaming_latency_ms) ?? current.streamingLatencyMs,
-        streamingRealtimeFactor: numberOrUndefined(payload.asr_streaming_realtime_factor) ?? current.streamingRealtimeFactor,
+        asrDurationMs: numberOrUndefined(payload.asr_duration_ms) ?? current.asrDurationMs,
+        partialAsrDurationMs: numberOrUndefined(payload.partial_asr_duration_ms) ?? current.partialAsrDurationMs,
       }));
       appendTranscriptEvent(transcriptEventFromPayload(payload, envelope));
     }
@@ -1452,11 +1431,8 @@ export function App() {
         silentWindows: Number(payload.silent_windows ?? current.silentWindows),
         asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
         finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
-        streamingPartialCount: Number(payload.asr_streaming_partial_count ?? current.streamingPartialCount),
-        streamingFinalCount: Number(payload.asr_streaming_final_count ?? current.streamingFinalCount),
-        streamingFlushCount: Number(payload.asr_streaming_flush_count ?? current.streamingFlushCount),
-        streamingLatencyMs: numberOrUndefined(payload.asr_streaming_latency_ms) ?? current.streamingLatencyMs,
-        streamingRealtimeFactor: numberOrUndefined(payload.asr_streaming_realtime_factor) ?? current.streamingRealtimeFactor,
+        asrDurationMs: numberOrUndefined(payload.asr_duration_ms) ?? current.asrDurationMs,
+        partialAsrDurationMs: numberOrUndefined(payload.partial_asr_duration_ms) ?? current.partialAsrDurationMs,
       }));
       const line = {
         id: String(payload.id),
@@ -2336,7 +2312,7 @@ export function App() {
             <div className="field-toolbar-status">
               <span>{transcript.length} heard</span>
               <span>{currentMeetingCards.length} current</span>
-              <span>{gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "GPU check"}</span>
+              <span>{asrDeviceStatusLabel}</span>
             </div>
           </div>
 
@@ -2486,8 +2462,8 @@ export function App() {
           gpuFreeLabel={gpuFreeLabel}
           asrBackendLabel={asrBackendLabel}
           asrModelLabel={asrModelLabel}
-          streamingModeLabel={streamingModeLabel}
-          streamingMetricLabel={streamingMetricLabel}
+          asrCadenceLabel={asrCadenceLabel}
+          asrTimingLabel={asrTimingLabel}
           ollamaChatHostLabel={ollamaChatHostLabel}
           ollamaEmbedHostLabel={ollamaEmbedHostLabel}
           ollamaChatReachabilityLabel={ollamaChatReachabilityLabel}
@@ -2975,6 +2951,7 @@ export function App() {
             <div className="chip-row debug-key-status" aria-label="Debug status summary">
               <span className="chip">{gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "CUDA check"}</span>
               <span className="chip">ASR {asrBackendLabel}</span>
+              <span className="chip">{asrDeviceStatusLabel}</span>
               <span className="chip">{gpuFreeLabel}</span>
               <span className="chip">{webStatusLabel}</span>
             </div>
@@ -2982,17 +2959,12 @@ export function App() {
               <summary>Runtime diagnostics</summary>
               <div className="chip-row">
                 <span className="chip">{asrModelLabel}</span>
-                <span className="chip">{streamingModeLabel}</span>
-                {gpu.asr_backend === "nemotron_streaming" && (
-                  <>
-                    <span className="chip">{streamingMetricLabel}</span>
-                    <span className="chip">{gpu.nemotron_loaded ? "Nemotron loaded" : "Nemotron cold"}</span>
-                  </>
-                )}
+                <span className="chip">{asrCadenceLabel}</span>
+                <span className="chip">{asrTimingLabel}</span>
                 <span className="chip">
                   window {formatSeconds(gpu.transcription_window_seconds ?? 5)} / overlap {formatSeconds(gpu.transcription_overlap_seconds ?? 0.75)}
                 </span>
-                <span className="chip">Chat {gpu.ollama_chat_model ?? "phi3:mini"} @ {ollamaChatHostLabel}</span>
+                <span className="chip">Chat {gpu.ollama_chat_model ?? "qwen3.5:397b-cloud"} @ {ollamaChatHostLabel}</span>
                 <span className={gpu.ollama_chat_reachable === false ? "chip warning" : "chip"}>{ollamaChatReachabilityLabel}</span>
                 <span className="chip">Embed {gpu.ollama_embed_model ?? "embeddinggemma"} @ {ollamaEmbedHostLabel}</span>
                 <span className={gpu.ollama_embed_reachable === false ? "chip warning" : "chip"}>{ollamaEmbedReachabilityLabel}</span>
@@ -3488,8 +3460,8 @@ function ModelsPage({
   gpuFreeLabel,
   asrBackendLabel,
   asrModelLabel,
-  streamingModeLabel,
-  streamingMetricLabel,
+  asrCadenceLabel,
+  asrTimingLabel,
   ollamaChatHostLabel,
   ollamaEmbedHostLabel,
   ollamaChatReachabilityLabel,
@@ -3508,8 +3480,8 @@ function ModelsPage({
   gpuFreeLabel: string;
   asrBackendLabel: string;
   asrModelLabel: string;
-  streamingModeLabel: string;
-  streamingMetricLabel: string;
+  asrCadenceLabel: string;
+  asrTimingLabel: string;
   ollamaChatHostLabel: string;
   ollamaEmbedHostLabel: string;
   ollamaChatReachabilityLabel: string;
@@ -3521,7 +3493,8 @@ function ModelsPage({
   onRefreshOllamaModels: () => void;
   onSelectOllamaChatModel: (model: string) => void;
 }) {
-  const hearingReady = !gpu.asr_backend_error && gpu.asr_cuda_available !== false;
+  const asrDevice = gpu.asr_device ?? "cpu";
+  const hearingReady = !gpu.asr_backend_error && (asrDevice === "cpu" || gpu.asr_cuda_available !== false);
   const thinkingReady = gpu.ollama_chat_reachable !== false;
   const memoryReady = gpu.ollama_embed_reachable !== false;
   const runtimeReady = hearingReady && thinkingReady && memoryReady;
@@ -3537,7 +3510,7 @@ function ModelsPage({
   const embeddingKeepalive = gpu.ollama_embed_keep_alive ?? "0";
   const embeddingKeepaliveLabel = embeddingKeepalive === "0" ? "not resident (0)" : embeddingKeepalive;
   const residentChatModels = gpu.ollama_gpu_models ?? [];
-  const chatModel = gpu.ollama_chat_model ?? "phi3:mini";
+  const chatModel = gpu.ollama_chat_model ?? "qwen3.5:397b-cloud";
   const selectedChatModel = ollamaModels?.selected_chat_model ?? chatModel;
   const modelOptions = (ollamaModels?.models.length ? ollamaModels.models : [{ name: selectedChatModel, current: true }])
     .reduce<OllamaModelOption[]>((options, model) => {
@@ -3550,7 +3523,7 @@ function ModelsPage({
     modelOptions.unshift({ name: selectedChatModel, current: true, configured: true });
   }
   const sameGpuInterpretation = runtimeReady
-    ? `Same-GPU default looks healthy: ${asrBackendLabel} handles hearing locally, ${selectedChatModel} is ${residentChatModels.includes(selectedChatModel) ? "resident" : "reachable"}, and embeddings ${embeddingKeepalive === "0" ? "load on demand" : "stay resident"}.`
+    ? `Runtime path looks healthy: ${asrBackendLabel} handles hearing on ${asrDevice}, ${selectedChatModel} is ${residentChatModels.includes(selectedChatModel) ? "resident" : "reachable"}, and embeddings ${embeddingKeepalive === "0" ? "load on demand" : "stay resident"}.`
     : "Health checks show which part of Dross needs attention before a meeting.";
   return (
     <main className="page models-page" aria-label="Models">
@@ -3567,7 +3540,7 @@ function ModelsPage({
           <p className="label">Readiness</p>
           <h2>{readinessTitle}</h2>
           <div className="readiness-kv" aria-label="Dross readiness details">
-            <span><strong>Hearing</strong>{hearingReady ? `${asrBackendLabel} · ${streamingMetricLabel}` : (gpu.asr_backend_error || gpu.asr_cuda_error || "ASR check needed")}</span>
+            <span><strong>Hearing</strong>{hearingReady ? `${asrBackendLabel} · ${asrCadenceLabel}` : (gpu.asr_backend_error || gpu.asr_cuda_error || "ASR check needed")}</span>
             <span><strong>Thinking</strong>{thinkingReady ? `${selectedChatModel} · ${ollamaChatHostLabel}` : "chat offline"}</span>
             <span><strong>Memory</strong>{memoryReady ? `${gpu.ollama_embed_model ?? "embeddinggemma"} · ${ollamaEmbedHostLabel}` : "embeddings offline"}</span>
             <span><strong>VRAM</strong>{gpuFreeLabel}</span>
@@ -3577,12 +3550,12 @@ function ModelsPage({
         <span className={`readiness-pill ${readinessTone}`}>{readinessPill}</span>
       </section>
       <div className="models-grid">
-        <ModelCard title="Hearing / ASR" status={gpu.asr_backend_error ? "error" : gpu.nemotron_loaded ? "loaded" : "cold"}>
+        <ModelCard title="Hearing / ASR" status={gpu.asr_backend_error ? "error" : "ready"}>
           <RuntimeRow label="Backend" value={asrBackendLabel} />
           <RuntimeRow label="Model" value={asrModelLabel} />
-          <RuntimeRow label="Device" value={gpu.asr_device ?? (gpu.asr_cuda_available === false ? "cpu" : "cuda")} />
-          <RuntimeRow label="Stream" value={streamingModeLabel} />
-          <RuntimeRow label="Latency" value={streamingMetricLabel} />
+          <RuntimeRow label="Device" value={asrDevice} />
+          <RuntimeRow label="Cadence" value={asrCadenceLabel} />
+          <RuntimeRow label="Last ASR" value={asrTimingLabel} />
           <RuntimeRow label="Dtype" value={gpu.asr_dtype ?? "configured in .env"} />
           {gpu.asr_backend_error && <p className="warning-text">{gpu.asr_backend_error}</p>}
         </ModelCard>
@@ -3628,7 +3601,7 @@ function ModelsPage({
           <RuntimeRow label="Free VRAM" value={gpuFreeLabel} />
           <RuntimeRow label="Ollama models" value={gpu.ollama_gpu_models?.join(", ") || "idle"} />
           <RuntimeRow label="Unload on ASR" value={gpu.asr_unload_ollama_on_start ? "yes" : "no"} />
-          <RuntimeRow label="Streaming finals" value={String(pipeline.streamingFinalCount)} />
+          <RuntimeRow label="Transcript revisions" value={String(pipeline.finalSegmentsReplaced)} />
         </ModelCard>
       </div>
       <details className="copy-snippet config-recipes" aria-label="Config recipes">
@@ -3637,10 +3610,10 @@ function ModelsPage({
           <span>Restart required after .env changes</span>
         </summary>
         {[
-          ["Switch to Faster-Whisper", "Use when Nemotron streaming is unavailable or the GPU needs the older ASR path.", "BRAIN_SIDECAR_ASR_BACKEND=faster_whisper"],
-          ["Unload Ollama before ASR", "Use when ASR needs more free VRAM than resident chat models leave available.", "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true"],
+          ["CPU ASR fallback", "Use when CUDA is unstable or local GPU headroom should stay free.", "BRAIN_SIDECAR_ASR_DEVICE=cpu\nBRAIN_SIDECAR_ASR_COMPUTE_TYPE=int8"],
+          ["CUDA ASR opt-in", "Use only when the GPU is stable and you want Faster-Whisper on CUDA.", "BRAIN_SIDECAR_ASR_DEVICE=cuda\nBRAIN_SIDECAR_ASR_COMPUTE_TYPE=float16"],
+          ["Unload Ollama before ASR", "Use when CUDA ASR needs more free VRAM than resident chat models leave available.", "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true"],
           ["Split chat to LAN", "Use when a LAN Ollama host should carry chat while this machine keeps hearing local.", "BRAIN_SIDECAR_OLLAMA_CHAT_HOST=http://192.168.86.219:11434"],
-          ["Nemotron chunk", "Use when tuning streaming latency against final transcript stability.", "BRAIN_SIDECAR_NEMOTRON_CHUNK_MS=160"],
         ].map(([label, detail, snippet]) => (
           <button key={label} className="secondary" type="button" onClick={() => navigator.clipboard?.writeText(snippet)}>
             <span>{label}</span>
@@ -5411,7 +5384,8 @@ function stringOrUndefined(value: unknown): string | undefined {
 }
 
 function asrBackendNameFromPayload(payload: Record<string, unknown>): string {
-  return String(payload.asr_backend ?? "") === "nemotron_streaming" ? "Nemotron Streaming" : "Faster-Whisper";
+  void payload;
+  return "Faster-Whisper";
 }
 
 function replaceTranscriptLine(

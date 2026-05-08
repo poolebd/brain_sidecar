@@ -9,15 +9,9 @@ import wave
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-import numpy as np
-
 from brain_sidecar.config import Settings
 from brain_sidecar.core.audio import AudioCapture, FFmpegAudioCapture, FixtureWavAudioCapture, MAX_INPUT_GAIN_DB, MIN_INPUT_GAIN_DB
-from brain_sidecar.core.asr import (
-    ASR_BACKEND_NEMOTRON_STREAMING,
-    StreamingAsrEvent,
-    StreamingAsrSession,
-)
+from brain_sidecar.core.asr import ASR_BACKEND_FASTER_WHISPER
 from brain_sidecar.core.asr_factory import create_asr_backend
 from brain_sidecar.core.dedupe import TranscriptDeduplicator, TranscriptFinalConsolidator
 from brain_sidecar.core.devices import find_device
@@ -46,8 +40,6 @@ from brain_sidecar.core.ollama import OllamaClient
 from brain_sidecar.core.recall import RecallIndex
 from brain_sidecar.core.speaker_identity import SpeakerIdentityService, analyze_pcm16
 from brain_sidecar.core.storage import Storage
-from brain_sidecar.core.nemotron_streaming import StreamingPcmChunker
-from brain_sidecar.core.transcription import audio_rms
 from brain_sidecar.core.web_context import (
     BraveSearchClient,
     WebContextCandidate,
@@ -69,53 +61,6 @@ class AudioWindow:
     start_offset_s: float
     final: bool = False
     preview: bool = False
-
-
-class InMemoryPcmRingBuffer:
-    def __init__(self, *, sample_rate: int, seconds: float = 45.0) -> None:
-        self.sample_rate = sample_rate
-        self.bytes_per_second = sample_rate * 2
-        self.max_bytes = int(self.bytes_per_second * seconds)
-        self._buffer = bytearray()
-        self._start_offset_s = 0.0
-        self._initialized = False
-
-    def append(self, pcm: bytes, start_offset_s: float) -> None:
-        if not pcm:
-            return
-        if not self._initialized:
-            self._start_offset_s = start_offset_s
-            self._initialized = True
-        expected_start = self.end_offset_s
-        if start_offset_s > expected_start + 0.02:
-            silence_bytes = int((start_offset_s - expected_start) * self.bytes_per_second)
-            silence_bytes -= silence_bytes % 2
-            self._buffer.extend(b"\0" * max(0, silence_bytes))
-        self._buffer.extend(pcm)
-        self._trim()
-
-    @property
-    def end_offset_s(self) -> float:
-        return self._start_offset_s + (len(self._buffer) / self.bytes_per_second)
-
-    def slice(self, start_s: float, end_s: float) -> bytes:
-        if not self._initialized or end_s <= start_s:
-            return b""
-        start_byte = int((start_s - self._start_offset_s) * self.bytes_per_second)
-        end_byte = int((end_s - self._start_offset_s) * self.bytes_per_second)
-        start_byte = max(0, start_byte - (start_byte % 2))
-        end_byte = min(len(self._buffer), end_byte - (end_byte % 2))
-        if end_byte <= start_byte:
-            return b""
-        return bytes(self._buffer[start_byte:end_byte])
-
-    def _trim(self) -> None:
-        if len(self._buffer) <= self.max_bytes:
-            return
-        excess = len(self._buffer) - self.max_bytes
-        excess += excess % 2
-        del self._buffer[:excess]
-        self._start_offset_s += excess / self.bytes_per_second
 
 
 @dataclass(frozen=True)
@@ -158,20 +103,8 @@ class ActiveSession:
     last_audio_rms: float | None = None
     silent_windows: int = 0
     asr_empty_windows: int = 0
-    asr_backend: str = ASR_BACKEND_NEMOTRON_STREAMING
+    asr_backend: str = ASR_BACKEND_FASTER_WHISPER
     asr_model: str | None = None
-    streaming_session: StreamingAsrSession | None = None
-    streaming_chunk_ms: int | None = None
-    streaming_partial_count: int = 0
-    streaming_final_count: int = 0
-    streaming_flush_count: int = 0
-    streaming_latency_ms: float | None = None
-    streaming_realtime_factor: float | None = None
-    streaming_started_at: float | None = None
-    total_audio_offset_s: float = 0.0
-    pcm_ring_buffer: InMemoryPcmRingBuffer = field(
-        default_factory=lambda: InMemoryPcmRingBuffer(sample_rate=16_000, seconds=45.0)
-    )
     note_segments: list[TranscriptSegment] = field(default_factory=list)
     final_segments_collapsed: int = 0
     final_segments_replaced: int = 0
@@ -244,10 +177,10 @@ class SessionManager:
             normalized_contract = normalize_meeting_contract(meeting_contract)
             if not self._asr_loaded():
                 await self._publish_asr_start_status(session_id)
-                await asyncio.to_thread(prepare_asr_gpu, self.settings)
+                if self.settings.asr_device == "cuda":
+                    await asyncio.to_thread(prepare_asr_gpu, self.settings)
                 await self._publish_audio_status(session_id, "loading_asr")
             await self.transcriber.load()
-            streaming = self._asr_streaming_supported()
             capture = self._build_capture(
                 device_id=device_id,
                 fixture_wav=fixture_wav,
@@ -277,23 +210,14 @@ class SessionManager:
                 next_note_segment_count=self.settings.notes_every_segments,
                 asr_backend=self._asr_backend_name(),
                 asr_model=self._asr_model_name(),
-                streaming_chunk_ms=self.settings.nemotron_chunk_ms if streaming else None,
-                pcm_ring_buffer=InMemoryPcmRingBuffer(sample_rate=self.settings.audio_sample_rate, seconds=45.0),
                 meeting_contract=normalized_contract,
             )
             self._active[session_id] = active
-            if streaming:
-                active.tasks = [
-                    asyncio.create_task(self._run_streaming_capture_loop(session_id, capture, window_queue)),
-                    asyncio.create_task(self._run_streaming_transcription_loop(session_id, window_queue, postprocess_queue)),
-                    asyncio.create_task(self._run_postprocess_loop(session_id, postprocess_queue)),
-                ]
-            else:
-                active.tasks = [
-                    asyncio.create_task(self._run_capture_loop(session_id, capture, window_queue)),
-                    asyncio.create_task(self._run_transcription_loop(session_id, window_queue, postprocess_queue)),
-                    asyncio.create_task(self._run_postprocess_loop(session_id, postprocess_queue)),
-                ]
+            active.tasks = [
+                asyncio.create_task(self._run_capture_loop(session_id, capture, window_queue)),
+                asyncio.create_task(self._run_transcription_loop(session_id, window_queue, postprocess_queue)),
+                asyncio.create_task(self._run_postprocess_loop(session_id, postprocess_queue)),
+            ]
             if self._web_context_configured():
                 active.tasks.append(asyncio.create_task(self._run_web_context_loop(session_id, web_context_queue)))
             for task in active.tasks:
@@ -334,26 +258,12 @@ class SessionManager:
     def _asr_loaded(self) -> bool:
         return self._asr_model_name() is not None
 
-    def _asr_streaming_supported(self) -> bool:
-        return bool(getattr(self.transcriber, "streaming_supported", False))
-
     def _asr_status_fields(self, active: ActiveSession | None = None) -> dict[str, object]:
-        streaming = self._asr_streaming_supported()
-        chunk_ms = (
-            active.streaming_chunk_ms
-            if active is not None and active.streaming_chunk_ms is not None
-            else self.settings.nemotron_chunk_ms
-            if streaming or self.settings.asr_backend == ASR_BACKEND_NEMOTRON_STREAMING
-            else None
-        )
         return {
             "asr_backend": self._asr_backend_name(),
-            "asr_streaming_supported": streaming,
-            "asr_streaming_chunk_ms": chunk_ms,
-            "nemotron_model_id": self.settings.nemotron_model_id,
-            "nemotron_loaded": self._asr_backend_name() == ASR_BACKEND_NEMOTRON_STREAMING and self._asr_loaded(),
             "asr_model": self._asr_model_name(),
-            "asr_dtype": self.settings.nemotron_dtype if self._asr_backend_name() == ASR_BACKEND_NEMOTRON_STREAMING else self.settings.asr_compute_type,
+            "asr_dtype": self.settings.asr_compute_type,
+            "asr_device": self.settings.asr_device,
             "asr_backend_error": getattr(self.transcriber, "last_error", None),
         }
 
@@ -406,12 +316,9 @@ class SessionManager:
             active = self._active.get(session_id)
         if active is None:
             return
-        if active.asr_backend == ASR_BACKEND_NEMOTRON_STREAMING:
-            await self._stop_streaming_session(active)
-        else:
-            async with self._lock:
-                self._active.pop(session_id, None)
-            await active.capture.stop()
+        async with self._lock:
+            self._active.pop(session_id, None)
+        await active.capture.stop()
         for task in active.tasks:
             task.cancel()
         await asyncio.gather(*active.tasks, return_exceptions=True)
@@ -432,17 +339,6 @@ class SessionManager:
         )
         if active.save_transcript and active.recent_segments:
             await self._safe_store_session_memory_summary(session_id, active.recent_segments)
-
-    async def _stop_streaming_session(self, active: ActiveSession) -> None:
-        await active.capture.stop()
-        try:
-            await active.window_queue.put(AudioWindow(b"", active.total_audio_offset_s, final=True))
-            await asyncio.wait_for(active.window_queue.join(), timeout=8.0)
-            await asyncio.wait_for(active.postprocess_queue.join(), timeout=8.0)
-        except (asyncio.TimeoutError, RuntimeError):
-            pass
-        async with self._lock:
-            self._active.pop(active.id, None)
 
     async def add_library_root(self, path: Path) -> dict:
         root_id = await asyncio.to_thread(self.storage.add_library_root, path.expanduser().resolve())
@@ -803,63 +699,6 @@ class SessionManager:
         except Exception as exc:
             await self._publish_error(session_id, str(exc), fatal=True)
 
-    async def _run_streaming_capture_loop(
-        self,
-        session_id: str,
-        capture: AudioCapture,
-        window_queue: asyncio.Queue[AudioWindow],
-    ) -> None:
-        bytes_per_second = self.settings.audio_sample_rate * 2
-        total_bytes = 0
-        chunker = StreamingPcmChunker(
-            sample_rate=self.settings.audio_sample_rate,
-            chunk_ms=self.settings.nemotron_chunk_ms,
-        )
-        active = self._active.get(session_id)
-
-        await self.bus.publish(
-            SidecarEvent(
-                type=EVENT_AUDIO_STATUS,
-                session_id=session_id,
-                payload={
-                    "status": "listening",
-                    "raw_audio_retained": False,
-                    **(self._pipeline_metrics(active) if active is not None else {}),
-                    **(self._meeting_status(active) if active is not None else {}),
-                },
-            )
-        )
-
-        try:
-            async for chunk in capture.chunks():
-                active = self._active.get(session_id)
-                if active is None:
-                    break
-                start_offset_s = total_bytes / bytes_per_second
-                total_bytes += len(chunk)
-                active.total_audio_offset_s = total_bytes / bytes_per_second
-                active.pcm_ring_buffer.append(chunk, start_offset_s)
-                for streaming_chunk in chunker.accept(chunk, start_offset_s):
-                    await self._enqueue_window(
-                        session_id,
-                        window_queue,
-                        AudioWindow(streaming_chunk.pcm, streaming_chunk.start_offset_s),
-                    )
-
-            active = self._active.get(session_id)
-            if active is not None:
-                for streaming_chunk in chunker.flush():
-                    await self._enqueue_window(
-                        session_id,
-                        window_queue,
-                        AudioWindow(streaming_chunk.pcm, streaming_chunk.start_offset_s),
-                    )
-                await self._enqueue_window(session_id, window_queue, AudioWindow(b"", active.total_audio_offset_s, final=True))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self._publish_error(session_id, str(exc), fatal=True)
-
     async def _enqueue_window(
         self,
         session_id: str,
@@ -956,72 +795,6 @@ class SessionManager:
                     await self._put_latest(postprocess_queue, batch)
             finally:
                 window_queue.task_done()
-
-    async def _run_streaming_transcription_loop(
-        self,
-        session_id: str,
-        window_queue: asyncio.Queue[AudioWindow],
-        postprocess_queue: asyncio.Queue[SegmentBatch],
-    ) -> None:
-        active = self._active.get(session_id)
-        if active is None:
-            return
-        stream = await self.transcriber.open_stream(session_id, start_offset_s=0.0)
-        active.streaming_session = stream
-        active.streaming_started_at = time.monotonic()
-        try:
-            while True:
-                window = await window_queue.get()
-                try:
-                    active = self._active.get(session_id)
-                    if active is None:
-                        return
-                    started_at = time.monotonic()
-                    active.transcriber_busy = True
-                    events: list[StreamingAsrEvent] = []
-                    if window.pcm:
-                        samples = np.frombuffer(window.pcm, dtype=np.int16).astype(np.float32) / 32768.0
-                        active.last_audio_rms = audio_rms(samples)
-                        events.extend(await stream.accept_pcm16(window.pcm, window.start_offset_s))
-                    if window.final:
-                        active.streaming_flush_count += 1
-                        events.extend(await stream.flush(final_offset_s=window.start_offset_s))
-                    elapsed_ms = round((time.monotonic() - started_at) * 1000, 1)
-                    active.streaming_latency_ms = elapsed_ms
-                    audio_seconds = len(window.pcm) / (self.settings.audio_sample_rate * 2) if window.pcm else 0.0
-                    if audio_seconds > 0:
-                        active.streaming_realtime_factor = round((elapsed_ms / 1000.0) / audio_seconds, 3)
-                    batch_segments: list[TranscriptSegment] = []
-                    refresh_notes = False
-                    for event in events:
-                        batch = await self._handle_streaming_asr_event(
-                            session_id,
-                            active,
-                            event,
-                            asr_duration_ms=elapsed_ms,
-                        )
-                        batch_segments.extend(batch.segments)
-                        refresh_notes = refresh_notes or batch.refresh_notes
-                    if batch_segments:
-                        await self._put_latest(
-                            postprocess_queue,
-                            SegmentBatch(segments=batch_segments, refresh_notes=refresh_notes),
-                        )
-                    elif window.pcm and not events:
-                        await self._record_empty_asr_window(session_id, active, asr_duration_ms=elapsed_ms)
-                    if window.final:
-                        return
-                finally:
-                    active = self._active.get(session_id)
-                    if active is not None:
-                        active.transcriber_busy = False
-                    window_queue.task_done()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self._publish_error(session_id, str(exc), fatal=True)
-        finally:
-            await stream.close()
 
     async def _transcribe_partial_window(self, session_id: str, window: AudioWindow) -> None:
         active = self._active.get(session_id)
@@ -1130,76 +903,6 @@ class SessionManager:
             refresh_notes = refresh_notes or batch.refresh_notes
         return SegmentBatch(segments=segments, refresh_notes=refresh_notes)
 
-    async def _handle_streaming_asr_event(
-        self,
-        session_id: str,
-        active: ActiveSession,
-        event: StreamingAsrEvent,
-        *,
-        asr_duration_ms: float,
-    ) -> SegmentBatch:
-        if event.kind == "partial":
-            active.streaming_partial_count += 1
-            if not self.settings.streaming_partials_enabled:
-                return SegmentBatch(segments=[])
-            text_key = " ".join(event.text.lower().split())
-            if not text_key or text_key == active.last_partial_text:
-                return SegmentBatch(segments=[])
-            active.last_partial_text = text_key
-            segment = TranscriptSegment(
-                id=new_id("partial"),
-                session_id=session_id,
-                start_s=event.start_s,
-                end_s=event.end_s,
-                text=event.text,
-                is_final=False,
-            )
-            speaker_payload = {
-                "speaker_role": "unknown",
-                "speaker_label": "Unknown speaker",
-                "speaker_confidence": 0.0,
-                "speaker_match_reason": "streaming_partial",
-                "speaker_low_confidence": True,
-            }
-            await self.bus.publish(
-                SidecarEvent(
-                    type=EVENT_TRANSCRIPT_PARTIAL,
-                    session_id=session_id,
-                    payload=self._transcript_payload(
-                        active,
-                        segment,
-                        asr_model=event.model,
-                        is_final=False,
-                        speaker_payload=speaker_payload,
-                        asr_duration_ms=asr_duration_ms,
-                    ),
-                )
-            )
-            return SegmentBatch(segments=[])
-
-        active.streaming_final_count += 1
-        segment = TranscriptSegment(
-            id=new_id("seg"),
-            session_id=session_id,
-            start_s=event.start_s,
-            end_s=event.end_s,
-            text=event.text,
-        )
-        speaker_payload = self._speaker_payload_for_streaming_span(
-            active,
-            segment,
-            persist=active.save_transcript,
-        )
-        segment = _segment_with_speaker_payload(segment, speaker_payload)
-        return await self._accept_final_segment(
-            session_id,
-            active,
-            segment,
-            asr_model=event.model,
-            speaker_payload=speaker_payload,
-            asr_duration_ms=asr_duration_ms,
-        )
-
     async def _accept_final_segment(
         self,
         session_id: str,
@@ -1293,13 +996,6 @@ class SessionManager:
             "dropped_windows": active.dropped_windows,
             "asr_backend": active.asr_backend,
             "asr_model": active.asr_model or self._asr_model_name(),
-            "asr_streaming_chunk_ms": active.streaming_chunk_ms,
-            "asr_streaming_queue_depth": active.window_queue.qsize() if active.asr_backend == ASR_BACKEND_NEMOTRON_STREAMING else None,
-            "asr_streaming_partial_count": active.streaming_partial_count,
-            "asr_streaming_final_count": active.streaming_final_count,
-            "asr_streaming_flush_count": active.streaming_flush_count,
-            "asr_streaming_latency_ms": active.streaming_latency_ms,
-            "asr_streaming_realtime_factor": active.streaming_realtime_factor,
             "partial_windows_enqueued": active.partial_windows_enqueued,
             "partial_windows_skipped_busy": active.partial_windows_skipped_busy,
             "partial_windows_skipped_queue": active.partial_windows_skipped_queue,
@@ -1439,24 +1135,6 @@ class SessionManager:
         start_byte -= start_byte % 2
         end_byte -= end_byte % 2
         pcm = window.pcm[start_byte:end_byte]
-        return self._speaker_payload_for_pcm(active, segment, pcm, persist=persist)
-
-    def _speaker_payload_for_streaming_span(
-        self,
-        active: ActiveSession,
-        segment: TranscriptSegment,
-        *,
-        persist: bool,
-    ) -> dict:
-        pcm = active.pcm_ring_buffer.slice(segment.start_s, segment.end_s)
-        if len(pcm) < int(self.settings.audio_sample_rate * 2 * 0.25):
-            return {
-                "speaker_role": "unknown",
-                "speaker_label": "Unknown speaker",
-                "speaker_confidence": 0.0,
-                "speaker_match_reason": "streaming_pcm_slice_too_short",
-                "speaker_low_confidence": True,
-            }
         return self._speaker_payload_for_pcm(active, segment, pcm, persist=persist)
 
     def _speaker_payload_for_pcm(

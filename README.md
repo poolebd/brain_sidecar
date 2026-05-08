@@ -7,13 +7,13 @@ headless and event-driven so a desktop GUI can reuse the same engine later.
 ## What v1 Does
 
 - Captures a USB mic through `ffmpeg`.
-- Transcribes locally with Nemotron Streaming on CUDA by default, with Faster-Whisper still available.
+- Transcribes locally with Faster-Whisper; CPU `small.en` is the default ASR path.
 - Generates meeting-intelligence sidecar cards with local Ollama.
 - Searches prior sessions and selected local files with local embeddings.
 - Surfaces fast work-memory parallels from a pre-indexed local career/project archive.
 - Learns local Speaker Identity embeddings so BP-owned follow-ups can be distinguished from other speakers.
 - Stores text artifacts only. Raw audio stays in memory and is discarded.
-- Fails visibly if GPU transcription is unavailable.
+- Fails visibly if the configured ASR or Ollama model is unavailable.
 
 ## Architecture
 
@@ -32,15 +32,14 @@ Python package directly.
 cd /home/bp/project/brain-sidecar
 python3.11 -m venv .venv
 . .venv/bin/activate
-pip install -e ".[gpu,recall,dev,nemotron]"
-pip install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'
+pip install -e ".[gpu,recall,dev]"
 npm --prefix ui install
 ```
 
-Make sure the local Ollama models exist:
+Make sure the local embedding model exists. The chat model can be local or an
+Ollama cloud model selected in the Models page.
 
 ```bash
-ollama pull phi3:mini
 ollama pull embeddinggemma
 ```
 
@@ -83,31 +82,32 @@ For foreground debugging, use the developer runner instead:
 ./scripts/dev.sh
 ```
 
-## GPU Contract
+## Runtime Contract
 
-The app requires:
+The default app path requires:
 
-- NVIDIA GPU visible to `nvidia-smi`.
-- A selected CUDA ASR backend.
-- Ollama running locally, with the configured chat model on GPU.
+- Faster-Whisper installed in the Python environment.
+- A configured ASR device, default `cpu`.
+- Ollama reachable for chat/card synthesis and local embeddings.
 
-The default ASR backend is NVIDIA Nemotron Speech Streaming 0.6B, configured as
-local CUDA-only cache-aware streaming with 160 ms chunks and `float32`
-inference. Faster-Whisper remains available by setting
-`BRAIN_SIDECAR_ASR_BACKEND=faster_whisper`; if `medium.en` cannot load because
-of VRAM pressure, that fallback path may load `small.en`, but still on CUDA
-only. CPU fallback is intentionally not implemented.
+Faster-Whisper is the only ASR backend. The repo default is CPU `small.en` with
+`tiny.en` fallback and `int8` compute so local CUDA headroom is reserved for
+other desktop work. Set `BRAIN_SIDECAR_ASR_DEVICE=cuda` only when the GPU is
+stable and you want Faster-Whisper on CUDA.
 
 ## Speed And Quality Tuning
 
 The live pipeline is split into capture, transcription, and post-processing
-tasks. Capture keeps reading audio while CUDA ASR and Ollama work in the
+tasks. Capture keeps reading audio while ASR and Ollama work in the
 background. If transcription falls behind, stale audio windows are dropped and
 the UI shows the dropped-window count so the sidecar stays real-time.
 
 Useful knobs:
 
-- `BRAIN_SIDECAR_ASR_BACKEND`: `nemotron_streaming` by default, or `faster_whisper` for the older windowed ASR path.
+- `BRAIN_SIDECAR_ASR_BACKEND`: must be `faster_whisper`.
+- `BRAIN_SIDECAR_ASR_PRIMARY_MODEL`: primary Faster-Whisper model, default `small.en`.
+- `BRAIN_SIDECAR_ASR_FALLBACK_MODEL`: fallback Faster-Whisper model, default `tiny.en`.
+- `BRAIN_SIDECAR_ASR_COMPUTE_TYPE`: Faster-Whisper compute type, default `int8`.
 - `BRAIN_SIDECAR_ASR_BEAM_SIZE`: higher can improve transcript quality, lower is faster.
 - `BRAIN_SIDECAR_ASR_VAD_MIN_SILENCE_MS`: lower splits speech faster, higher creates steadier segments, default `300`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS`: audio window before ASR emits a transcript, default `3.4`.
@@ -117,9 +117,9 @@ Useful knobs:
 - `BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD`: reject low-confidence ASR segments, default `-1.0`.
 - `BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD`: reject repetitive/compressed ASR spans, default `2.4`.
 - `BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS`: skip near-silent audio windows before ASR, default `0.006`.
-- `BRAIN_SIDECAR_ASR_DEVICE`: Faster-Whisper device, `cuda` or `cpu`, default `cuda`. Use `cpu` with `BRAIN_SIDECAR_ASR_BACKEND=faster_whisper` after CUDA driver faults.
+- `BRAIN_SIDECAR_ASR_DEVICE`: Faster-Whisper device, `cpu` or `cuda`, default `cpu`.
 - `BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB`: free VRAM target before loading the selected ASR backend, default `3500`.
-- `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before ASR load when VRAM is tight, default `false` so Nemotron and `phi3:mini` can stay resident together.
+- `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before CUDA ASR load when VRAM is tight, default `false`.
 - `BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS`: wait budget after unloading Ollama, default `10`.
 - `BRAIN_SIDECAR_OLLAMA_HOST`: default Ollama host used when split hosts are unset, default `http://127.0.0.1:11434`.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_HOST`: Ollama host for note/card synthesis, default local `http://127.0.0.1:11434`.
@@ -128,21 +128,13 @@ Useful knobs:
 - `BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE`: chat-specific keepalive, default follows `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL`: optional smaller Ollama chat model used when the primary chat model is skipped by the VRAM guard. Leave blank to use deterministic Sidecar card fallback instead.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB`: if greater than `0`, skip the primary chat model when free local VRAM is below this value before a chat request, default `0`.
-- `BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE`: embedding-specific keepalive, default `0` so embeddings do not stay resident beside Nemotron and Phi.
+- `BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE`: embedding-specific keepalive, default `0` so embeddings do not stay resident unnecessarily.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_TIMEOUT_SECONDS`: local note/card synthesis timeout, default `20`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_TIMEOUT_SECONDS`: local embedding timeout, default `12`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE`: number of pending audio windows before stale windows are dropped, default `8`.
 - `BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED`: publish guarded provisional transcript previews, default `false`. Preview ASR is opt-in because final windows must never wait behind preview work.
 - `BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS`: preview ASR window length, capped to the final ASR window, default `2.0`.
 - `BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS`: minimum spacing between preview ASR jobs, default `2.0`.
-- `BRAIN_SIDECAR_NEMOTRON_MODEL_ID`: default `nvidia/nemotron-speech-streaming-en-0.6b`.
-- `BRAIN_SIDECAR_NEMOTRON_CHUNK_MS`: Nemotron streaming chunk size, one of `80`, `160`, `560`, or `1120`; default `160`.
-- `BRAIN_SIDECAR_NEMOTRON_DTYPE`: cache-aware inference dtype, currently `float32`.
-- `BRAIN_SIDECAR_NEMOTRON_LOCAL_FILES_ONLY`: use cached Hugging Face files only, default `false`.
-- `BRAIN_SIDECAR_STREAMING_PARTIALS_ENABLED`: emit streaming partial captions for Nemotron, default `true` when selected.
-- `BRAIN_SIDECAR_STREAMING_STABLE_FINAL_CHUNKS`: trailing words held back before finalizing cumulative streaming text, default `3`.
-- `BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS`: preferred minimum words before a Nemotron final transcript block, default `10`.
-- `BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS`: minimum held duration before a shorter phrase can finalize, default `2.8`.
 - `BRAIN_SIDECAR_DEDUPE_SIMILARITY_THRESHOLD`: suppresses repeated text from overlapping windows.
 - `BRAIN_SIDECAR_ASR_INITIAL_PROMPT`: optional vocabulary/context hint for names, projects, or jargon.
 - `BRAIN_SIDECAR_SPEAKER_ENROLLMENT_SAMPLE_SECONDS`: USB-mic recording window for each Speaker Identity sample, default `8`.
@@ -247,7 +239,7 @@ contract:
 - `audio_status` and `gpu_status`: operational state such as queue depth,
   dropped windows, preview metrics, `last_audio_rms`, `silent_windows`,
   `asr_empty_windows`, `final_segments_replaced`, event-drop counts, ASR
-  backend, streaming chunk/latency metrics, settings, and GPU pressure. SSE streams send heartbeats and keep a bounded
+  backend, ASR timing metrics, settings, and GPU pressure. SSE streams send heartbeats and keep a bounded
   replay buffer for reconnects using `Last-Event-ID`.
 
 Raw audio is never written to disk. Temporary/listen-only sessions do not store
@@ -360,45 +352,22 @@ The compact frame is ephemeral runtime status. Raw audio is never saved, partial
 transcripts do not trigger the lens, and listen-only sessions do not persist
 keyword artifacts.
 
-## Nemotron Streaming ASR
+## Faster-Whisper ASR
 
-Nemotron streaming is local/GPU only and is the normal launcher default. The
-verified integration path is NVIDIA NeMo/PyTorch using
-`nvidia/nemotron-speech-streaming-en-0.6b`, a 600M parameter cache-aware
-FastConformer-RNNT checkpoint. The model card lists mono audio input and
-non-overlapping streaming chunks at 80 ms, 160 ms, 560 ms, and 1120 ms.
-The normal local model pair is Nemotron for ASR plus Ollama `phi3:mini` for
-note/card synthesis on the same GPU. Brain Sidecar does not unload Ollama before
-ASR by default; set `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true` only if VRAM
-pressure makes co-residency unstable.
+Faster-Whisper is the supported ASR runtime. The normal launcher uses
+`small.en` on CPU with `int8` compute, and falls back to `tiny.en` if the
+primary model cannot load. This keeps raw audio in memory only, keeps final
+transcript windows evidence-gated, and avoids reserving CUDA memory for ASR
+unless `BRAIN_SIDECAR_ASR_DEVICE=cuda` is explicitly configured.
 
-`./start.sh` installs the Nemotron Python extras and NeMo ASR stack when the
-backend is set to `nemotron_streaming`, which is now the default. For manual
-setup, use:
-
-```bash
-sudo apt-get install -y libsndfile1 ffmpeg
-. .venv/bin/activate
-pip install -e ".[nemotron]"
-pip install 'nemo_toolkit[asr] @ git+https://github.com/NVIDIA/NeMo.git@main'
-```
-
-Smoke test without storing raw audio:
-
-```bash
-BRAIN_SIDECAR_NEMOTRON_CHUNK_MS=160 \
-python scripts/test_nemotron_streaming.py runtime/test-audio/osr-us-female-harvard.wav
-```
-
-If Nemotron or model loading fails, session start fails visibly with the
-dependency or model-access error. Switch `BRAIN_SIDECAR_ASR_BACKEND=faster_whisper`
-to return to the windowed ASR path.
+For a quick ASR smoke test without saving raw audio, run the app in test mode or
+use the Playwright user-audio lane against a fixture WAV.
 
 ## Split Ollama Over LAN
 
-The default path keeps Nemotron and `phi3:mini` on the desktop GPU. If that GPU
-is too tight for a longer call, keep Nemotron on the desktop and run the chat
-model on another machine. On the laptop, expose Ollama on the LAN:
+If local GPU headroom is tight, run the chat model on another machine or use an
+Ollama cloud model while keeping Faster-Whisper local. On the laptop, expose
+Ollama on the LAN:
 
 ```bash
 OLLAMA_HOST=0.0.0.0:11434 ollama serve
@@ -419,8 +388,8 @@ BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE=0
 `/api/health/gpu` reports the chat/embed hosts and reachability so the System
 panel can show whether the laptop model is online.
 
-For call stability on a single GPU, keep ASR first and let note synthesis fall
-back instead of forcing Phi into a tight CUDA context:
+For call stability on a single GPU, keep ASR on CPU or let note synthesis fall
+back instead of forcing a large local chat model into a tight CUDA context:
 
 ```bash
 BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB=9000
@@ -432,8 +401,7 @@ BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL=
 
 With `BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL` blank, a low-VRAM chat pass
 uses the existing deterministic `model_fallback` card path. Set it to a smaller
-local Ollama model only if that model is known to fit beside Nemotron with the
-same reserve.
+local Ollama model only if that model is known to fit the same reserve.
 
 ## Tests
 

@@ -17,8 +17,6 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
         "BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED",
         "BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS",
         "BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS",
-        "BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS",
-        "BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS",
         "BRAIN_SIDECAR_ENERGY_LENS_ENABLED",
         "BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE",
         "BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS",
@@ -36,8 +34,6 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
     assert settings.partial_transcripts_enabled is False
     assert settings.partial_window_seconds == 2.0
     assert settings.partial_min_interval_seconds == 2.0
-    assert settings.streaming_min_final_words == 10
-    assert settings.streaming_min_final_seconds == 2.8
     assert settings.energy_lens_enabled is True
     assert settings.energy_lens_min_confidence == "medium"
     assert settings.energy_lens_max_keywords == 6
@@ -97,10 +93,13 @@ def test_ollama_split_host_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.ollama_chat_min_free_vram_mb == 9000
 
 
-def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
+def test_faster_whisper_cloud_chat_defaults(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     for name in [
         "BRAIN_SIDECAR_ASR_BACKEND",
+        "BRAIN_SIDECAR_ASR_PRIMARY_MODEL",
+        "BRAIN_SIDECAR_ASR_FALLBACK_MODEL",
+        "BRAIN_SIDECAR_ASR_COMPUTE_TYPE",
         "BRAIN_SIDECAR_ASR_DEVICE",
         "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START",
         "BRAIN_SIDECAR_OLLAMA_HOST",
@@ -118,13 +117,16 @@ def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
 
     settings = load_settings()
 
-    assert settings.asr_backend == "nemotron_streaming"
-    assert settings.asr_device == "cuda"
+    assert settings.asr_backend == "faster_whisper"
+    assert settings.asr_primary_model == "small.en"
+    assert settings.asr_fallback_model == "tiny.en"
+    assert settings.asr_compute_type == "int8"
+    assert settings.asr_device == "cpu"
     assert settings.asr_unload_ollama_on_start is False
     assert settings.ollama_host == "http://127.0.0.1:11434"
     assert settings.ollama_chat_host == "http://127.0.0.1:11434"
     assert settings.ollama_embed_host == "http://127.0.0.1:11434"
-    assert settings.ollama_chat_model == "phi3:mini"
+    assert settings.ollama_chat_model == "qwen3.5:397b-cloud"
     assert settings.ollama_chat_fallback_model == ""
     assert settings.ollama_chat_min_free_vram_mb == 0
     assert settings.ollama_embed_model == "embeddinggemma"
@@ -133,17 +135,17 @@ def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
     assert settings.ollama_embed_keep_alive == "0"
 
 
-def test_asr_cpu_fallback_env_overrides(monkeypatch, tmp_path) -> None:
+def test_asr_device_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     monkeypatch.setenv("BRAIN_SIDECAR_ASR_BACKEND", "faster_whisper")
-    monkeypatch.setenv("BRAIN_SIDECAR_ASR_DEVICE", "cpu")
-    monkeypatch.setenv("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "int8")
+    monkeypatch.setenv("BRAIN_SIDECAR_ASR_DEVICE", "cuda")
+    monkeypatch.setenv("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "float16")
 
     settings = load_settings()
 
     assert settings.asr_backend == "faster_whisper"
-    assert settings.asr_device == "cpu"
-    assert settings.asr_compute_type == "int8"
+    assert settings.asr_device == "cuda"
+    assert settings.asr_compute_type == "float16"
 
 
 def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
@@ -151,8 +153,6 @@ def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250")
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS", "0.8")
-    monkeypatch.setenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_WORDS", "12")
-    monkeypatch.setenv("BRAIN_SIDECAR_STREAMING_MIN_FINAL_SECONDS", "3.5")
     monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_ENABLED", "false")
     monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE", "high")
     monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS", "4")
@@ -163,8 +163,6 @@ def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.audio_chunk_ms == 250
     assert settings.transcription_window_seconds == 3.4
     assert settings.transcription_overlap_seconds == 0.8
-    assert settings.streaming_min_final_words == 12
-    assert settings.streaming_min_final_seconds == 3.5
     assert settings.energy_lens_enabled is False
     assert settings.energy_lens_min_confidence == "high"
     assert settings.energy_lens_max_keywords == 4

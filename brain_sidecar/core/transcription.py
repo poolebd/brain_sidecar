@@ -14,7 +14,6 @@ from brain_sidecar.core.gpu import cuda_out_of_memory, prepare_asr_gpu
 
 class FasterWhisperTranscriber:
     backend_name = ASR_BACKEND_FASTER_WHISPER
-    streaming_supported = False
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
