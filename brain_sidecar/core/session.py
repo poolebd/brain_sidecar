@@ -37,7 +37,7 @@ from brain_sidecar.core.models import SidecarCard, TranscriptSegment, new_id
 from brain_sidecar.core.note_quality import NoteQualityGate
 from brain_sidecar.core.notes import NoteSynthesizer, heuristic_meeting_cards, note_from_sidecar
 from brain_sidecar.core.ollama import OllamaClient
-from brain_sidecar.core.recall import RecallIndex
+from brain_sidecar.core.recall import RecallIndex, has_priority_electrical_reference_hits
 from brain_sidecar.core.speaker_identity import SpeakerIdentityService, analyze_pcm16
 from brain_sidecar.core.storage import Storage
 from brain_sidecar.core.web_context import (
@@ -1243,11 +1243,14 @@ class SessionManager:
                 hit for hit in recall_hits if hit.source_type not in {"work_memory", "work_memory_project"}
             ]
 
+        prefer_reference_context = has_priority_electrical_reference_hits(query, recall_hits)
         try:
-            work_cards = await asyncio.wait_for(
-                asyncio.to_thread(self.work_memory.search, query, 3),
-                timeout=self.settings.work_memory_search_timeout_seconds,
-            )
+            work_cards = []
+            if not prefer_reference_context:
+                work_cards = await asyncio.wait_for(
+                    asyncio.to_thread(self.work_memory.search, query, 3),
+                    timeout=self.settings.work_memory_search_timeout_seconds,
+                )
             for card in work_cards:
                 if save_transcript:
                     self.work_memory.record_recall_event(session_id, card, query)

@@ -14,6 +14,66 @@ from brain_sidecar.core.storage import Storage
 
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".rst", ".pdf", ".docx"}
+EE_REFERENCE_PATH_TOKEN = "/runtime/reference/electrical-engineering/"
+ELECTRICAL_REFERENCE_SCORE_FLOOR = 0.42
+ELECTRICAL_REFERENCE_BOOST = 0.24
+ELECTRICAL_REFERENCE_PHRASES = {
+    "alternating current",
+    "arc flash",
+    "circuit breaker",
+    "current transformer",
+    "demand charge",
+    "direct current",
+    "fault current",
+    "ground fault",
+    "load flow",
+    "power factor",
+    "potential transformer",
+    "protective relay",
+    "rate schedule",
+    "short circuit",
+    "time of use",
+    "voltage drop",
+}
+ELECTRICAL_REFERENCE_TERMS = {
+    "ac",
+    "ammeter",
+    "breaker",
+    "bus",
+    "capacitor",
+    "circuit",
+    "conductor",
+    "current",
+    "dc",
+    "electrical",
+    "fault",
+    "generator",
+    "grounding",
+    "harmonic",
+    "impedance",
+    "inductor",
+    "insulation",
+    "meter",
+    "motor",
+    "neutral",
+    "ohm",
+    "protection",
+    "reactance",
+    "relay",
+    "schematic",
+    "short",
+    "substation",
+    "switchgear",
+    "tariff",
+    "transformer",
+    "voltage",
+    "watt",
+    "wiring",
+}
+ELECTRICAL_REFERENCE_COMMON_TERMS = {
+    "current",
+    "short",
+}
 
 
 @dataclass(frozen=True)
@@ -70,7 +130,8 @@ class RecallIndex:
             return []
         query_vector = (await self.ollama.embed([clean]))[0]
         cache = self._cached_records()
-        faiss_hits = search_cached_faiss(query_vector, cache.records, cache.faiss_index, max(limit * 3, limit))
+        candidate_limit = max(limit * 20, 80)
+        faiss_hits = search_cached_faiss(query_vector, cache.records, cache.faiss_index, candidate_limit)
         if faiss_hits is not None:
             return rank_recall_hits(
                 faiss_hits,
@@ -339,26 +400,72 @@ def rank_recall_hits(
         if key in seen:
             continue
         seen.add(key)
-        if hit.score < min_score:
+        hit_min_score = min_score_for_hit(hit, query_norm=query_norm, min_score=min_score)
+        if hit.score < hit_min_score:
             continue
         if is_transcript_echo(query_norm, hit.text):
             continue
-        boost = source_type_boost(hit.source_type, prefer_summaries=prefer_summaries)
+        boost = source_type_boost(hit, query_norm=query_norm, prefer_summaries=prefer_summaries)
         ranked.append((hit.score + boost, hit))
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [hit for _, hit in ranked[:limit]]
 
 
-def source_type_boost(source_type: str, *, prefer_summaries: bool) -> float:
+def min_score_for_hit(hit: SearchHit, *, query_norm: str, min_score: float) -> float:
+    if is_priority_electrical_reference_hit(query_norm, hit):
+        return min(min_score, ELECTRICAL_REFERENCE_SCORE_FLOOR)
+    return min_score
+
+
+def source_type_boost(hit: SearchHit | str, *, query_norm: str = "", prefer_summaries: bool) -> float:
+    source_type = hit.source_type if isinstance(hit, SearchHit) else hit
+    boost = 0.0
     if source_type == "session_summary":
-        return 0.08 if prefer_summaries else 0.02
-    if source_type == "work_memory_project":
-        return 0.06
-    if source_type == "transcript_segment":
-        return -0.04 if prefer_summaries else 0.0
-    if source_type == "document_chunk":
-        return -0.01
-    return 0.0
+        boost += 0.08 if prefer_summaries else 0.02
+    elif source_type == "work_memory_project":
+        boost += 0.06
+    elif source_type == "transcript_segment":
+        boost += -0.04 if prefer_summaries else 0.0
+    elif source_type == "document_chunk":
+        boost += -0.01
+    if isinstance(hit, SearchHit) and is_priority_electrical_reference_hit(query_norm, hit):
+        boost += ELECTRICAL_REFERENCE_BOOST
+    return boost
+
+
+def is_priority_electrical_reference_hit(query: str, hit: SearchHit) -> bool:
+    return is_electrical_reference_query(query) and is_electrical_reference_hit(hit)
+
+
+def is_electrical_reference_hit(hit: SearchHit) -> bool:
+    if hit.source_type != "document_chunk":
+        return False
+    path = ""
+    if isinstance(hit.metadata, dict):
+        path = str(hit.metadata.get("path") or hit.metadata.get("source_path") or "")
+    return EE_REFERENCE_PATH_TOKEN in path.replace("\\", "/")
+
+
+def has_priority_electrical_reference_hits(query: str, hits: list[SearchHit]) -> bool:
+    return any(is_priority_electrical_reference_hit(query, hit) for hit in hits)
+
+
+def is_electrical_reference_query(query: str) -> bool:
+    normalized = normalize_text(query).lower()
+    if not normalized:
+        return False
+    if any(phrase in normalized for phrase in ELECTRICAL_REFERENCE_PHRASES):
+        return True
+    tokens = set(re.findall(r"[a-z0-9]{2,}", normalized))
+    matched = {
+        term
+        for term in ELECTRICAL_REFERENCE_TERMS
+        if term in tokens and term not in ELECTRICAL_REFERENCE_COMMON_TERMS
+    }
+    if len(matched) >= 1:
+        return True
+    common_matched = {term for term in ELECTRICAL_REFERENCE_COMMON_TERMS if term in tokens}
+    return bool(common_matched and len(tokens & ELECTRICAL_REFERENCE_TERMS) >= 2)
 
 
 def is_transcript_echo(query: str, candidate: str) -> bool:

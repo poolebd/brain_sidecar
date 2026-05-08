@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from brain_sidecar.config import Settings
 from brain_sidecar.core.audio import AudioCapture
 from brain_sidecar.core.dedupe import TranscriptDeduplicator
-from brain_sidecar.core.models import TranscriptSegment
+from brain_sidecar.core.models import SearchHit, TranscriptSegment
 from brain_sidecar.core.notes import NoteSynthesisResult
 from brain_sidecar.core.session import ActiveSession, SessionManager
 from brain_sidecar.core.storage import Storage
@@ -23,6 +23,29 @@ class FakeRecallIndex:
 
     async def add_text(self, source_type: str, source_id: str, text: str, metadata: dict) -> None:
         self.embedded.append((source_type, source_id, text))
+
+
+class FakeElectricalReferenceRecall:
+    async def search(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        recent_text: str | None = None,
+        manual: bool = False,
+    ) -> list[SearchHit]:
+        return [
+            SearchHit(
+                source_type="document_chunk",
+                source_id="chunk-doe-breaker",
+                text="DOE Electrical Science reference text about circuit breakers, relays, and transformer protection.",
+                score=0.5,
+                metadata={
+                    "path": "/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science/doe.pdf",
+                    "title": "DOE Electrical Science",
+                },
+            )
+        ]
 
 
 class SilentCapture(AudioCapture):
@@ -46,8 +69,10 @@ class RecordingNotes:
 class FakeLiveWorkMemory:
     def __init__(self) -> None:
         self.recorded: list[tuple[str, str]] = []
+        self.searches = 0
 
     def search(self, query: str, limit: int = 5, *, manual: bool = False):
+        self.searches += 1
         return [
             WorkMemoryRecallCard(
                 project_id="wm-ct-pt",
@@ -344,6 +369,52 @@ def test_live_memory_does_not_become_note_evidence(event_loop, tmp_path: Path) -
     event_loop.run_until_complete(manager._refresh_notes(session.id))
 
     assert notes.recall_hits_seen == []
+
+
+def test_live_electrical_reference_takes_priority_over_past_work(event_loop, tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "runtime",
+        host="127.0.0.1",
+        port=8765,
+        asr_primary_model="tiny.en",
+        asr_fallback_model="tiny.en",
+        asr_compute_type="float16",
+        ollama_host="http://127.0.0.1:11434",
+        ollama_chat_model="qwen3.5:9b",
+        ollama_embed_model="embeddinggemma",
+        disable_live_embeddings=False,
+    )
+    manager = SessionManager(settings)
+    notes = RecordingNotes()
+    work = FakeLiveWorkMemory()
+    manager.notes = notes  # type: ignore[assignment]
+    manager.recall = FakeElectricalReferenceRecall()  # type: ignore[assignment]
+    manager.work_memory = work  # type: ignore[assignment]
+    session = manager.storage.create_session("reference-priority")
+    active = ActiveSession(
+        id=session.id,
+        capture=SilentCapture(),
+        window_queue=asyncio.Queue(maxsize=2),
+        postprocess_queue=asyncio.Queue(maxsize=1),
+        tasks=[],
+        deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
+        recent_segments=[
+            TranscriptSegment(
+                id="seg-breaker",
+                session_id=session.id,
+                start_s=0.0,
+                end_s=3.0,
+                text="We need circuit breaker relay protection guidance for the transformer trip path.",
+            )
+        ],
+    )
+    manager._active[session.id] = active
+
+    event_loop.run_until_complete(manager._refresh_notes(session.id))
+
+    assert [hit.source_id for hit in notes.recall_hits_seen] == ["chunk-doe-breaker"]
+    assert work.searches == 0
+    assert work.recorded == []
 
 
 def test_work_memory_uses_configured_roots_and_pas_root(tmp_path: Path) -> None:
