@@ -1243,7 +1243,11 @@ class SessionManager:
                 hit for hit in recall_hits if hit.source_type not in {"work_memory", "work_memory_project"}
             ]
 
-        prefer_reference_context = has_priority_electrical_reference_hits(query, recall_hits)
+        prefer_reference_context = has_priority_electrical_reference_hits(
+            query,
+            recall_hits,
+            assume_technical=self.settings.assume_technical_conversation,
+        )
         try:
             work_cards = []
             if not prefer_reference_context:

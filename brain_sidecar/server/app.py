@@ -327,6 +327,7 @@ def create_app() -> FastAPI:
         status["recall_min_score"] = settings.recall_min_score
         status["recall_max_live_hits"] = settings.recall_max_live_hits
         status["recall_prefer_summaries"] = settings.recall_prefer_summaries
+        status["assume_technical_conversation"] = settings.assume_technical_conversation
         status["notes_every_segments"] = settings.notes_every_segments
         status["sidecar_quality_gate_enabled"] = settings.sidecar_quality_gate_enabled
         status["sidecar_min_evidence_segments"] = settings.sidecar_min_evidence_segments

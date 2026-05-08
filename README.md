@@ -144,6 +144,7 @@ Useful knobs:
 - `BRAIN_SIDECAR_RECALL_MIN_SCORE`: minimum passive live recall score, default `0.58`.
 - `BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS`: max passive live recall cards, default `4`.
 - `BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES`: prefer saved-session summaries over raw transcript snippets when scores are comparable, default `true`.
+- `BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION`: treat live meetings as technical so indexed EE references are prioritized over past-work memory, default `true`.
 - `BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT`: configured job-history root, default `/home/bp/Nextcloud2/Job Hunting`.
 - `BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT`: configured past-work root, default `/home/bp/Nextcloud2/_library/_shoalstone/past work`.
 - `BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT`: optional distinct PAS archive root.

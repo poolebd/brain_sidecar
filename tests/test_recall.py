@@ -189,6 +189,37 @@ def test_electrical_reference_floor_does_not_apply_to_generic_queries() -> None:
     assert ranked == []
 
 
+def test_assumed_technical_conversation_prioritizes_ee_reference_without_trigger_terms() -> None:
+    hits = [
+        SearchHit(
+            "work_memory_project",
+            "past_project",
+            "Past project memory about agenda ownership and closeout.",
+            0.66,
+            {},
+        ),
+        SearchHit(
+            "document_chunk",
+            "ee_reference",
+            "DOE Electrical Science reference text about circuit breakers.",
+            0.50,
+            {"path": "/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science/doe.pdf"},
+        ),
+    ]
+
+    ranked = rank_recall_hits(
+        hits,
+        query="meeting agenda owner date and next steps",
+        limit=2,
+        min_score=0.58,
+        prefer_summaries=True,
+        manual=False,
+        assume_technical=True,
+    )
+
+    assert [hit.source_id for hit in ranked] == ["ee_reference", "past_project"]
+
+
 def test_electrical_reference_query_ignores_current_by_itself() -> None:
     assert is_electrical_reference_query("What is the current meeting status?") is False
     assert is_electrical_reference_query("Current transformer protection settings need review.") is True

@@ -140,6 +140,7 @@ class RecallIndex:
                 min_score=self._manual_min_score() if manual else self._min_score(),
                 prefer_summaries=self._prefer_summaries(),
                 manual=manual,
+                assume_technical=self._assume_technical(),
             )
         scored = [
             SearchHit(
@@ -158,6 +159,7 @@ class RecallIndex:
             min_score=self._manual_min_score() if manual else self._min_score(),
             prefer_summaries=self._prefer_summaries(),
             manual=manual,
+            assume_technical=self._assume_technical(),
         )
 
     def _cached_records(self) -> _VectorCache:
@@ -178,6 +180,9 @@ class RecallIndex:
 
     def _prefer_summaries(self) -> bool:
         return bool(getattr(self.settings, "recall_prefer_summaries", True))
+
+    def _assume_technical(self) -> bool:
+        return bool(getattr(self.settings, "assume_technical_conversation", True))
 
     async def reindex_roots(self) -> IndexReport:
         roots = self.storage.library_roots()
@@ -391,6 +396,7 @@ def rank_recall_hits(
     min_score: float,
     prefer_summaries: bool,
     manual: bool,
+    assume_technical: bool = False,
 ) -> list[SearchHit]:
     query_norm = normalize_text(query).lower()
     ranked: list[tuple[float, SearchHit]] = []
@@ -400,24 +406,46 @@ def rank_recall_hits(
         if key in seen:
             continue
         seen.add(key)
-        hit_min_score = min_score_for_hit(hit, query_norm=query_norm, min_score=min_score)
+        hit_min_score = min_score_for_hit(
+            hit,
+            query_norm=query_norm,
+            min_score=min_score,
+            assume_technical=assume_technical,
+        )
         if hit.score < hit_min_score:
             continue
         if is_transcript_echo(query_norm, hit.text):
             continue
-        boost = source_type_boost(hit, query_norm=query_norm, prefer_summaries=prefer_summaries)
+        boost = source_type_boost(
+            hit,
+            query_norm=query_norm,
+            prefer_summaries=prefer_summaries,
+            assume_technical=assume_technical,
+        )
         ranked.append((hit.score + boost, hit))
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [hit for _, hit in ranked[:limit]]
 
 
-def min_score_for_hit(hit: SearchHit, *, query_norm: str, min_score: float) -> float:
-    if is_priority_electrical_reference_hit(query_norm, hit):
+def min_score_for_hit(
+    hit: SearchHit,
+    *,
+    query_norm: str,
+    min_score: float,
+    assume_technical: bool = False,
+) -> float:
+    if is_priority_electrical_reference_hit(query_norm, hit, assume_technical=assume_technical):
         return min(min_score, ELECTRICAL_REFERENCE_SCORE_FLOOR)
     return min_score
 
 
-def source_type_boost(hit: SearchHit | str, *, query_norm: str = "", prefer_summaries: bool) -> float:
+def source_type_boost(
+    hit: SearchHit | str,
+    *,
+    query_norm: str = "",
+    prefer_summaries: bool,
+    assume_technical: bool = False,
+) -> float:
     source_type = hit.source_type if isinstance(hit, SearchHit) else hit
     boost = 0.0
     if source_type == "session_summary":
@@ -428,13 +456,22 @@ def source_type_boost(hit: SearchHit | str, *, query_norm: str = "", prefer_summ
         boost += -0.04 if prefer_summaries else 0.0
     elif source_type == "document_chunk":
         boost += -0.01
-    if isinstance(hit, SearchHit) and is_priority_electrical_reference_hit(query_norm, hit):
+    if isinstance(hit, SearchHit) and is_priority_electrical_reference_hit(
+        query_norm,
+        hit,
+        assume_technical=assume_technical,
+    ):
         boost += ELECTRICAL_REFERENCE_BOOST
     return boost
 
 
-def is_priority_electrical_reference_hit(query: str, hit: SearchHit) -> bool:
-    return is_electrical_reference_query(query) and is_electrical_reference_hit(hit)
+def is_priority_electrical_reference_hit(
+    query: str,
+    hit: SearchHit,
+    *,
+    assume_technical: bool = False,
+) -> bool:
+    return is_electrical_reference_hit(hit) and (assume_technical or is_electrical_reference_query(query))
 
 
 def is_electrical_reference_hit(hit: SearchHit) -> bool:
@@ -446,8 +483,16 @@ def is_electrical_reference_hit(hit: SearchHit) -> bool:
     return EE_REFERENCE_PATH_TOKEN in path.replace("\\", "/")
 
 
-def has_priority_electrical_reference_hits(query: str, hits: list[SearchHit]) -> bool:
-    return any(is_priority_electrical_reference_hit(query, hit) for hit in hits)
+def has_priority_electrical_reference_hits(
+    query: str,
+    hits: list[SearchHit],
+    *,
+    assume_technical: bool = False,
+) -> bool:
+    return any(
+        is_priority_electrical_reference_hit(query, hit, assume_technical=assume_technical)
+        for hit in hits
+    )
 
 
 def is_electrical_reference_query(query: str) -> bool:

@@ -371,7 +371,7 @@ def test_live_memory_does_not_become_note_evidence(event_loop, tmp_path: Path) -
     assert notes.recall_hits_seen == []
 
 
-def test_live_electrical_reference_takes_priority_over_past_work(event_loop, tmp_path: Path) -> None:
+def test_live_electrical_reference_takes_priority_over_past_work_when_technical_is_assumed(event_loop, tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path / "runtime",
         host="127.0.0.1",
@@ -400,11 +400,11 @@ def test_live_electrical_reference_takes_priority_over_past_work(event_loop, tmp
         deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
         recent_segments=[
             TranscriptSegment(
-                id="seg-breaker",
+                id="seg-owner",
                 session_id=session.id,
                 start_s=0.0,
                 end_s=3.0,
-                text="We need circuit breaker relay protection guidance for the transformer trip path.",
+                text="Can we review the owner notes and next steps before we wrap?",
             )
         ],
     )

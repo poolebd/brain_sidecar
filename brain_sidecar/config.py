@@ -152,6 +152,7 @@ class Settings:
     recall_min_score: float = 0.58
     recall_max_live_hits: int = 4
     recall_prefer_summaries: bool = True
+    assume_technical_conversation: bool = True
     work_memory_job_history_root: Path = Path("/home/bp/Nextcloud2/Job Hunting")
     work_memory_past_work_root: Path = Path("/home/bp/Nextcloud2/_library/_shoalstone/past work")
     work_memory_pas_root: Path | None = None
@@ -278,6 +279,7 @@ def load_settings() -> Settings:
         recall_min_score=max(0.0, min(1.0, float(_env("BRAIN_SIDECAR_RECALL_MIN_SCORE", "0.58")))),
         recall_max_live_hits=max(0, int(_env("BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS", "4"))),
         recall_prefer_summaries=_env_bool("BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES", True),
+        assume_technical_conversation=_env_bool("BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION", True),
         work_memory_job_history_root=Path(
             _env("BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT", "/home/bp/Nextcloud2/Job Hunting")
         ).expanduser(),
