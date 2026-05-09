@@ -8,12 +8,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from brain_sidecar.core.test_mode import SUPPORTED_AUDIO_EXTENSIONS
 from brain_sidecar.server.app import create_app
 
 
 def test_test_mode_prepare_rejects_when_disabled(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.delenv("BRAIN_SIDECAR_TEST_MODE_ENABLED", raising=False)
+    monkeypatch.setenv("BRAIN_SIDECAR_TEST_MODE_ENABLED", "false")
     client = TestClient(create_app())
 
     response = client.post("/api/test-mode/audio/prepare", json={"source_path": "/tmp/recording.wav"})
@@ -50,6 +51,10 @@ def test_input_file_upload_writes_under_data_dir(monkeypatch, tmp_path: Path) ->
     assert uploaded.name.endswith("meeting_notes.md")
     assert uploaded.read_bytes() == b"# Notes"
     assert payload["size_bytes"] == 7
+
+
+def test_test_mode_allows_common_audio_extensions() -> None:
+    assert {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".mp4", ".webm"} <= SUPPORTED_AUDIO_EXTENSIONS
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required for conversion")

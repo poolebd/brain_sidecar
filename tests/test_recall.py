@@ -136,15 +136,8 @@ def test_manual_recall_override_still_respects_manual_floor() -> None:
     assert [hit.source_id for hit in ranked] == ["useful_lower"]
 
 
-def test_electrical_reference_ranking_beats_past_work_for_technical_queries() -> None:
+def test_electrical_reference_floor_applies_for_technical_queries() -> None:
     hits = [
-        SearchHit(
-            "work_memory_project",
-            "past_breaker_project",
-            "Past project memory about breaker replacement and outage planning.",
-            0.66,
-            {},
-        ),
         SearchHit(
             "document_chunk",
             "doe_breaker_reference",
@@ -163,7 +156,7 @@ def test_electrical_reference_ranking_beats_past_work_for_technical_queries() ->
         manual=False,
     )
 
-    assert [hit.source_id for hit in ranked] == ["doe_breaker_reference", "past_breaker_project"]
+    assert [hit.source_id for hit in ranked] == ["doe_breaker_reference"]
 
 
 def test_electrical_reference_floor_does_not_apply_to_generic_queries() -> None:
@@ -192,13 +185,6 @@ def test_electrical_reference_floor_does_not_apply_to_generic_queries() -> None:
 def test_assumed_technical_conversation_prioritizes_ee_reference_without_trigger_terms() -> None:
     hits = [
         SearchHit(
-            "work_memory_project",
-            "past_project",
-            "Past project memory about agenda ownership and closeout.",
-            0.66,
-            {},
-        ),
-        SearchHit(
             "document_chunk",
             "ee_reference",
             "DOE Electrical Science reference text about circuit breakers.",
@@ -217,7 +203,7 @@ def test_assumed_technical_conversation_prioritizes_ee_reference_without_trigger
         assume_technical=True,
     )
 
-    assert [hit.source_id for hit in ranked] == ["ee_reference", "past_project"]
+    assert [hit.source_id for hit in ranked] == ["ee_reference"]
 
 
 def test_electrical_reference_query_ignores_current_by_itself() -> None:

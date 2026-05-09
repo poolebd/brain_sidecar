@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("loads mocked device and GPU state", async ({ page }) => {
-  await expect(page.getByRole("heading", { name: "Live field" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Conversation" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Meeting Output" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "midnight");
   await expect(page.getByLabel("Meeting Focus summary")).toContainText("Focus");
@@ -18,7 +18,7 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.getByRole("banner").getByRole("button", { name: "Stop" })).toHaveCount(0);
   const liveBox = await page.locator("#transcript").boundingBox();
   expect(liveBox).not.toBeNull();
-  expect(liveBox!.y).toBeLessThan(360);
+  expect(liveBox!.y).toBeLessThan(410);
   await expect(page.getByRole("search")).toBeVisible();
   const genericToolNoun = new RegExp("Utilit" + "(y|ies)");
   await expect(page.locator("body")).not.toContainText(genericToolNoun);
@@ -54,7 +54,7 @@ test("loads mocked device and GPU state", async ({ page }) => {
 
 test("navigates the app shell and browses saved sessions", async ({ page }) => {
   const nav = page.getByRole("navigation", { name: "Primary navigation" });
-  for (const label of ["Live", "Sessions", "Tools", "Models", "Memory"]) {
+  for (const label of ["Live", "Sessions", "Tools", "Models", "References"]) {
     await expect(nav.getByRole("button", { name: label })).toBeVisible();
   }
 
@@ -141,36 +141,32 @@ test("shows model residency and memory management pages", async ({ page }) => {
   await expect(modelsPage.getByLabel("Dross readiness summary")).toContainText("gpt-oss:120b-cloud");
   await expect(modelsPage.getByLabel("Config recipes")).toHaveJSProperty("open", false);
 
-  await nav.getByRole("button", { name: "Memory" }).click();
-  const memoryPage = page.getByRole("main", { name: "Memory" });
+  await nav.getByRole("button", { name: "References" }).click();
+  const memoryPage = page.getByRole("main", { name: "References" });
   await expect(memoryPage).toBeVisible();
-  const memoryCategories = page.getByRole("navigation", { name: "Memory category navigation" });
-  for (const label of ["Overview", "Library Roots", "Documents", "Work Sources", "Projects"]) {
+  const memoryCategories = page.getByRole("navigation", { name: "Reference category navigation" });
+  for (const label of ["Overview", "Library Roots", "Documents"]) {
     await expect(memoryCategories.getByRole("button", { name: new RegExp(label) })).toBeVisible();
   }
   await expect(memoryCategories.getByRole("button", { name: /Search Results/ })).toHaveCount(0);
-  await expect(memoryPage.getByLabel("Memory search behavior")).toContainText("Type filters the open category");
+  await expect(memoryPage.getByLabel("Reference search behavior")).toContainText("Search loads matching EE reference chunks");
   await expect(memoryPage.getByLabel("Browse index file")).toHaveCount(0);
   await expect(memoryPage.getByRole("button", { name: "Add Root" })).toHaveCount(0);
   await memoryCategories.getByRole("button", { name: /Documents/ }).click();
-  await expect(memoryPage.getByLabel("Memory items")).toContainText("OGMS spec.txt");
+  await expect(memoryPage.getByLabel("Reference items")).toContainText("DOE Electrical Science Volume 1");
   await expect(memoryPage.getByRole("button", { name: "Add Root" })).toHaveCount(0);
-  await memoryPage.getByRole("button", { name: /OGMS spec.txt/ }).click();
-  await expect(memoryPage.getByLabel("Memory detail")).toContainText("Monitoring signals are useful when they map to decisions.");
-  await expect(memoryPage.getByLabel("Memory detail")).toContainText("/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt");
-  await memoryCategories.getByRole("button", { name: /Work Sources/ }).click();
-  await expect(memoryPage.locator("details.metadata-details")).toHaveJSProperty("open", false);
+  await memoryPage.getByRole("button", { name: /DOE Electrical Science Volume 1/ }).click();
+  await expect(memoryPage.getByLabel("Reference detail")).toContainText("breaker coordination");
+  await expect(memoryPage.getByLabel("Reference detail")).toContainText("runtime/reference/electrical-engineering");
+  await expect(memoryPage.locator("details.metadata-details")).toHaveCount(0);
 
   const searchRequest = page.waitForRequest((request) => (
-    request.method() === "POST" && request.url().endsWith("/api/work-memory/search")
+    request.method() === "GET" && request.url().includes("/api/library/chunks") && request.url().includes("query=doe")
   ));
-  await memoryPage.getByLabel("Search memory").fill("generator monitoring");
+  await memoryPage.getByLabel("Search references").fill("doe");
   await memoryPage.getByRole("button", { name: "Search", exact: true }).click();
-  expect(JSON.parse((await searchRequest).postData() ?? "{}")).toMatchObject({
-    query: "generator monitoring",
-  });
-  await expect(memoryCategories.getByRole("button", { name: /Search Results/ })).toHaveAttribute("aria-current", "page");
-  await expect(memoryPage.getByLabel("Memory items")).toContainText("Monitoring signals are useful when they map to decisions.");
+  await searchRequest;
+  await expect(memoryPage.getByLabel("Reference items")).toContainText("DOE Electrical Science Volume 1");
 
   await memoryCategories.getByRole("button", { name: /Library Roots/ }).click();
   const addRootRequest = page.waitForRequest((request) => (
@@ -185,17 +181,9 @@ test("shows model residency and memory management pages", async ({ page }) => {
   const reindexLibrary = page.waitForRequest((request) => (
     request.method() === "POST" && request.url().endsWith("/api/library/reindex")
   ));
-  await memoryPage.getByRole("button", { name: "Reindex Library" }).click();
+  await memoryPage.getByRole("button", { name: "Reindex References" }).click();
   await reindexLibrary;
   await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
-
-  await memoryCategories.getByRole("button", { name: /Overview/ }).click();
-  const reindexWork = page.waitForRequest((request) => (
-    request.method() === "POST" && request.url().endsWith("/api/work-memory/reindex")
-  ));
-  await memoryPage.getByRole("button", { name: "Reindex Work" }).click();
-  await reindexWork;
-  await expect(page.getByLabel("Runtime status")).toContainText("work memory indexed 21 projects");
 });
 
 test("shows Faster-Whisper ASR status compactly", async ({ page }) => {
@@ -243,6 +231,7 @@ test("restores Meeting Focus controls from localStorage", async ({ page }) => {
     window.localStorage.setItem("brain-sidecar-meeting-focus-v1", JSON.stringify({
       goal: "Track owners for the outage review.",
       mode: "balanced",
+      webContextMode: "off",
       reminders: {
         owners: true,
         questions: false,
@@ -257,18 +246,23 @@ test("restores Meeting Focus controls from localStorage", async ({ page }) => {
   const focus = page.getByLabel("Meeting Focus");
   await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Balanced");
   await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Track owners for the outage review.");
+  await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Brave off");
   await expect(focus.getByLabel("Meeting Focus goal")).toHaveCount(0);
   await focus.getByRole("button", { name: "Edit" }).click();
   await expect(focus.getByLabel("Meeting Focus goal")).toHaveValue("Track owners for the outage review.");
   await expect(focus.getByRole("button", { name: "Balanced" })).toHaveAttribute("aria-pressed", "true");
+  const braveControl = focus.getByRole("group", { name: "Brave web context" });
+  await expect(braveControl.getByRole("button", { name: "Off", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(focus.getByLabel("Open questions")).not.toBeChecked();
   await expect(focus.getByLabel("Risks/dependencies")).toBeChecked();
   await focus.getByLabel("Meeting Focus goal").fill("Track owners and risk decisions.");
   await focus.getByRole("button", { name: "Assertive" }).click();
+  await braveControl.getByRole("button", { name: "On", exact: true }).click();
   await focus.getByLabel("Open questions").check();
   await focus.locator(".meeting-focus-editor").getByRole("button", { name: "Done" }).click();
   await expect(focus.getByLabel("Meeting Focus goal")).toHaveCount(0);
   await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Assertive");
+  await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Brave on");
   await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Track owners and risk decisions.");
 
   const startRequest = page.waitForRequest((request) => (
@@ -280,6 +274,7 @@ test("restores Meeting Focus controls from localStorage", async ({ page }) => {
     goal: "Track owners and risk decisions.",
     mode: "assertive",
   });
+  expect(body.web_context_enabled).toBe(true);
   expect(body.meeting_contract.reminders).toEqual([
     "Track owners and ownership ambiguity.",
     "Track open questions and clarifications.",
@@ -309,7 +304,209 @@ test("shows active USB mic capture as in use instead of missing", async ({ page 
 });
 
 test("hides recorded audio test controls when test mode is disabled", async ({ page }) => {
+  await expect(page.getByRole("main", { name: "Live" }).getByRole("button", { name: "Test" })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Recorded audio test" })).toHaveCount(0);
+});
+
+test("runs recorded audio from the Live page Test button", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, { testModeEnabled: true });
+  await page.reload();
+
+  await page.getByRole("main", { name: "Live" }).getByRole("button", { name: "Test" }).click();
+  const testPanel = page.getByRole("region", { name: "Live audio test" });
+  await expect(testPanel).toContainText("Recorded audio");
+  await expect(testPanel.locator(".file-action")).toContainText("Upload and play");
+  await expect(testPanel.getByLabel("Live test max seconds")).toHaveValue("60");
+  await testPanel.getByLabel("Live test max seconds").fill("12");
+  await testPanel.getByLabel("Live test expected terms").fill("Online Generator Monitoring, T.A. Smith");
+
+  const prepareRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/test-mode/audio/prepare")
+  ));
+  const startRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
+  ));
+  await testPanel.getByLabel("Test audio upload").setInputFiles({
+    name: "current-role-recording.webm",
+    mimeType: "audio/webm",
+    buffer: Buffer.from("fake audio"),
+  });
+
+  const prepareBody = JSON.parse((await prepareRequest).postData() ?? "{}");
+  expect(prepareBody).toMatchObject({
+    source_path: "/tmp/brain-sidecar-tests/input-files/uploaded-input.dat",
+    max_seconds: 12,
+    expected_terms: ["Online Generator Monitoring", "T.A. Smith"],
+  });
+  const startBody = JSON.parse((await startRequest).postData() ?? "{}");
+  expect(startBody).toMatchObject({
+    device_id: null,
+    fixture_wav: "/tmp/brain-sidecar-tests/testrun-123/input.wav",
+    audio_source: "fixture",
+    save_transcript: false,
+  });
+  await expect(testPanel.getByLabel("Live prepared audio")).toContainText("12.5s");
+  await expect(testPanel.getByLabel("Recorded audio controls")).toContainText("Pause");
+  await expect(page.getByLabel("Runtime summary")).toContainText("Recorded audio");
+  await expect(page.getByLabel("Recorded audio playback")).toContainText("Playing through Live");
+  await expect(page.getByLabel("Recorded audio playback")).toContainText("Waiting for the first transcript window");
+
+  const pauseRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/pause")
+  ));
+  await testPanel.getByRole("button", { name: "Pause" }).click();
+  await pauseRequest;
+  await expect(page.getByLabel("Recorded audio playback")).toContainText("Paused");
+
+  const resumeRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/resume")
+  ));
+  await testPanel.getByRole("button", { name: "Resume" }).click();
+  await resumeRequest;
+  await expect(page.getByLabel("Recorded audio playback")).toContainText("Playing through Live");
+
+  await emitSessionEvent(page, {
+    type: "audio_status",
+    payload: { status: "listening", queue_depth: 0, dropped_windows: 0 },
+  });
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "live-test-line-1",
+      text: "Online Generator Monitoring at T.A. Smith needs validation.",
+      start_s: 0,
+      end_s: 4,
+      queue_depth: 0,
+    },
+  });
+  await emitSessionEvent(page, {
+    type: "sidecar_card",
+    payload: {
+      id: "live-test-card-1",
+      session_id: "session-123",
+      category: "action",
+      title: "Validate generator monitoring",
+      body: "Confirm the monitoring validation path from the recorded test conversation.",
+      why_now: "Current transcript evidence mentioned generator monitoring validation.",
+      priority: "high",
+      confidence: 0.86,
+      source_segment_ids: ["live-test-line-1"],
+      source_type: "transcript",
+      evidence_quote: "Online Generator Monitoring at T.A. Smith needs validation.",
+      card_key: "live-test:generator-monitoring",
+      raw_audio_retained: false,
+    },
+  });
+
+  await expect(page.locator("#transcript")).toContainText("Online Generator Monitoring at T.A. Smith needs validation.");
+  await expect(page.getByRole("region", { name: "Meeting Output" })).toContainText("Validate generator monitoring");
+
+  const reportRequest = page.waitForRequest((candidate) => (
+    candidate.method() === "POST" && candidate.url().endsWith("/api/test-mode/runs/testrun-123/report")
+  ));
+  await page.getByRole("banner").getByRole("button", { name: "Stop" }).click();
+  const report = JSON.parse((await reportRequest).postData() ?? "{}").report;
+  expect(report).toMatchObject({
+    run_id: "testrun-123",
+    transcript_segments: 1,
+    expected_terms: ["Online Generator Monitoring", "T.A. Smith"],
+    matched_expected_terms: ["Online Generator Monitoring", "T.A. Smith"],
+  });
+  await expect(testPanel.getByLabel("Live recorded audio report")).toContainText("2/2");
+});
+
+test("shows recoverable recorded audio start errors instead of looking hung", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, {
+    testModeEnabled: true,
+    startSessionResponse: {
+      status: 500,
+      body: { detail: "Fixture playback could not start" },
+    },
+  });
+  await page.reload();
+
+  await page.getByRole("main", { name: "Live" }).getByRole("button", { name: "Test" }).click();
+  const testPanel = page.getByRole("region", { name: "Live audio test" });
+  await testPanel.getByLabel("Test audio upload").setInputFiles({
+    name: "bad-start.wav",
+    mimeType: "audio/wav",
+    buffer: Buffer.from("fake audio"),
+  });
+
+  await expect(page.getByRole("alert")).toContainText("Fixture playback could not start");
+  await expect(testPanel.locator(".live-test-state")).toContainText("Ready");
+  await expect(testPanel.getByRole("button", { name: "Reset" })).toBeEnabled();
+});
+
+test("starts recorded audio even when saved-session refresh fails", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, { testModeEnabled: true, abortSessionListAfterCreate: true });
+  await page.reload();
+
+  await page.getByRole("main", { name: "Live" }).getByRole("button", { name: "Test" }).click();
+  const testPanel = page.getByRole("region", { name: "Live audio test" });
+  const startRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
+  ));
+  await testPanel.getByLabel("Test audio upload").setInputFiles({
+    name: "current-role-recording.webm",
+    mimeType: "audio/webm",
+    buffer: Buffer.from("fake audio"),
+  });
+
+  await startRequest;
+  await expect(page.getByLabel("Recorded audio playback")).toContainText("Playing through Live");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("auto-stops recorded audio from the Live Test panel when the prepared clip ends", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, { testModeEnabled: true, testPreparedDurationSeconds: 0.1 });
+  await page.reload();
+
+  await page.getByRole("main", { name: "Live" }).getByRole("button", { name: "Test" }).click();
+  const testPanel = page.getByRole("region", { name: "Live audio test" });
+  await testPanel.getByLabel("Live test expected terms").fill("tariff");
+
+  const reportRequest = page.waitForRequest((candidate) => (
+    candidate.method() === "POST" && candidate.url().endsWith("/api/test-mode/runs/testrun-123/report")
+  ));
+  const startRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
+  ));
+  await testPanel.getByLabel("Test audio upload").setInputFiles({
+    name: "short-meeting.wav",
+    mimeType: "audio/wav",
+    buffer: Buffer.from("fake audio"),
+  });
+  await startRequest;
+
+  await emitSessionEvent(page, {
+    type: "audio_status",
+    payload: { status: "listening", queue_depth: 0, dropped_windows: 0 },
+  });
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "auto-stop-line-1",
+      text: "Can we confirm the tariff analysis owner?",
+      start_s: 0,
+      end_s: 2,
+      queue_depth: 0,
+    },
+  });
+
+  const report = JSON.parse((await reportRequest).postData() ?? "{}").report;
+  expect(report).toMatchObject({
+    run_id: "testrun-123",
+    transcript_segments: 1,
+    expected_terms: ["tariff"],
+    matched_expected_terms: ["tariff"],
+  });
+  await expect(testPanel.getByLabel("Live recorded audio report")).toContainText("1");
+  await expect(testPanel.getByLabel("Live recorded audio report")).toContainText("1/1");
 });
 
 test("starts a mocked session and renders SSE updates", async ({ page }) => {
@@ -479,8 +676,8 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   await expect(contributionCard.getByLabel("Evidence for Name the release owner")).toContainText("platform team tomorrow");
   await contributionCard.getByRole("button", { name: "Jump to source" }).click();
   await expect(transcriptItem).toHaveClass(/evidence-highlight/);
-  const contextSection = page.getByLabel("Context cards");
-  await contextSection.getByText("Context / past transcript / web").click();
+  const contextSection = page.getByLabel("Reference context");
+  await contextSection.getByText("Reference context").click();
   await expect(contextSection).toContainText("A previous meeting mentioned deployment readiness risks.");
   await expect(page.locator("#transcript").getByText("A previous meeting mentioned deployment readiness risks.")).toHaveCount(0);
   await expect(page.getByLabel("Capture queue status")).toContainText("Queue 2");
@@ -492,6 +689,56 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   expect(transcriptBox).not.toBeNull();
   expect(backendBox).not.toBeNull();
   expect(backendBox!.x).toBeGreaterThan(transcriptBox!.x);
+});
+
+test("renders deterministic Live Signals from transcript and current cards", async ({ page }) => {
+  await page.getByRole("button", { name: "Start Listening" }).click();
+  await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
+    "http://127.0.0.1:8765/api/sessions/session-123/events",
+  );
+
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "tariff-signal-line",
+      text: "Can we confirm who owns the tariff analysis by Monday?",
+      start_s: 0.0,
+      end_s: 4.0,
+      asr_model: "faster-whisper",
+      raw_audio_retained: false,
+    },
+  });
+
+  const panel = page.getByRole("region", { name: "Live Signals" });
+  await expect(panel.getByRole("button", { name: "Question signal" })).toContainText("Clarification cue");
+  await expect(panel.getByRole("button", { name: "Question signal" })).toContainText("Can we confirm who owns the tariff analysis by Monday?");
+  await expect(panel.getByRole("button", { name: "Action signal" })).toContainText("Action cue");
+  await expect(panel.getByRole("button", { name: "Action signal" })).toContainText("Can we confirm who owns the tariff analysis by Monday?");
+
+  await emitSessionEvent(page, {
+    type: "sidecar_card",
+    payload: {
+      id: "signal-card-1",
+      session_id: "session-123",
+      category: "clarification",
+      title: "Tariff inputs",
+      body: "Recent transcript points to utility billing or tariff analysis.",
+      suggested_ask: "Can we get the rate schedule before pricing?",
+      why_now: "Current transcript evidence mentioned tariff analysis.",
+      priority: "normal",
+      confidence: 0.84,
+      source_segment_ids: ["tariff-signal-line"],
+      source_type: "transcript",
+      evidence_quote: "tariff analysis by Monday",
+      card_key: "signal:tariff-inputs",
+      raw_audio_retained: false,
+    },
+  });
+
+  const suggestion = panel.getByRole("button", { name: "Suggestion signal" });
+  await expect(suggestion).toContainText("Tariff inputs");
+  await expect(suggestion).toContainText("Can we get the rate schedule before pricing?");
+  await expect(suggestion).toContainText("tariff analysis by Monday");
 });
 
 test("shows energy lens badge only from supported final transcript evidence", async ({ page }) => {
@@ -969,8 +1216,8 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
 
   const debugRow = page.getByRole("article", { name: "Transcript and sidecar row" }).filter({ hasText: "Apollo rollout needs platform readiness context." });
   await expect(debugRow.locator(".context-card")).toHaveCount(0);
-  const contextSection = page.getByLabel("Context cards");
-  await contextSection.getByText("Context / past transcript / web").click();
+  const contextSection = page.getByLabel("Reference context");
+  await contextSection.getByText("Reference context").click();
   await expect(contextSection.locator(".context-card")).toHaveCount(3);
   await expect(page.locator("#transcript")).not.toContainText("debug-source-1");
   await expect(page.locator("#transcript")).not.toContainText("0.89");
@@ -979,8 +1226,8 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
   await openToolSection(page, "Logs & Debug");
   await page.getByLabel("Show debug metadata").check();
   await page.getByRole("button", { name: "Live" }).click();
-  const refreshedContextSection = page.getByLabel("Context cards");
-  await openDetailsByLabel(page, "Context cards");
+  const refreshedContextSection = page.getByLabel("Reference context");
+  await openDetailsByLabel(page, "Reference context");
   await refreshedContextSection.locator(".context-card").first().getByRole("button", { name: "Details" }).click();
   await expect(page.locator("#recall")).toContainText("source ID");
   await expect(page.locator("#recall")).toContainText(/debug-source-/);
@@ -999,7 +1246,7 @@ test("surfaces mocked SSE errors and supports stop", async ({ page }) => {
   await expect(page.getByRole("alert")).toContainText("Microphone disconnected");
   await expect(page.getByLabel("Runtime status")).toContainText("error");
 
-  await page.getByRole("button", { name: "Stop" }).click();
+  await page.getByRole("banner").getByRole("button", { name: "Stop" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("stopped");
 });
 
@@ -1046,22 +1293,22 @@ test("shows copyable post-call brief from evidence-backed cards", async ({ page 
   await emitSessionEvent(page, {
     type: "sidecar_card",
     payload: {
-      id: "brief-memory-1",
+      id: "brief-reference-1",
       session_id: "session-123",
-      category: "work_memory",
-      title: "Relay distractor",
-      body: "Past CT/PT relay settings work.",
-      why_now: "Injected memory distractor.",
+      category: "memory",
+      title: "DOE relay reference",
+      body: "CT/PT relay settings should be checked against the technical reference.",
+      why_now: "Injected reference context.",
       priority: "normal",
       confidence: 0.76,
       source_segment_ids: [],
-      source_type: "work_memory_project",
-      citations: ["eval-memory:relay"],
-      card_key: "memory:relay",
+      source_type: "local_file",
+      citations: ["runtime/reference/electrical-engineering/doe.pdf"],
+      card_key: "reference:relay",
     },
   });
 
-  await page.getByRole("button", { name: "Stop" }).click();
+  await page.getByRole("banner").getByRole("button", { name: "Stop" }).click();
   const brief = page.getByLabel("Consulting brief");
   await expect(brief).toBeVisible();
   await expect(brief).toContainText("## Meeting Goal");
@@ -1069,7 +1316,7 @@ test("shows copyable post-call brief from evidence-backed cards", async ({ page 
   await expect(brief).toContainText("## Suggested Follow-up Language");
   await expect(brief).toContainText("## Evidence Index");
   await expect(brief).toContainText("Evidence: \"Send the Siemens comments by Monday.\"");
-  await expect(brief).toContainText("## Relevant Work Memory");
+  await expect(brief).toContainText("## Technical References / Web Context");
   await brief.getByRole("button", { name: "Copy Markdown" }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedBrief?: string }).__copiedBrief)).toContain(
     "Source segments: brief-line-1",
@@ -1106,7 +1353,7 @@ test("renders ephemeral web context notes in the context pane", async ({ page })
   });
 
   const field = page.locator("#recall");
-  await field.getByLabel("Context cards").getByText("Context / past transcript / web").click();
+  await field.getByLabel("Reference context").getByText("Reference context").click();
   const webItem = field.getByLabel("Web context card").filter({ hasText: "vector database indexing" });
   await expect(webItem).toBeVisible();
   await expect(page.getByLabel("Mic transcript item")).toContainText("current best practices");
@@ -1175,7 +1422,7 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
   const reportRequest = page.waitForRequest((candidate) => (
     candidate.method() === "POST" && candidate.url().endsWith("/api/test-mode/runs/testrun-123/report")
   ));
-  await page.getByRole("button", { name: "Stop" }).click();
+  await page.getByRole("banner").getByRole("button", { name: "Stop" }).click();
   const report = JSON.parse((await reportRequest).postData() ?? "{}").report;
 
   expect(report).toMatchObject({
@@ -1241,37 +1488,32 @@ test("blocks capture and speaker training when no healthy server microphone is a
 });
 
 test("uses mocked library and recall APIs", async ({ page }) => {
-  await page.getByRole("button", { name: "Memory" }).click();
-  const memoryPage = page.getByRole("main", { name: "Memory" });
-  const categories = page.getByRole("navigation", { name: "Memory category navigation" });
+  await page.getByRole("button", { name: "References" }).click();
+  const memoryPage = page.getByRole("main", { name: "References" });
+  const categories = page.getByRole("navigation", { name: "Reference category navigation" });
   await expect(memoryPage.getByLabel("Browse index file")).toHaveCount(0);
   await categories.getByRole("button", { name: /Library Roots/ }).click();
   await memoryPage.getByLabel("Library root path").fill("/tmp/brain-sidecar-tests/input-files/uploaded-input.dat");
   await memoryPage.getByRole("button", { name: "Add Root" }).click();
   await expect(memoryPage.getByLabel("Library root path")).toHaveValue("");
 
-  await memoryPage.getByLabel("Memory items").getByRole("button", { name: "Reindex Library" }).click();
+  await memoryPage.getByLabel("Reference items").getByRole("button", { name: "Reindex References" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
 
   await page.getByRole("button", { name: "Live" }).click();
   await page.getByPlaceholder("Ask Sidecar").fill("apollo rollout");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Prior transcript");
-  await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Work memory");
+  await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Technical references");
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Web");
   await expect(page.locator("#transcript").getByText("Prior planning note about the Apollo rollout.")).toBeVisible();
-  await expect(page.locator("#transcript").getByText("Online Generator Monitoring - T.A. Smith", { exact: true })).toBeVisible();
+  await expect(page.locator("#transcript").getByText("DOE Electrical Science Volume 1", { exact: true })).toBeVisible();
   await expect(page.locator("#transcript").getByText("Web context: apollo rollout")).toBeVisible();
-  await expect(page.locator("#transcript")).toContainText("failure modes");
+  await expect(page.locator("#transcript")).toContainText("breaker coordination");
   await expect(page.getByLabel("You transcript item")).toContainText("apollo rollout");
   await expect(page.locator("#transcript")).toContainText("Prior planning note about the Apollo rollout.");
   await expect(page.locator("#transcript")).not.toContainText("notes.md");
   await expect(page.locator("#transcript")).not.toContainText("score 0.93");
-
-  await page.getByRole("button", { name: "Memory" }).click();
-  await categories.getByRole("button", { name: /Projects/ }).click();
-  await memoryPage.getByRole("button", { name: "Reindex Work" }).click();
-  await expect(page.getByLabel("Runtime status")).toContainText("work memory indexed 21 projects");
 });
 
 test("keeps transcript and context readable on a phone viewport", async ({ page }) => {
@@ -1328,10 +1570,10 @@ test("keeps cockpit pages compact at desktop and laptop widths", async ({ page }
     await expect(page.getByRole("main", { name: "Models" })).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-    await page.getByRole("button", { name: "Memory" }).click();
-    await expect(page.getByLabel("Memory categories")).toBeVisible();
-    await expect(page.getByLabel("Memory items")).toBeVisible();
-    await expect(page.getByLabel("Memory detail")).toBeVisible();
+    await page.getByRole("button", { name: "References" }).click();
+    await expect(page.getByLabel("Reference categories")).toBeVisible();
+    await expect(page.getByLabel("Reference items")).toBeVisible();
+    await expect(page.getByLabel("Reference detail")).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
 });
@@ -1352,7 +1594,7 @@ test("persists theme selection across reloads", async ({ page }) => {
 test("keeps core capture controls usable on a phone viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
 
-  await expect(page.getByRole("heading", { name: "Live field" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Conversation" })).toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
   await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
   await expect(page.getByLabel("Guided mic tuning")).toBeVisible();

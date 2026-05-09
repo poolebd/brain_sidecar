@@ -9,8 +9,9 @@ headless and event-driven so a desktop GUI can reuse the same engine later.
 - Captures a USB mic through `ffmpeg`.
 - Transcribes locally with Faster-Whisper; CPU `small.en` is the default ASR path.
 - Generates meeting-intelligence sidecar cards with local Ollama.
-- Searches prior sessions and selected local files with local embeddings.
-- Surfaces fast work-memory parallels from a pre-indexed local career/project archive.
+- Searches prior sessions and selected EE reference files with local embeddings.
+- Recognizes local company/org references from transcript text and surfaces sparse context cards.
+- Adds sanitized, live-only Brave Search context for explicit current technical questions.
 - Learns local Speaker Identity embeddings so BP-owned follow-ups can be distinguished from other speakers.
 - Stores text artifacts only. Raw audio stays in memory and is discarded.
 - Fails visibly if the configured ASR or Ollama model is unavailable.
@@ -144,11 +145,12 @@ Useful knobs:
 - `BRAIN_SIDECAR_RECALL_MIN_SCORE`: minimum passive live recall score, default `0.58`.
 - `BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS`: max passive live recall cards, default `4`.
 - `BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES`: prefer saved-session summaries over raw transcript snippets when scores are comparable, default `true`.
-- `BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION`: treat live meetings as technical so indexed EE references are prioritized over past-work memory, default `true`.
-- `BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT`: configured job-history root, default `/home/bp/Nextcloud2/Job Hunting`.
-- `BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT`: configured past-work root, default `/home/bp/Nextcloud2/_library/_shoalstone/past work`.
-- `BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT`: optional distinct PAS archive root.
-- `BRAIN_SIDECAR_WORK_MEMORY_SEARCH_TIMEOUT_SECONDS`: live work-memory search budget, default `1.5`.
+- `BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION`: treat live meetings as technical so indexed EE references can surface even when the spoken query is brief, default `true`.
+- `BRAIN_SIDECAR_COMPANY_REFS_ENABLED`: enable local company/org reference matching, default `true`.
+- `BRAIN_SIDECAR_COMPANY_REFS_SEED_PATH`: optional JSONL seed override for local company references.
+- `BRAIN_SIDECAR_COMPANY_REFS_MIN_CONFIDENCE`: minimum confidence for live company reference cards, default `0.70`.
+- `BRAIN_SIDECAR_COMPANY_REFS_MAX_LIVE_CARDS`: max live company reference cards per pass, default `3`.
+- `BRAIN_SIDECAR_COMPANY_REFS_DUPLICATE_WINDOW_SECONDS`: live duplicate suppression window for the same company ref, default `900`.
 - `BRAIN_SIDECAR_SIDECAR_QUALITY_GATE_ENABLED`: require evidence-backed generated live cards, default `true`.
 - `BRAIN_SIDECAR_SIDECAR_MIN_EVIDENCE_SEGMENTS`: supporting transcript segments normally required for generated live cards, default `2`.
 - `BRAIN_SIDECAR_SIDECAR_DUPLICATE_WINDOW_SECONDS`: duplicate-card suppression window, default `120`.
@@ -245,32 +247,22 @@ contract:
   replay buffer for reconnects using `Last-Event-ID`.
 
 Raw audio is never written to disk. Temporary/listen-only sessions do not store
-transcript text, note cards, embeddings, diarization rows, work-memory recall
-events, memory summaries, or web context. Web cards remain sanitized,
-Brave-backed, live-only, and ephemeral.
+transcript text, note cards, embeddings, diarization rows, memory summaries, or
+web context. Web cards remain sanitized, Brave-backed, live-only, and ephemeral.
 
-## Work Memory
+## Technical References
 
-The Work Memory layer is for PAS/past-work recall support during meetings. It
-uses high-signal historical documents under the configured job-history root as a
-canonical timeline, then correlates evidence from the configured past-work and
-optional PAS roots into compact project cards.
-
-Live conversations do not scan folders, parse files, or call an extra model for
-this feature. Reindexing is explicit and can use embeddings offline; real-time
-matching uses the precomputed project cards so recall stays cheap.
-
-Current-employer/client material is treated as guardrail context by default.
-Medical, disability, clearance, HR/admin, executables, archives, and large media
-are excluded or metadata-only.
-
-Useful endpoints:
+The local reference layer indexes open EE material under
+`runtime/reference/electrical-engineering`, including DOE Electrical Science,
+Kuphaldt Lessons in Electric Circuits, and selected NEETS modules. Reindex it
+with the References page or:
 
 ```bash
-curl http://127.0.0.1:8765/api/work-memory/status
-curl -X POST http://127.0.0.1:8765/api/work-memory/reindex -H 'Content-Type: application/json' -d '{}'
-curl -X POST http://127.0.0.1:8765/api/work-memory/search -H 'Content-Type: application/json' -d '{"query":"generator monitoring failure modes"}'
+curl -X POST http://127.0.0.1:8765/api/library/reindex
 ```
+
+Brave web context stays separate from the local reference index. It is sanitized,
+live-only, and never persisted to recall storage.
 
 ## Speaker Identity
 
@@ -425,17 +417,15 @@ for clearer speech, uses `tiny.en` for fast local validation, and sources the
 same GPU library path helper used by `scripts/dev.sh`.
 
 Run the user-style validation lane against the polished UI, GPU ASR, wide
-screenshots, and a controlled work-memory audio source with:
+screenshots, and a controlled technical-reference audio source with:
 
 ```bash
-./scripts/make_work_memory_known_audio.sh
-BRAIN_SIDECAR_USER_TEST_SOURCE=/home/bp/project/brain-sidecar/runtime/user-tests/work-memory-known/source.wav \
-BRAIN_SIDECAR_USER_TEST_DIR=/home/bp/project/brain-sidecar/runtime/user-tests/work-memory-known \
+BRAIN_SIDECAR_USER_TEST_SOURCE=/home/bp/project/brain-sidecar/runtime/user-tests/technical-reference/source.wav \
+BRAIN_SIDECAR_USER_TEST_DIR=/home/bp/project/brain-sidecar/runtime/user-tests/technical-reference \
 BRAIN_SIDECAR_USER_TEST_SCREENSHOT_INTERVAL_MS=20000 \
-BRAIN_SIDECAR_EXPECT_WORK_MEMORY=1 \
-BRAIN_SIDECAR_EXPECT_RESPONSE_TERMS="Online Generator Monitoring,T.A. Smith,500kV breaker,relay modernization,PG&E gas mains,SaskPower workforce planning" \
+BRAIN_SIDECAR_EXPECT_RESPONSE_TERMS="circuit breaker,relay,protection,voltage,current,transformer" \
 BRAIN_SIDECAR_EXPECT_TERM_MIN_HITS=4 \
 npm --prefix ui run test:user-audio
 ```
 
-The report and screenshots land in `runtime/user-tests/work-memory-known/artifacts/`.
+The report and screenshots land in `runtime/user-tests/technical-reference/artifacts/`.

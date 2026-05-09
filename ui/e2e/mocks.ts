@@ -60,6 +60,9 @@ type MockDeviceResponse = {
 
 type MockApiOptions = {
   testModeEnabled?: boolean;
+  testPreparedDurationSeconds?: number;
+  startSessionResponse?: { status?: number; body?: Record<string, unknown> };
+  abortSessionListAfterCreate?: boolean;
   devicesResponse?: MockDeviceResponse;
   gpuHealthResponse?: Record<string, unknown>;
   sessionsResponse?: Record<string, unknown>[];
@@ -209,6 +212,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     { name: "phi3:mini", size: 2_200_000_000, cloud: false, current: false },
     { name: "qwen3.5:9b", size: 6_600_000_000, cloud: false, current: false },
   ];
+  let createdSessionCount = 0;
 
   await page.route(`${API_ORIGIN}/api/**`, async (route) => {
     const request = route.request();
@@ -452,30 +456,17 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
       return;
     }
 
-    if (method === "GET" && path === "/api/work-memory/status") {
-      await json(route, {
-        projects: 21,
-        evidence: 88,
-        sources: 412,
-        disabled_sources: 14,
-        latest_index_at: 1_768_000_000,
-        source_groups: {
-          opc_history: 180,
-          consulting_history: 160,
-          navy_history: 72,
-        },
-        default_roots: ["/home/bp/Nextcloud2/Job Hunting"],
-        guardrail: "Current employer/client material is guardrail context only.",
-      });
-      return;
-    }
-
     if (method === "GET" && path === "/api/sessions") {
+      if (options.abortSessionListAfterCreate && createdSessionCount > 0) {
+        await route.abort("failed");
+        return;
+      }
       await json(route, { sessions: options.sessionsResponse ?? [savedSession] });
       return;
     }
 
     if (method === "POST" && path === "/api/sessions") {
+      createdSessionCount += 1;
       const body = JSON.parse(request.postData() ?? "{}") as { title?: string | null };
       await json(route, {
         id: "session-123",
@@ -568,12 +559,26 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     }
 
     if (method === "POST" && path === "/api/sessions/session-123/start") {
-      await json(route, { ok: true });
+      if (options.startSessionResponse) {
+        await json(route, options.startSessionResponse.body ?? { ok: false }, options.startSessionResponse.status ?? 500);
+      } else {
+        await json(route, { ok: true });
+      }
       return;
     }
 
     if (method === "POST" && path === "/api/sessions/session-123/stop") {
       await json(route, { ok: true });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/sessions/session-123/pause") {
+      await json(route, { status: "paused", session_id: "session-123", raw_audio_retained: false });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/sessions/session-123/resume") {
+      await json(route, { status: "listening", session_id: "session-123", raw_audio_retained: false });
       return;
     }
 
@@ -595,7 +600,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         run_id: "testrun-123",
         source_path: body.source_path ?? "/tmp/source.m4a",
         fixture_wav: "/tmp/brain-sidecar-tests/testrun-123/input.wav",
-        duration_seconds: 12.5,
+        duration_seconds: options.testPreparedDurationSeconds ?? 12.5,
         artifact_dir: "/tmp/brain-sidecar-tests/testrun-123",
         report_path: "/tmp/brain-sidecar-tests/testrun-123/report.json",
         expected_terms: body.expected_terms ?? [],
@@ -617,7 +622,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     }
 
     if (method === "GET" && path === "/api/library/roots") {
-      await json(route, { roots: ["/home/bp/Nextcloud2/_library/_shoalstone/past work"] });
+      await json(route, { roots: ["/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering"] });
       return;
     }
 
@@ -625,8 +630,8 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
       await json(route, {
         sources: [
           {
-            source_path: "/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt",
-            title: "OGMS spec.txt",
+            source_path: "/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science/doe-hdbk-1011-92-vol-1-electrical-science.pdf",
+            title: "DOE Electrical Science Volume 1",
             chunk_count: 3,
             updated_at: 1_768_000_000,
             first_chunk_index: 0,
@@ -635,10 +640,10 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         chunks: [
           {
             id: "chunk-1",
-            source_path: "/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt",
-            title: "OGMS spec.txt",
+            source_path: "/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science/doe-hdbk-1011-92-vol-1-electrical-science.pdf",
+            title: "DOE Electrical Science Volume 1",
             chunk_index: 0,
-            text: "Monitoring signals are useful when they map to decisions.",
+            text: "Circuit protection references describe breaker coordination, fault current, and relay timing.",
             metadata: {},
             updated_at: 1_768_000_000,
           },
@@ -649,80 +654,6 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
 
     if (method === "POST" && path === "/api/library/reindex") {
       await json(route, { chunks_indexed: 42 });
-      return;
-    }
-
-    if (method === "POST" && path === "/api/work-memory/reindex") {
-      await json(route, {
-        projects_indexed: 21,
-        evidence_indexed: 88,
-        sources_indexed: 412,
-      });
-      return;
-    }
-
-    if (method === "GET" && path === "/api/work-memory/projects") {
-      await json(route, {
-        projects: [
-          {
-            id: "wproj-ogm",
-            project_key: "ogm",
-            title: "Online Generator Monitoring - T.A. Smith",
-            organization: "Oglethorpe Power",
-            date_range: "Mar 2019 - June 2021",
-            role: "Consultant",
-            domain: "energy",
-            summary: "Mapped monitoring data to maintenance decisions.",
-            lessons: ["Map measurements to decisions."],
-            triggers: ["generator monitoring"],
-            source_group: "consulting_history",
-            confidence: 0.92,
-            updated_at: 1_768_000_000,
-            evidence: [],
-          },
-        ],
-      });
-      return;
-    }
-
-    if (method === "GET" && path === "/api/work-memory/sources") {
-      await json(route, {
-        sources: [
-          {
-            id: "wsrc-1",
-            path: "/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt",
-            source_group: "consulting_history",
-            sensitivity: "guardrail",
-            status: "indexed",
-            title: "OGMS spec.txt",
-            content_hash: "hash",
-            metadata: {},
-            disabled: false,
-            created_at: 1_768_000_000,
-            updated_at: 1_768_000_000,
-          },
-        ],
-      });
-      return;
-    }
-
-    if (method === "POST" && path === "/api/work-memory/search") {
-      await json(route, {
-        cards: [
-          {
-            project_id: "wproj-ogm",
-            title: "Online Generator Monitoring - T.A. Smith",
-            text: "Monitoring signals are useful when they map to decisions.",
-            lesson: "Map measurements to decisions.",
-            organization: "Oglethorpe Power",
-            date_range: "Mar 2019 - June 2021",
-            reason: "generator monitoring",
-            confidence: 0.92,
-            score: 0.89,
-            citations: ["/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt"],
-          },
-        ],
-      });
       return;
     }
 
@@ -769,23 +700,23 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
               raw_audio_retained: false,
             },
           ],
-          pas_past_work: [
+          technical_references: [
             {
-              id: "manual-work-card",
+              id: "manual-reference-card",
               session_id: "session-123",
-              category: "work_memory",
-              title: "Online Generator Monitoring - T.A. Smith",
-              body: "Monitoring is only useful when measurements map to failure modes and decisions.",
-              suggested_say: "I saw a similar pattern at T.A. Smith: map measurements to the decisions they change.",
-              why_now: "shared signals around generator monitoring, failure modes",
+              category: "memory",
+              title: "DOE Electrical Science Volume 1",
+              body: "Circuit protection references describe breaker coordination, fault current, and relay timing.",
+              suggested_say: "The DOE reference points back to breaker coordination and relay timing as the grounding concepts.",
+              why_now: "Returned for the typed technical reference lookup.",
               priority: "high",
               confidence: 0.86,
               source_segment_ids: [],
-              source_type: "work_memory",
+              source_type: "local_file",
               sources: [],
-              citations: ["/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt"],
+              citations: ["/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science/doe-hdbk-1011-92-vol-1-electrical-science.pdf"],
               ephemeral: true,
-              card_key: "manual:work:wproj-ogm",
+              card_key: "manual:reference:doe-electrical-science",
               explicitly_requested: true,
               raw_audio_retained: false,
             },
@@ -816,13 +747,13 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
               session_id: "session-123",
               category: "contribution",
               title: "Suggested meeting contribution",
-              body: "Use the prior planning note and OGM lesson as grounded context.",
-              suggested_say: "It may help to map this rollout signal to the decision it changes.",
+              body: "Use the reference and current web result as grounded context.",
+              suggested_say: "It may help to check the rollout against the reference criteria and the current release guidance.",
               why_now: "BP explicitly asked Sidecar.",
               priority: "high",
               confidence: 0.8,
               source_segment_ids: [],
-              source_type: "work_memory",
+              source_type: "local_file",
               sources: [],
               citations: [],
               ephemeral: true,
@@ -852,21 +783,21 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
             raw_audio_retained: false,
           },
           {
-            id: "manual-work-card",
+            id: "manual-reference-card",
             session_id: "session-123",
-            category: "work_memory",
-            title: "Online Generator Monitoring - T.A. Smith",
-            body: "Monitoring is only useful when measurements map to failure modes and decisions.",
-            suggested_say: "I saw a similar pattern at T.A. Smith: map measurements to the decisions they change.",
-            why_now: "shared signals around generator monitoring, failure modes",
+            category: "memory",
+            title: "DOE Electrical Science Volume 1",
+            body: "Circuit protection references describe breaker coordination, fault current, and relay timing.",
+            suggested_say: "The DOE reference points back to breaker coordination and relay timing as the grounding concepts.",
+            why_now: "Returned for the typed technical reference lookup.",
             priority: "high",
             confidence: 0.86,
             source_segment_ids: [],
-            source_type: "work_memory",
+            source_type: "local_file",
             sources: [],
-            citations: ["/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt"],
+            citations: ["/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science/doe-hdbk-1011-92-vol-1-electrical-science.pdf"],
             ephemeral: true,
-            card_key: "manual:work:wproj-ogm",
+            card_key: "manual:reference:doe-electrical-science",
             explicitly_requested: true,
             raw_audio_retained: false,
           },
@@ -893,39 +824,19 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
             session_id: "session-123",
             category: "contribution",
             title: "Suggested meeting contribution",
-            body: "Use the prior planning note and OGM lesson as grounded context.",
-            suggested_say: "It may help to map this rollout signal to the decision it changes.",
+            body: "Use the reference and current web result as grounded context.",
+            suggested_say: "It may help to check the rollout against the reference criteria and the current release guidance.",
             why_now: "BP explicitly asked Sidecar.",
             priority: "high",
             confidence: 0.8,
             source_segment_ids: [],
-            source_type: "work_memory",
+            source_type: "local_file",
             sources: [],
             citations: [],
             ephemeral: true,
             card_key: "manual:contribution:apollo-rollout",
             explicitly_requested: true,
             raw_audio_retained: false,
-          },
-        ],
-      });
-      return;
-    }
-
-    if (method === "POST" && path === "/api/work-memory/search") {
-      await json(route, {
-        cards: [
-          {
-            project_id: "wproj-ogm",
-            title: "Online Generator Monitoring - T.A. Smith",
-            organization: "Oglethorpe Power",
-            date_range: "Mar 2019 - June 2021",
-            score: 0.86,
-            confidence: 0.92,
-            reason: "shared signals around generator monitoring, failure modes",
-            lesson: "Monitoring is only useful when measurements map to failure modes and decisions.",
-            citations: ["/home/bp/Nextcloud2/_library/_shoalstone/past work/OPC/2021 OGM/OGMS spec.txt"],
-            text: "This conversation is reminiscent of Online Generator Monitoring - T.A. Smith (Oglethorpe Power, Mar 2019 - June 2021). Similarity: shared signals around generator monitoring, failure modes. Useful reminder: Monitoring is only useful when measurements map to failure modes and decisions.",
           },
         ],
       });

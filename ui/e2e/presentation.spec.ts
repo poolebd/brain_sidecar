@@ -2,12 +2,15 @@ import { expect, test } from "@playwright/test";
 import {
   buildConsultingBriefMarkdown,
   buildLiveFieldRows,
+  buildLiveSignals,
   buildSidecarDisplayCards,
   buildSidecarQualityMetrics,
   displaySourceLabel,
   getTranscriptDisplayLabel,
   groupMeetingOutputCards,
   groupWorkCards,
+  isCompanyReferenceCard,
+  qualityLabelForCard,
   type SidecarDisplayCard,
   type TranscriptEvent,
 } from "../src/presentation";
@@ -106,18 +109,20 @@ test("groups useful cards into daily work buckets", () => {
 test("labels sidecar sources by source type instead of category", () => {
   expect(displaySourceLabel("transcript")).toBe("Current meeting");
   expect(displaySourceLabel("model_fallback")).toBe("Current meeting");
-  expect(displaySourceLabel("work_memory_project")).toBe("Work memory");
-  expect(displaySourceLabel("document_chunk")).toBe("Local file");
+  expect(displaySourceLabel("document_chunk")).toBe("Technical reference");
+  expect(displaySourceLabel("company_ref")).toBe("Company reference");
+  expect(displaySourceLabel("company_ref", true)).toBe("Manual query / Company reference");
   expect(displaySourceLabel("brave_web", true)).toBe("Manual query / Web");
 });
 
-test("groups current meeting output separately from work memory", () => {
+test("groups current meeting output separately from reference context", () => {
   const groups = groupMeetingOutputCards([
     card("action", { category: "action", sourceType: "transcript" }),
     card("decision", { category: "decision", sourceType: "transcript" }),
     card("question", { category: "clarification", sourceType: "transcript" }),
     card("risk", { category: "risk", sourceType: "transcript" }),
-    card("memory", { category: "work_memory", sourceType: "work_memory_project" }),
+    card("reference", { category: "memory", sourceType: "local_file" }),
+    card("company", { category: "reference", sourceType: "company_ref" }),
   ]);
 
   expect(groups.actions.map((item) => item.id)).toEqual(["action"]);
@@ -125,6 +130,13 @@ test("groups current meeting output separately from work memory", () => {
   expect(groups.questions.map((item) => item.id)).toEqual(["question"]);
   expect(groups.risks.map((item) => item.id)).toEqual(["risk"]);
   expect(groups.notes.map((item) => item.id)).toEqual([]);
+});
+
+test("labels company reference cards as reference context", () => {
+  const reference = card("company-ref", { category: "reference", sourceType: "company_ref" });
+
+  expect(isCompanyReferenceCard(reference)).toBe(true);
+  expect(qualityLabelForCard(reference)).toBe("Reference context");
 });
 
 test("computes evidence coverage for current meeting cards", () => {
@@ -141,18 +153,141 @@ test("computes evidence coverage for current meeting cards", () => {
       sourceSegmentIds: [],
       evidenceQuote: "",
     }),
-    card("memory", { category: "work_memory", sourceType: "work_memory_project" }),
+    card("reference", { category: "memory", sourceType: "local_file" }),
     card("manual", { explicitlyRequested: true, sourceType: "saved_transcript" }),
   ]);
 
   expect(metrics.acceptedCurrentCount).toBe(2);
-  expect(metrics.workMemoryCount).toBe(1);
+  expect(metrics.contextCount).toBe(1);
   expect(metrics.manualCount).toBe(1);
   expect(metrics.sourceIdCoverage).toBe(0.5);
   expect(metrics.evidenceQuoteCoverage).toBe(0.5);
 });
 
-test("builds consulting brief with evidence, contract, and separated work memory", () => {
+test("builds immediate live signals from final transcript evidence", () => {
+  const evidence = "Can we confirm who owns the tariff analysis by Monday?";
+  const signals = buildLiveSignals([
+    transcript("tariff-line", evidence, { segmentId: "seg-tariff" }),
+  ], [], { now });
+
+  const question = signals.find((signal) => signal.kind === "question");
+  const action = signals.find((signal) => signal.kind === "action");
+
+  expect(question).toMatchObject({
+    title: "Clarification cue",
+    evidenceQuote: evidence,
+    sourceEventIds: ["tariff-line"],
+    sourceSegmentIds: ["seg-tariff"],
+    provisional: false,
+  });
+  expect(action).toMatchObject({
+    title: "Action cue",
+    evidenceQuote: evidence,
+    sourceEventIds: ["tariff-line"],
+    sourceSegmentIds: ["seg-tariff"],
+    priority: "high",
+    provisional: false,
+  });
+});
+
+test("flags direct Brandon address as an attention signal", () => {
+  const directAddressExamples = [
+    "Brandon, can you confirm the tariff analysis?",
+    "Hey Brandon, could you take this one?",
+  ];
+
+  for (const [index, evidence] of directAddressExamples.entries()) {
+    const signals = buildLiveSignals([
+      transcript(`brandon-line-${index}`, evidence, {
+        segmentId: `seg-brandon-${index}`,
+        speakerRole: "other",
+      }),
+    ], [], { now, addressedToNames: ["Brandon", "BP"] });
+    const attention = signals.find((signal) => signal.kind === "attention");
+
+    expect(attention).toMatchObject({
+      kind: "attention",
+      title: "Addressed to me",
+      evidenceQuote: evidence,
+      sourceEventIds: [`brandon-line-${index}`],
+      sourceSegmentIds: [`seg-brandon-${index}`],
+      priority: "high",
+      provisional: false,
+    });
+  }
+});
+
+test("suppresses Brandon attention for third-person, user, typed, and partial transcript events", () => {
+  const signals = buildLiveSignals([
+    transcript("third-person", "Brandon is going to contribute to the tariff section.", {
+      speakerRole: "other",
+    }),
+    transcript("user-self", "Brandon, can you confirm the tariff analysis?", {
+      speakerRole: "user",
+    }),
+    transcript("typed", "Brandon, can you confirm the tariff analysis?", {
+      source: "typed",
+      speakerRole: "other",
+    }),
+    transcript("partial", "Hey Brandon, could you take this one?", {
+      isFinal: false,
+      speakerRole: "other",
+    }),
+  ], [], { now, addressedToNames: ["Brandon"] });
+
+  expect(signals.some((signal) => signal.kind === "attention")).toBe(false);
+});
+
+test("uses partial transcript only for a provisional thread signal", () => {
+  const signals = buildLiveSignals([
+    transcript("partial-line", "We need to confirm the tariff owner", { isFinal: false }),
+  ], [], { now });
+
+  expect(signals.map((signal) => signal.kind)).toEqual(["thread"]);
+  expect(signals[0]).toMatchObject({
+    title: "Live preview",
+    provisional: true,
+    evidenceQuote: "We need to confirm the tariff owner",
+  });
+});
+
+test("builds suggestion signals from current meeting card evidence", () => {
+  const signals = buildLiveSignals([], [
+    card("suggestion-card", {
+      category: "clarification",
+      sourceType: "transcript",
+      title: "Tariff inputs",
+      suggestedAsk: "Can we get the rate schedule before pricing?",
+      evidenceQuote: "utility bill analysis and tariff analysis",
+      sourceSegmentIds: ["seg-energy"],
+    }),
+  ], { now });
+
+  expect(signals[0]).toMatchObject({
+    kind: "suggestion",
+    title: "Tariff inputs",
+    suggestedAsk: "Can we get the rate schedule before pricing?",
+    evidenceQuote: "utility bill analysis and tariff analysis",
+    sourceSegmentIds: ["seg-energy"],
+  });
+});
+
+test("dedupes live signals and respects max signal count", () => {
+  const duplicate = "Can we confirm who owns the tariff analysis by Monday?";
+  const signals = buildLiveSignals([
+    transcript("one", duplicate, { segmentId: "seg-one" }),
+    transcript("two", duplicate, { segmentId: "seg-two", at: now + 1_000 }),
+    transcript("risk", "There is a deadline risk if the rate schedule is late.", { segmentId: "seg-risk", at: now + 2_000 }),
+  ], [], { now: now + 2_000, maxSignals: 2 });
+
+  expect(signals).toHaveLength(2);
+  expect(signals.map((signal) => `${signal.kind}:${signal.evidenceQuote}`)).toEqual([
+    `risk:There is a deadline risk if the rate schedule is late.`,
+    `question:${duplicate}`,
+  ]);
+});
+
+test("builds consulting brief with evidence, contract, and separated references", () => {
   const markdown = buildConsultingBriefMarkdown([
     card("action", {
       category: "action",
@@ -165,12 +300,12 @@ test("builds consulting brief with evidence, contract, and separated work memory
       dueDate: "Monday",
       suggestedSay: "I will send the comments by Monday.",
     }),
-    card("memory", {
-      category: "work_memory",
-      title: "Relay work distractor",
-      summary: "Past CT/PT relay settings work.",
-      sourceType: "work_memory_project",
-      citations: ["eval-memory:relay"],
+    card("reference", {
+      category: "memory",
+      title: "DOE electrical reference",
+      summary: "CT/PT relay settings should be checked against the reference.",
+      sourceType: "local_file",
+      citations: ["runtime/reference/electrical-engineering/doe.pdf"],
     }),
   ], "Consulting Brief", {
     goal: "Track owners and risks.",
@@ -188,9 +323,9 @@ test("builds consulting brief with evidence, contract, and separated work memory
   expect(markdown).toContain("Evidence: \"four documents by Monday\"");
   expect(markdown).toContain("## Evidence Index");
   expect(markdown).toContain("Source segments: seg-1");
-  expect(markdown).toContain("## Relevant Work Memory");
-  expect(markdown).toContain("Relay work distractor");
-  expect(markdown.indexOf("Past CT/PT relay settings work.")).toBeGreaterThan(markdown.indexOf("## Relevant Work Memory"));
+  expect(markdown).toContain("## Technical References / Web Context");
+  expect(markdown).toContain("DOE electrical reference");
+  expect(markdown.indexOf("CT/PT relay settings")).toBeGreaterThan(markdown.indexOf("## Technical References / Web Context"));
 });
 
 test("pairs sidecar cards to transcript rows by source segment", () => {

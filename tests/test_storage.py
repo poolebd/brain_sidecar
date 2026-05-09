@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from brain_sidecar.core.models import TranscriptSegment
+from brain_sidecar.core.company_refs import company_ref_from_seed_row
 from brain_sidecar.core.storage import Storage
 
 
@@ -94,3 +95,31 @@ def test_session_memory_summary_round_trip(tmp_path: Path) -> None:
     summary = storage.session_memory_summaries()[0]
     assert summary["session_id"] == session.id
     assert summary["topics"] == ["rollback"]
+
+
+def test_company_refs_round_trip_and_status(tmp_path: Path) -> None:
+    storage = Storage(tmp_path)
+    storage.connect()
+    ref = company_ref_from_seed_row(
+        {
+            "id": "siemens",
+            "canonical_name": "Siemens",
+            "entity_type": "company",
+            "domain": "industrial technology / electrical equipment",
+            "description": "Industrial technology company with automation and grid businesses.",
+            "aliases": ["Siemens Energy"],
+            "acronyms": ["SIE"],
+            "context_terms": ["grid"],
+            "sources": [{"title": "Seed reference", "url": "https://example.com/siemens"}],
+        }
+    )
+
+    assert storage.upsert_company_refs([ref]) == 1
+    assert storage.upsert_company_refs([ref]) == 1
+
+    refs = storage.company_refs()
+    assert len(refs) == 1
+    assert refs[0]["canonical_name"] == "Siemens"
+    assert {alias["alias"] for alias in refs[0]["aliases"]} >= {"Siemens", "Siemens Energy", "SIE"}
+    assert storage.company_ref_status()["active_ref_count"] == 1
+    assert storage.search_company_refs("SIE")[0]["id"] == "siemens"

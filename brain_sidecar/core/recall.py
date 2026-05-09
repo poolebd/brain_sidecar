@@ -450,8 +450,6 @@ def source_type_boost(
     boost = 0.0
     if source_type == "session_summary":
         boost += 0.08 if prefer_summaries else 0.02
-    elif source_type == "work_memory_project":
-        boost += 0.06
     elif source_type == "transcript_segment":
         boost += -0.04 if prefer_summaries else 0.0
     elif source_type == "document_chunk":

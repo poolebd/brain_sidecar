@@ -371,12 +371,12 @@ blockquote {
   align-items: center;
   border-radius: 8px;
   display: grid;
-  background: color-mix(in srgb, var(--surface) 82%, var(--bg));
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 66%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
   border-color: color-mix(in srgb, var(--border) 70%, transparent);
-  gap: 0.48rem;
-  grid-template-columns: minmax(13rem, 1fr) minmax(7.5rem, 0.3fr) minmax(11rem, 0.44fr) auto;
-  padding: 0.4rem;
+  gap: 0.4rem;
+  grid-template-columns: minmax(13rem, 1fr) minmax(7.5rem, 0.26fr) minmax(10rem, 0.38fr) auto;
+  padding: 0.34rem;
 }
 
 .compact-field {
@@ -394,13 +394,13 @@ blockquote {
 }
 
 .session-static-session {
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
   border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
   border-radius: 8px;
   display: grid;
   gap: 0.24rem;
-  min-height: 3.1rem;
-  padding: 0.52rem 0.72rem;
+  min-height: 2.9rem;
+  padding: 0.46rem 0.62rem;
 }
 
 .session-static-session span {
@@ -1220,6 +1220,10 @@ time {
   justify-content: end;
 }
 
+.top-actions button.active {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+}
+
 .top-runtime-context {
   display: grid;
   gap: 0.05rem;
@@ -1349,8 +1353,8 @@ time {
 
 .workspace-grid {
   display: grid;
-  gap: 0.85rem;
-  grid-template-columns: minmax(0, 1fr) clamp(320px, 28vw, 460px);
+  gap: 0.72rem;
+  grid-template-columns: minmax(0, 1fr) clamp(300px, 25vw, 410px);
   min-height: 0;
   padding: 0.65rem;
   position: relative;
@@ -1360,7 +1364,7 @@ time {
 .context-pane {
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
+  gap: 0.48rem;
   height: 100%;
   min-height: 0;
   position: relative;
@@ -1368,15 +1372,15 @@ time {
 
 .context-pane {
   border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-  padding-left: 0.85rem;
+  padding-left: 0.72rem;
 }
 
 .live-cockpit-header {
-  background: color-mix(in srgb, var(--surface) 64%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
-  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 52%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+  border-radius: 10px;
   display: grid;
-  gap: 0.45rem;
+  gap: 0.4rem;
   padding: 0.45rem;
 }
 
@@ -1388,7 +1392,7 @@ time {
 }
 
 .field-toolbar h1 {
-  font-size: clamp(1.28rem, 1.4vw, 1.72rem);
+  font-size: 1.38rem;
   letter-spacing: 0;
   line-height: 1.08;
   margin: 0;
@@ -1401,7 +1405,23 @@ time {
   color: var(--text-muted);
   font-size: 0.78rem;
   font-weight: 750;
-  padding: 0.35rem 0.55rem;
+  padding: 0.28rem 0.48rem;
+}
+
+.live-field-toolbar {
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 56%, transparent);
+  padding: 0.08rem 0 0.35rem;
+}
+
+.live-field-toolbar .field-toolbar-status {
+  justify-content: end;
+}
+
+.live-test-toggle.active {
+  background: color-mix(in srgb, var(--accent-soft) 72%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--border));
+  color: var(--text);
 }
 
 .context-toolbar {
@@ -1423,15 +1443,34 @@ time {
 .cockpit-control-row {
   align-items: stretch;
   display: grid;
-  gap: 0.45rem;
-  grid-template-columns: minmax(16rem, 0.32fr) minmax(0, 1fr);
+  gap: 0.4rem;
+  grid-template-columns: minmax(12rem, 0.24fr) minmax(0, 1fr);
+}
+
+.cockpit-control-row.with-test {
+  grid-template-columns: minmax(14rem, 0.28fr) minmax(0, 1fr);
+}
+
+.cockpit-control-row.with-test .capture-control-bar {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.cockpit-control-row.with-test .meeting-focus-control {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.cockpit-control-row.with-test .live-test-panel {
+  grid-column: 1 / -1;
+  grid-row: 2;
 }
 
 .capture-control-bar,
 .meeting-focus-control {
   background: color-mix(in srgb, var(--surface) 72%, var(--bg));
   border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
-  border-radius: 12px;
+  border-radius: 8px;
   min-width: 0;
 }
 
@@ -1445,6 +1484,97 @@ time {
 
 .capture-control-bar.warning {
   border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+}
+
+.live-test-panel {
+  background: color-mix(in srgb, var(--surface) 68%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.5rem;
+}
+
+.live-test-head {
+  align-items: center;
+  display: flex;
+  gap: 0.65rem;
+  justify-content: space-between;
+}
+
+.live-test-head > div {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.live-test-head strong {
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.live-test-head small {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.25;
+  max-width: 52rem;
+}
+
+.live-test-head-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: end;
+}
+
+.live-test-head-actions > span {
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 850;
+  padding: 0.28rem 0.5rem;
+}
+
+.live-test-state.playing,
+.live-test-state.paused,
+.live-test-state.ready {
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--border));
+  color: var(--text);
+}
+
+.live-test-grid {
+  align-items: end;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(13rem, 1.2fr) minmax(8rem, 0.45fr) minmax(13rem, 1fr);
+}
+
+.live-test-grid .field-wide {
+  grid-column: auto;
+}
+
+.live-test-panel .test-mode-summary {
+  gap: 0.45rem;
+  padding: 0.46rem 0.55rem;
+}
+
+.live-test-panel .test-mode-summary small {
+  display: none;
+}
+
+.test-playback-controls {
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr));
+}
+
+.test-playback-controls button {
+  min-width: 0;
+  padding-inline: 0.42rem;
 }
 
 .mode-control {
@@ -1523,7 +1653,7 @@ time {
 }
 
 .meeting-focus-bar {
-  align-items: center;
+  align-items: start;
   display: grid;
   gap: 0.55rem;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1533,8 +1663,9 @@ time {
 .meeting-focus-summary {
   align-items: center;
   color: var(--text-muted);
-  display: flex;
+  display: grid;
   gap: 0.45rem;
+  grid-template-columns: repeat(4, max-content);
   min-width: 0;
 }
 
@@ -1556,11 +1687,13 @@ time {
 .meeting-focus-summary p {
   color: var(--text-muted);
   font-size: 0.84rem;
+  grid-column: 1 / -1;
+  line-height: 1.3;
   margin: 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .meeting-focus-note {
@@ -1598,6 +1731,25 @@ time {
   text-align: center;
 }
 
+.meeting-web-context-control {
+  align-items: center;
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr);
+}
+
+.meeting-web-context-control > span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.meeting-web-context-control .mode-control {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
 .meeting-reminder-grid {
   display: grid;
   gap: 0.42rem 0.65rem;
@@ -1626,10 +1778,10 @@ time {
 }
 
 .query-bar {
-  background: color-mix(in srgb, var(--surface) 84%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  border-radius: 12px;
-  box-shadow: 0 -10px 22px color-mix(in srgb, var(--shadow) 38%, transparent);
+  background: color-mix(in srgb, var(--surface) 64%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: 8px;
+  box-shadow: none;
   display: grid;
   gap: 0.45rem;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1682,19 +1834,224 @@ time {
   font-weight: 800;
 }
 
+.live-signals {
+  background: color-mix(in srgb, var(--surface) 58%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 8px;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 0.36rem;
+  padding: 0.4rem;
+}
+
+.live-signals-head {
+  align-items: center;
+  display: flex;
+  gap: 0.55rem;
+  justify-content: space-between;
+}
+
+.live-signals-head > span:last-child {
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.live-signals-empty {
+  color: var(--text-subtle);
+  font-size: 0.82rem;
+  margin: 0;
+  padding: 0.05rem 0.05rem 0.12rem;
+}
+
+.live-signal-list {
+  display: grid;
+  gap: 0.34rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+}
+
+.live-signal {
+  background: color-mix(in srgb, var(--surface-2) 82%, var(--bg));
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  color: var(--text);
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+  padding: 0.42rem 0.5rem;
+  text-align: left;
+}
+
+.live-signal:hover,
+.live-signal:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  outline: none;
+}
+
+.live-signal.action {
+  border-left-color: var(--success);
+}
+
+.live-signal.attention {
+  border-left-color: var(--accent-hover);
+}
+
+.live-signal.risk {
+  border-left-color: var(--danger);
+}
+
+.live-signal.decision,
+.live-signal.question,
+.live-signal.suggestion {
+  border-left-color: var(--accent-contrast);
+}
+
+.live-signal.provisional {
+  opacity: 0.78;
+}
+
+.live-signal-top {
+  align-items: center;
+  display: flex;
+  gap: 0.35rem;
+}
+
+.live-signal-kind,
+.live-signal-badge {
+  background: color-mix(in srgb, var(--accent-soft) 46%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.68rem;
+  font-weight: 850;
+  padding: 0.08rem 0.34rem;
+  text-transform: uppercase;
+}
+
+.live-signal-badge {
+  background: color-mix(in srgb, var(--accent-contrast) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent-contrast) 36%, var(--border));
+}
+
+.live-signal-title {
+  font-size: 0.84rem;
+  font-weight: 850;
+  line-height: 1.18;
+}
+
+.live-signal-body,
+.live-signal-evidence,
+.live-signal-suggestion {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-signal-body {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.live-signal-suggestion {
+  color: var(--text);
+  font-size: 0.76rem;
+}
+
+.live-signal-suggestion strong {
+  color: var(--accent);
+  margin-right: 0.35rem;
+}
+
+.live-signal-evidence {
+  color: var(--text-subtle);
+  font-size: 0.74rem;
+}
+
+.live-playback-cue {
+  background: color-mix(in srgb, var(--surface-2) 66%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.42rem;
+  padding: 0.55rem 0.65rem;
+  position: relative;
+}
+
+.live-playback-head {
+  align-items: center;
+  display: flex;
+  gap: 0.7rem;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.live-playback-head > div {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.live-playback-head strong {
+  font-size: 0.96rem;
+  line-height: 1.15;
+}
+
+.live-playback-head > span {
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 999px;
+  color: var(--text);
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  font-weight: 900;
+  padding: 0.28rem 0.55rem;
+}
+
+.live-playback-bar {
+  background: color-mix(in srgb, var(--surface) 78%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 999px;
+  height: 0.58rem;
+  overflow: hidden;
+}
+
+.live-playback-bar span {
+  background: linear-gradient(90deg, var(--accent), var(--accent-contrast));
+  display: block;
+  height: 100%;
+  min-width: 0.4rem;
+  transition: width 0.45s ease;
+}
+
+.live-playback-cue p,
+.live-playback-cue small {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.live-playback-cue small {
+  color: var(--text-subtle);
+  font-size: 0.76rem;
+}
+
 .transcript-scroll,
 .context-card-list {
   align-content: start;
   background: color-mix(in srgb, var(--surface) 72%, var(--bg));
   border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-  border-radius: 14px;
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--shadow) 36%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--shadow) 26%, transparent);
   display: grid;
   flex: 1 1 auto;
   gap: 0.62rem;
   min-height: 0;
   overflow: auto;
-  padding: 1rem;
+  padding: 0.85rem;
 }
 
 .live-field-scroll {
@@ -2103,6 +2460,10 @@ time {
 }
 
 .context-card.web {
+  border-left-color: var(--accent-contrast);
+}
+
+.context-card.reference {
   border-left-color: var(--accent-contrast);
 }
 
@@ -3595,7 +3956,10 @@ time {
   .memory-root-add,
   .cockpit-control-row,
   .capture-control-bar,
+  .live-test-grid,
+  .test-playback-controls,
   .meeting-focus-editor,
+  .meeting-web-context-control,
   .meeting-reminder-grid,
   .mic-tuning,
   .session-workspace-bar,
@@ -3662,7 +4026,11 @@ time {
   .meeting-focus-summary {
     align-items: stretch;
     display: grid;
-    grid-template-columns: repeat(3, auto) minmax(0, 1fr);
+    grid-template-columns: repeat(2, auto);
+  }
+
+  .live-signal-list {
+    grid-template-columns: 1fr;
   }
 
   .field-toolbar {

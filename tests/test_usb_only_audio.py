@@ -49,6 +49,18 @@ def test_fixture_audio_requires_test_mode(monkeypatch, tmp_path: Path) -> None:
     assert "test mode" in response.json()["detail"]
 
 
+def test_fixture_playback_pause_requires_active_playback(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BRAIN_SIDECAR_TEST_MODE_ENABLED", "1")
+    with TestClient(create_app()) as client:
+        session_id = client.post("/api/sessions", json={}).json()["id"]
+
+        response = client.post(f"/api/sessions/{session_id}/pause")
+
+    assert response.status_code == 400
+    assert "recorded-audio playback" in response.json()["detail"]
+
+
 def test_devices_endpoint_reports_auto_selected_server_mic(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(

@@ -53,13 +53,13 @@ class EvalMemoryEvent:
     def to_card(self, session_id: str) -> SidecarCard:
         return create_sidecar_card(
             session_id=session_id,
-            category="work_memory",
+            category="memory",
             title=self.title,
             body=self.body,
             why_now="Injected offline evaluation memory distractor.",
             priority="normal",
             confidence=0.72,
-            source_type="work_memory",
+            source_type="saved_transcript",
             source_segment_ids=[],
             citations=[f"eval-memory:{self.id}"],
             card_key=f"eval:memory:{self.id}",

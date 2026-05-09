@@ -13,6 +13,7 @@ from brain_sidecar.config import Settings
 from brain_sidecar.core.audio import AudioCapture, FFmpegAudioCapture, FixtureWavAudioCapture, MAX_INPUT_GAIN_DB, MIN_INPUT_GAIN_DB
 from brain_sidecar.core.asr import ASR_BACKEND_FASTER_WHISPER
 from brain_sidecar.core.asr_factory import create_asr_backend
+from brain_sidecar.core.company_refs import CompanyRefService
 from brain_sidecar.core.dedupe import TranscriptDeduplicator, TranscriptFinalConsolidator
 from brain_sidecar.core.devices import find_device
 from brain_sidecar.core.domain_keywords import EnergyConversationDetector, EnergyConversationFrame, inactive_energy_frame
@@ -37,7 +38,7 @@ from brain_sidecar.core.models import SidecarCard, TranscriptSegment, new_id
 from brain_sidecar.core.note_quality import NoteQualityGate
 from brain_sidecar.core.notes import NoteSynthesizer, heuristic_meeting_cards, note_from_sidecar
 from brain_sidecar.core.ollama import OllamaClient
-from brain_sidecar.core.recall import RecallIndex, has_priority_electrical_reference_hits
+from brain_sidecar.core.recall import RecallIndex
 from brain_sidecar.core.speaker_identity import SpeakerIdentityService, analyze_pcm16
 from brain_sidecar.core.storage import Storage
 from brain_sidecar.core.web_context import (
@@ -47,12 +48,12 @@ from brain_sidecar.core.web_context import (
     WebTriggerDetector,
 )
 from brain_sidecar.core.sidecar_cards import (
+    company_mention_to_sidecar_card,
     create_sidecar_card,
     note_payload_to_sidecar_card,
     recall_payload_to_sidecar_card,
     status_sidecar_card,
 )
-from brain_sidecar.core.work_memory import WorkMemoryService
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,9 @@ class ActiveSession:
     transcript_consolidator: TranscriptFinalConsolidator | None = None
     note_quality_gate: NoteQualityGate | None = None
     web_context_queue: asyncio.Queue[WebContextCandidate] | None = None
+    web_context_enabled: bool = False
     audio_source: str = "server_device"
+    playback_paused: bool = False
     selected_device_id: str | None = None
     input_gain_db: float = 0.0
     save_transcript: bool = True
@@ -91,6 +94,7 @@ class ActiveSession:
     web_context_pending_queries: set[str] = field(default_factory=set)
     web_context_seen_queries: set[str] = field(default_factory=set)
     web_context_last_at: float = 0.0
+    company_ref_last_seen_by_ref_id: dict[str, float] = field(default_factory=dict)
     last_partial_enqueued_at: float = 0.0
     last_partial_text: str = ""
     transcriber_busy: bool = False
@@ -125,9 +129,10 @@ class SessionManager:
         self.bus = EventBus()
         self.storage = Storage(settings.data_dir)
         self.storage.connect()
+        self.company_refs = CompanyRefService(self.storage, settings)
+        self.company_refs.ensure_seeded()
         self.ollama = OllamaClient(settings)
         self.recall = RecallIndex(self.storage, self.ollama, settings)
-        self.work_memory = WorkMemoryService(self.storage, self.recall, settings)
         self.notes = NoteSynthesizer(self.ollama)
         self.energy_detector = EnergyConversationDetector(
             enabled=settings.energy_lens_enabled,
@@ -170,11 +175,17 @@ class SessionManager:
         save_transcript: bool = True,
         mic_tuning: dict[str, object] | None = None,
         meeting_contract: object | None = None,
+        web_context_enabled: bool | None = None,
     ) -> None:
         async with self._lock:
             if session_id in self._active:
                 return
             normalized_contract = normalize_meeting_contract(meeting_contract)
+            session_web_context_enabled = (
+                self.settings.web_context_enabled
+                if web_context_enabled is None
+                else bool(web_context_enabled)
+            )
             if not self._asr_loaded():
                 await self._publish_asr_start_status(session_id)
                 if self.settings.asr_device == "cuda":
@@ -203,6 +214,7 @@ class SessionManager:
                 transcript_consolidator=TranscriptFinalConsolidator(max_recent=48),
                 note_quality_gate=self._new_note_quality_gate(),
                 web_context_queue=web_context_queue,
+                web_context_enabled=session_web_context_enabled,
                 audio_source=audio_source,
                 selected_device_id=capture.device.id if isinstance(capture, FFmpegAudioCapture) else None,
                 input_gain_db=capture.input_gain_db if isinstance(capture, FFmpegAudioCapture) else 0.0,
@@ -218,7 +230,7 @@ class SessionManager:
                 asyncio.create_task(self._run_transcription_loop(session_id, window_queue, postprocess_queue)),
                 asyncio.create_task(self._run_postprocess_loop(session_id, postprocess_queue)),
             ]
-            if self._web_context_configured():
+            if self._web_context_configured(active):
                 active.tasks.append(asyncio.create_task(self._run_web_context_loop(session_id, web_context_queue)))
             for task in active.tasks:
                 task.add_done_callback(lambda done_task, sid=session_id: self._surface_task_exception(sid, done_task))
@@ -243,6 +255,8 @@ class SessionManager:
                     "selected_device_id": active.selected_device_id,
                     "input_gain_db": active.input_gain_db,
                     "save_transcript": active.save_transcript,
+                    "web_context_enabled": active.web_context_enabled,
+                    "web_context_configured": bool(self.settings.brave_search_api_key.strip()),
                     "raw_audio_retained": False,
                     **self._meeting_status(active),
                 },
@@ -281,12 +295,13 @@ class SessionManager:
     ) -> None:
         gpu_status = gpu_status or read_gpu_status()
         active = self._active.get(session_id)
+        reported_status = "paused" if active is not None and active.playback_paused and status == "listening" else status
         await self.bus.publish(
             SidecarEvent(
                 type=EVENT_AUDIO_STATUS,
                 session_id=session_id,
                 payload={
-                    "status": status,
+                    "status": reported_status,
                     "memory_free_mb": gpu_status.memory_free_mb,
                     "memory_total_mb": gpu_status.memory_total_mb,
                     "gpu_pressure": gpu_status.gpu_pressure,
@@ -340,6 +355,43 @@ class SessionManager:
         if active.save_transcript and active.recent_segments:
             await self._safe_store_session_memory_summary(session_id, active.recent_segments)
 
+    async def pause_session(self, session_id: str) -> bool:
+        async with self._lock:
+            active = self._active.get(session_id)
+        if active is None or active.audio_source != "fixture":
+            return False
+        active.playback_paused = True
+        if not await active.capture.pause():
+            active.playback_paused = False
+            return False
+        await self._publish_audio_status(
+            session_id,
+            "paused",
+            extra={
+                "playback_paused": True,
+                "raw_audio_retained": False,
+            },
+        )
+        return True
+
+    async def resume_session(self, session_id: str) -> bool:
+        async with self._lock:
+            active = self._active.get(session_id)
+        if active is None or active.audio_source != "fixture" or not active.playback_paused:
+            return False
+        if not await active.capture.resume():
+            return False
+        active.playback_paused = False
+        await self._publish_audio_status(
+            session_id,
+            "listening",
+            extra={
+                "playback_paused": False,
+                "raw_audio_retained": False,
+            },
+        )
+        return True
+
     async def add_library_root(self, path: Path) -> dict:
         root_id = await asyncio.to_thread(self.storage.add_library_root, path.expanduser().resolve())
         return {"id": root_id, "path": str(path.expanduser().resolve())}
@@ -347,7 +399,8 @@ class SessionManager:
     async def search_web_context(self, query: str, *, session_id: str | None = None) -> dict:
         decision = self.web_trigger_detector.decision_for_manual_query(query)
         cleaned_query = decision.sanitized_query
-        enabled = self.settings.web_context_enabled
+        active = self._active.get(session_id or "")
+        enabled = active.web_context_enabled if active is not None else self.settings.web_context_enabled
         configured = bool(self.settings.brave_search_api_key.strip())
         skip_reason = decision.skip_reason
         if not enabled:
@@ -396,11 +449,22 @@ class SessionManager:
     async def ask_sidecar(self, query: str, *, session_id: str | None = None) -> dict:
         cards: list[SidecarCard] = []
         sections: dict[str, list[dict]] = {
+            "company_refs": [],
             "prior_transcript": [],
-            "pas_past_work": [],
+            "technical_references": [],
             "current_public_web": [],
             "suggested_meeting_contribution": [],
         }
+        for mention in self.company_refs.mentions_for_query(query, limit=6):
+            card = company_mention_to_sidecar_card(
+                session_id or "",
+                mention,
+                explicitly_requested=True,
+                priority="normal",
+            )
+            card = replace(card, card_key=f"manual:{card.card_key}")
+            cards.append(card)
+            sections["company_refs"].append(card.to_dict())
         recall_hits = await self.recall.search(query, limit=8, manual=True)
         for hit in recall_hits:
             payload = hit.to_dict()
@@ -408,18 +472,12 @@ class SessionManager:
             card = recall_payload_to_sidecar_card(session_id or "", payload)
             card = replace(card, priority="high", card_key=f"manual:{card.card_key}")
             cards.append(card)
-            sections["prior_transcript"].append(card.to_dict())
-        work_cards = await asyncio.wait_for(
-            asyncio.to_thread(self.work_memory.search, query, 5, manual=True),
-            timeout=self.settings.work_memory_search_timeout_seconds,
-        )
-        for work_card in work_cards:
-            payload = work_card.to_search_hit().to_dict()
-            payload["explicitly_requested"] = True
-            card = recall_payload_to_sidecar_card(session_id or "", payload)
-            card = replace(card, priority="high", card_key=f"manual:{card.card_key}")
-            cards.append(card)
-            sections["pas_past_work"].append(card.to_dict())
+            section_key = (
+                "technical_references"
+                if hit.source_type in {"document_chunk", "file", "local_file"}
+                else "prior_transcript"
+            )
+            sections[section_key].append(card.to_dict())
         web_payload = await self.search_web_context(query, session_id=session_id)
         for raw_card in web_payload.get("cards", []):
             if isinstance(raw_card, dict):
@@ -443,15 +501,16 @@ class SessionManager:
                 )
                 cards.append(card)
                 sections["current_public_web"].append(card.to_dict())
-        if cards:
-            top = cards[0]
+        contribution_candidates = [card for card in cards if card.source_type != "company_ref"]
+        if contribution_candidates:
+            top = contribution_candidates[0]
             contribution = create_sidecar_card(
                 session_id=session_id or "",
                 category="contribution",
                 title="Suggested meeting contribution",
                 body="Use the highest-confidence source above to add a grounded point without overclaiming.",
                 suggested_say=top.suggested_say or f"I found relevant context in {top.title}; it may be worth checking against the current plan.",
-                why_now="BP explicitly asked Sidecar to combine local, work-memory, and public context.",
+                why_now="BP explicitly asked Sidecar to combine local technical references and public context.",
                 priority="high",
                 confidence=min(0.82, max(0.55, top.confidence)),
                 source_segment_ids=top.source_segment_ids,
@@ -1189,6 +1248,8 @@ class SessionManager:
                 for segment in batch.segments:
                     if save_transcript and not self.settings.disable_live_embeddings:
                         await self._safe_embed_transcript(segment)
+                if active is not None and batch.segments:
+                    await self._publish_company_reference_cards(session_id, active)
                 if active is not None and batch.refresh_notes:
                     await self._refresh_notes(session_id)
             finally:
@@ -1204,6 +1265,26 @@ class SessionManager:
             )
         except Exception as exc:
             await self._publish_error(segment.session_id, f"Embedding skipped: {exc}", fatal=False)
+
+    async def _publish_company_reference_cards(self, session_id: str, active: ActiveSession) -> None:
+        if not self.settings.company_refs_enabled:
+            return
+        recent_segments = active.note_segments[-12:] if active.note_segments else active.recent_segments[-12:]
+        if not recent_segments:
+            return
+        try:
+            mentions = self.company_refs.match_segments(recent_segments)
+        except Exception as exc:
+            await self._publish_error(session_id, f"Company reference matching skipped: {exc}", fatal=False)
+            return
+        now = time.time()
+        duplicate_window = self.settings.company_refs_duplicate_window_seconds
+        for mention in mentions:
+            last_seen = active.company_ref_last_seen_by_ref_id.get(mention.ref_id)
+            if last_seen is not None and now - last_seen < duplicate_window:
+                continue
+            active.company_ref_last_seen_by_ref_id[mention.ref_id] = now
+            await self._publish_sidecar_card(company_mention_to_sidecar_card(session_id, mention))
 
     async def _refresh_notes(self, session_id: str) -> None:
         active = self._active.get(session_id)
@@ -1239,34 +1320,7 @@ class SessionManager:
             except Exception as exc:
                 await self._publish_error(session_id, f"Recall search skipped: {exc}", fatal=False)
                 recall_hits = []
-            note_context_hits = [
-                hit for hit in recall_hits if hit.source_type not in {"work_memory", "work_memory_project"}
-            ]
-
-        prefer_reference_context = has_priority_electrical_reference_hits(
-            query,
-            recall_hits,
-            assume_technical=self.settings.assume_technical_conversation,
-        )
-        try:
-            work_cards = []
-            if not prefer_reference_context:
-                work_cards = await asyncio.wait_for(
-                    asyncio.to_thread(self.work_memory.search, query, 3),
-                    timeout=self.settings.work_memory_search_timeout_seconds,
-                )
-            for card in work_cards:
-                if save_transcript:
-                    self.work_memory.record_recall_event(session_id, card, query)
-                hit = card.to_search_hit()
-                payload = hit.to_dict()
-                payload["source_segment_ids"] = source_segment_ids
-                await self.bus.publish(
-                    SidecarEvent(type=EVENT_RECALL_HIT, session_id=session_id, payload=payload)
-                )
-                await self._publish_sidecar_card(self._sidecar_card_from_recall_payload(session_id, payload))
-        except Exception as exc:
-            await self._publish_error(session_id, f"Work memory recall skipped: {exc}", fatal=False)
+            note_context_hits = recall_hits
 
         fast_cards = heuristic_meeting_cards(session_id, recent_segments)
         if active is not None and active.energy_conversation_frame is not None:
@@ -1402,14 +1456,13 @@ class SessionManager:
     def _sidecar_card_from_recall_payload(self, session_id: str, payload: dict) -> SidecarCard:
         return recall_payload_to_sidecar_card(session_id, payload)
 
-    def _web_context_configured(self) -> bool:
-        return self.settings.web_context_enabled and bool(self.settings.brave_search_api_key.strip())
+    def _web_context_configured(self, active: ActiveSession | None = None) -> bool:
+        enabled = active.web_context_enabled if active is not None else self.settings.web_context_enabled
+        return enabled and bool(self.settings.brave_search_api_key.strip())
 
     def _maybe_enqueue_web_context(self, session_id: str, recent_segments: list[TranscriptSegment]) -> None:
-        if not self._web_context_configured():
-            return
         active = self._active.get(session_id)
-        if active is None or active.web_context_queue is None:
+        if active is None or active.web_context_queue is None or not self._web_context_configured(active):
             return
         decision = self.web_trigger_detector.decision_for_segments(recent_segments)
         candidate = decision.candidate
@@ -1444,7 +1497,7 @@ class SessionManager:
                 active = self._active.get(session_id)
                 if active is not None:
                     active.web_context_pending_queries.discard(candidate.normalized_query)
-                if active is None or not self._web_context_configured():
+                if active is None or not self._web_context_configured(active):
                     continue
                 if candidate.normalized_query in active.web_context_seen_queries:
                     continue
@@ -1715,18 +1768,14 @@ def _card_key(prefix: str, category: str, source_type: str, title: str, source_s
 
 
 def _source_title(source_type: str) -> str:
-    if source_type == "work_memory_project":
-        return "Relevant past work"
     if source_type in {"session", "transcript_segment"}:
         return "Relevant prior transcript"
     if source_type in {"file", "document_chunk"}:
-        return "Relevant local note"
+        return "Relevant technical reference"
     return "Relevant memory"
 
 
 def _card_source_type(source_type: str) -> str:
-    if source_type == "work_memory_project":
-        return "work_memory"
     if source_type in {"session", "transcript_segment"}:
         return "saved_transcript"
     if source_type in {"file", "document_chunk"}:

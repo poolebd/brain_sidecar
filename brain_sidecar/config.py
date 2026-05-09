@@ -125,7 +125,6 @@ class Settings:
     partial_min_interval_seconds: float = 2.0
     ollama_chat_timeout_seconds: float = 20.0
     ollama_embed_timeout_seconds: float = 12.0
-    work_memory_search_timeout_seconds: float = 1.5
     sidecar_quality_gate_enabled: bool = True
     sidecar_min_evidence_segments: int = 2
     sidecar_duplicate_window_seconds: float = 120.0
@@ -153,9 +152,11 @@ class Settings:
     recall_max_live_hits: int = 4
     recall_prefer_summaries: bool = True
     assume_technical_conversation: bool = True
-    work_memory_job_history_root: Path = Path("/home/bp/Nextcloud2/Job Hunting")
-    work_memory_past_work_root: Path = Path("/home/bp/Nextcloud2/_library/_shoalstone/past work")
-    work_memory_pas_root: Path | None = None
+    company_refs_enabled: bool = True
+    company_refs_seed_path: Path | None = None
+    company_refs_min_confidence: float = 0.70
+    company_refs_max_live_cards: int = 3
+    company_refs_duplicate_window_seconds: float = 900.0
     test_mode_enabled: bool = False
     test_audio_run_dir: Path = Path("runtime/test-mode-runs")
 
@@ -234,10 +235,6 @@ def load_settings() -> Settings:
             0.5,
             float(_env("BRAIN_SIDECAR_OLLAMA_EMBED_TIMEOUT_SECONDS", "12")),
         ),
-        work_memory_search_timeout_seconds=max(
-            0.1,
-            float(_env("BRAIN_SIDECAR_WORK_MEMORY_SEARCH_TIMEOUT_SECONDS", "1.5")),
-        ),
         sidecar_quality_gate_enabled=_env_bool("BRAIN_SIDECAR_SIDECAR_QUALITY_GATE_ENABLED", True),
         sidecar_min_evidence_segments=max(1, int(_env("BRAIN_SIDECAR_SIDECAR_MIN_EVIDENCE_SEGMENTS", "2"))),
         sidecar_duplicate_window_seconds=max(
@@ -280,19 +277,20 @@ def load_settings() -> Settings:
         recall_max_live_hits=max(0, int(_env("BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS", "4"))),
         recall_prefer_summaries=_env_bool("BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES", True),
         assume_technical_conversation=_env_bool("BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION", True),
-        work_memory_job_history_root=Path(
-            _env("BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT", "/home/bp/Nextcloud2/Job Hunting")
-        ).expanduser(),
-        work_memory_past_work_root=Path(
-            _env(
-                "BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT",
-                "/home/bp/Nextcloud2/_library/_shoalstone/past work",
-            )
-        ).expanduser(),
-        work_memory_pas_root=(
-            Path(os.environ["BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT"]).expanduser()
-            if os.environ.get("BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT")
+        company_refs_enabled=_env_bool("BRAIN_SIDECAR_COMPANY_REFS_ENABLED", True),
+        company_refs_seed_path=(
+            Path(seed_path).expanduser()
+            if (seed_path := _env("BRAIN_SIDECAR_COMPANY_REFS_SEED_PATH", "").strip())
             else None
+        ),
+        company_refs_min_confidence=max(
+            0.0,
+            min(1.0, float(_env("BRAIN_SIDECAR_COMPANY_REFS_MIN_CONFIDENCE", "0.70"))),
+        ),
+        company_refs_max_live_cards=max(0, int(_env("BRAIN_SIDECAR_COMPANY_REFS_MAX_LIVE_CARDS", "3"))),
+        company_refs_duplicate_window_seconds=max(
+            1.0,
+            float(_env("BRAIN_SIDECAR_COMPANY_REFS_DUPLICATE_WINDOW_SECONDS", "900")),
         ),
         test_mode_enabled=_env_bool("BRAIN_SIDECAR_TEST_MODE_ENABLED", False),
         test_audio_run_dir=Path(

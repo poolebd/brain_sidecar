@@ -14,7 +14,7 @@ SIDECAR_CATEGORIES = {
     "clarification",
     "contribution",
     "memory",
-    "work_memory",
+    "reference",
     "web",
     "status",
     "note",
@@ -23,8 +23,8 @@ SIDECAR_PRIORITIES = {"low", "normal", "high"}
 SIDECAR_SOURCE_TYPES = {
     "transcript",
     "saved_transcript",
-    "work_memory",
     "brave_web",
+    "company_ref",
     "local_file",
     "model_fallback",
 }
@@ -36,8 +36,6 @@ def new_id(prefix: str) -> str:
 
 def normalize_sidecar_category(value: object, *, default: str = "note") -> str:
     category = str(value or default).strip().lower().replace("-", "_")
-    if category == "work":
-        category = "work_memory"
     return category if category in SIDECAR_CATEGORIES else default
 
 
@@ -49,7 +47,6 @@ def normalize_sidecar_priority(value: object, *, default: str = "normal") -> str
 def normalize_sidecar_source_type(value: object, *, default: str = "transcript") -> str:
     source_type = str(value or default).strip().lower().replace("-", "_")
     aliases = {
-        "work_memory_project": "work_memory",
         "document_chunk": "local_file",
         "file": "local_file",
         "session": "saved_transcript",

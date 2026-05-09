@@ -22,6 +22,12 @@ class AudioCapture(ABC):
     async def stop(self) -> None:
         raise NotImplementedError
 
+    async def pause(self) -> bool:
+        return False
+
+    async def resume(self) -> bool:
+        return False
+
 
 class FFmpegAudioCapture(AudioCapture):
     def __init__(
@@ -97,6 +103,8 @@ class FixtureWavAudioCapture(AudioCapture):
         self.sample_rate = sample_rate
         self.chunk_ms = chunk_ms
         self._running = True
+        self._resume_event = asyncio.Event()
+        self._resume_event.set()
 
     async def chunks(self) -> AsyncIterator[bytes]:
         frames_per_chunk = int(self.sample_rate * (self.chunk_ms / 1000))
@@ -104,6 +112,9 @@ class FixtureWavAudioCapture(AudioCapture):
             if wav.getnchannels() != 1 or wav.getframerate() != self.sample_rate or wav.getsampwidth() != 2:
                 raise RuntimeError("Fixture WAV must be mono 16 kHz PCM16.")
             while self._running:
+                await self._resume_event.wait()
+                if not self._running:
+                    break
                 data = wav.readframes(frames_per_chunk)
                 if not data:
                     break
@@ -112,3 +123,16 @@ class FixtureWavAudioCapture(AudioCapture):
 
     async def stop(self) -> None:
         self._running = False
+        self._resume_event.set()
+
+    async def pause(self) -> bool:
+        if not self._running:
+            return False
+        self._resume_event.clear()
+        return True
+
+    async def resume(self) -> bool:
+        if not self._running:
+            return False
+        self._resume_event.set()
+        return True

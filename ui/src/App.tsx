@@ -2,17 +2,19 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import {
   buildLiveFieldRows,
+  buildLiveSignals,
   buildConsultingBriefMarkdown,
   buildSidecarDisplayCards,
   buildSidecarQualityMetrics,
   displaySourceLabel,
   getTranscriptDisplayLabel,
   groupMeetingOutputCards,
+  isCompanyReferenceCard,
   isCurrentMeetingCard,
   isManualCard,
-  isWorkMemoryCard,
   normalizeDisplayText,
   qualityLabelForCard,
+  type LiveSignal,
   type LiveFieldRow,
   type MeetingOutputBucket,
   type SidecarDisplayCard,
@@ -24,16 +26,13 @@ import {
 type ThemeName = "neutral" | "midnight" | "canopy" | "ember";
 type AudioSource = "server_device" | "fixture";
 type SessionRetention = "temporary" | "saved";
-type AppPage = "live" | "sessions" | "tools" | "models" | "memory";
+type AppPage = "live" | "sessions" | "tools" | "models" | "references";
 type ToolView = "voice" | "speaker" | "test" | "debug" | "appearance";
-type MemoryView = "overview" | "roots" | "documents" | "work_sources" | "projects" | "search";
+type ReferenceView = "overview" | "roots" | "documents";
 
 type MemorySelection =
   | { view: "roots"; id: string; root: string }
-  | { view: "documents"; id: string; source: LibraryChunkSource }
-  | { view: "work_sources"; id: string; source: WorkMemorySource }
-  | { view: "projects"; id: string; project: WorkMemoryProject }
-  | { view: "search"; id: string; result: WorkMemoryCard };
+  | { view: "documents"; id: string; source: LibraryChunkSource };
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase();
 const ENABLE_FIXTURE_AUDIO = import.meta.env.VITE_ENABLE_FIXTURE_AUDIO === "1";
@@ -47,6 +46,10 @@ const MIC_TUNING_STORAGE_KEY = "brain-sidecar-mic-tuning-v1";
 const MEETING_FOCUS_STORAGE_KEY = "brain-sidecar-meeting-focus-v1";
 const DEFAULT_CONTEXT_CARD_LIMIT = 3;
 const DEFAULT_MEETING_GOAL = "Offload meeting obligations, questions, risks, follow-ups, useful context, and post-call synthesis for BP.";
+const TEST_AUDIO_ACCEPT = "audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg,.mp4,.webm";
+const DEFAULT_TEST_MAX_SECONDS = "60";
+const TEST_PLAYBACK_AUTOSTOP_GRACE_MS = 3500;
+const TEST_PLAYBACK_START_TIMEOUT_MS = 12_000;
 
 const MEETING_REMINDER_OPTIONS = [
   { key: "owners", label: "Owners", reminder: "Track owners and ownership ambiguity." },
@@ -100,6 +103,7 @@ type DeviceListResponse = {
 
 type SpeechSensitivity = "quiet" | "normal" | "noisy";
 type MeetingMode = "quiet" | "balanced" | "assertive";
+type WebContextMode = "default" | "on" | "off";
 type MeetingReminderKey = typeof MEETING_REMINDER_OPTIONS[number]["key"];
 
 type MicTuning = {
@@ -111,6 +115,7 @@ type MicTuning = {
 type MeetingFocusState = {
   goal: string;
   mode: MeetingMode;
+  webContextMode: WebContextMode;
   reminders: Record<MeetingReminderKey, boolean>;
 };
 
@@ -243,61 +248,6 @@ type RecallHit = {
   priority?: string;
 };
 
-type WorkMemoryStatus = {
-  projects: number;
-  evidence: number;
-  sources: number;
-  disabled_sources: number;
-  latest_index_at: number | null;
-  source_groups: Record<string, number>;
-  default_roots: string[];
-  guardrail: string;
-};
-
-type WorkMemoryCard = {
-  project_id: string;
-  title: string;
-  organization: string;
-  date_range: string;
-  score: number;
-  confidence: number;
-  reason: string;
-  lesson: string;
-  citations: string[];
-  text: string;
-};
-
-type WorkMemoryProject = {
-  id: string;
-  project_key: string;
-  title: string;
-  organization: string;
-  date_range: string;
-  role: string;
-  domain: string;
-  summary: string;
-  lessons: string[];
-  triggers: string[];
-  source_group: string;
-  confidence: number;
-  updated_at: number;
-  evidence?: { id: string; source_path: string; snippet: string; artifact_type: string; weight: number }[];
-};
-
-type WorkMemorySource = {
-  id: string;
-  path: string;
-  source_group: string;
-  sensitivity: string;
-  status: string;
-  title: string;
-  content_hash: string;
-  metadata: Record<string, unknown>;
-  disabled: boolean;
-  created_at: number;
-  updated_at: number;
-};
-
 type LibraryChunkSource = {
   source_path: string;
   title: string;
@@ -340,12 +290,23 @@ type TestModeReport = {
   recall_hits: number;
   queue_depth: number;
   dropped_windows: number;
-  work_parallel_rows: number;
+  reference_context_cards: number;
   error_count: number;
   expected_terms: string[];
   matched_expected_terms: string[];
   issues: string[];
   report_path?: string;
+};
+
+type TestModeSnapshot = {
+  transcript: TranscriptLine[];
+  notes: NoteCard[];
+  recall: RecallHit[];
+  sidecarCards: SidecarDisplayCard[];
+  pipeline: PipelineState;
+  errors: string[];
+  status: string;
+  testExpectedTerms: string;
 };
 
 type GpuHealth = {
@@ -576,6 +537,9 @@ export function App() {
       return "live";
     }
     const storedPage = window.localStorage.getItem(APP_PAGE_STORAGE_KEY);
+    if (storedPage === "memory") {
+      return "references";
+    }
     return isAppPage(storedPage) ? storedPage : "live";
   });
   const [theme, setTheme] = useState<ThemeName>(() => {
@@ -631,10 +595,14 @@ export function App() {
   });
   const [fixturePath, setFixturePath] = useState(DEFAULT_FIXTURE_AUDIO);
   const [testSourcePath, setTestSourcePath] = useState(DEFAULT_FIXTURE_AUDIO);
-  const [testMaxSeconds, setTestMaxSeconds] = useState("");
+  const [testMaxSeconds, setTestMaxSeconds] = useState(DEFAULT_TEST_MAX_SECONDS);
   const [testExpectedTerms, setTestExpectedTerms] = useState("");
   const [testPrepared, setTestPrepared] = useState<TestModePrepared | null>(null);
   const [testBusy, setTestBusy] = useState("");
+  const [testPlaybackStartedAtMs, setTestPlaybackStartedAtMs] = useState<number | null>(null);
+  const [testPlaybackBaseElapsedMs, setTestPlaybackBaseElapsedMs] = useState(0);
+  const [testPlaybackNow, setTestPlaybackNow] = useState(Date.now());
+  const [liveTestExpanded, setLiveTestExpanded] = useState(false);
   const [fileUploadBusy, setFileUploadBusy] = useState("");
   const [testReport, setTestReport] = useState<TestModeReport | null>(null);
   const [libraryPath, setLibraryPath] = useState("");
@@ -644,14 +612,8 @@ export function App() {
   const [selectedLibrarySourcePath, setSelectedLibrarySourcePath] = useState<string | null>(null);
   const [memoryQuery, setMemoryQuery] = useState("");
   const [memoryBusy, setMemoryBusy] = useState("");
-  const [workMemoryProjects, setWorkMemoryProjects] = useState<WorkMemoryProject[]>([]);
-  const [workMemorySources, setWorkMemorySources] = useState<WorkMemorySource[]>([]);
-  const [memorySearchResults, setMemorySearchResults] = useState<WorkMemoryCard[]>([]);
   const [manualQuery, setManualQuery] = useState("");
   const [manualQueryBusy, setManualQueryBusy] = useState(false);
-  const [workMemoryStatus, setWorkMemoryStatus] = useState<WorkMemoryStatus | null>(null);
-  const [workMemoryMatches, setWorkMemoryMatches] = useState<WorkMemoryCard[]>([]);
-  const [workMemoryBusy, setWorkMemoryBusy] = useState("");
   const [speakerStatus, setSpeakerStatus] = useState<SpeakerStatus | null>(null);
   const [speakerEnrollment, setSpeakerEnrollment] = useState<SpeakerEnrollment | null>(null);
   const [speakerBusy, setSpeakerBusy] = useState("");
@@ -680,6 +642,24 @@ export function App() {
   const speakerEventSourceRef = useRef<EventSource | null>(null);
   const testStartedAtRef = useRef<string | null>(null);
   const testSessionIdRef = useRef<string | null>(null);
+  const activeTestPreparedRef = useRef<TestModePrepared | null>(null);
+  const testAutoStopTimerRef = useRef<number | null>(null);
+  const testSnapshotRef = useRef<TestModeSnapshot>({
+    transcript: [],
+    notes: [],
+    recall: [],
+    sidecarCards: [],
+    pipeline: {
+      queueDepth: 0,
+      droppedWindows: 0,
+      silentWindows: 0,
+      asrEmptyWindows: 0,
+      finalSegmentsReplaced: 0,
+    },
+    errors: [],
+    status: "idle",
+    testExpectedTerms: "",
+  });
   const eventSeqRef = useRef(0);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const liveEndRef = useRef<HTMLDivElement | null>(null);
@@ -692,7 +672,6 @@ export function App() {
     refreshDevices();
     refreshGpu();
     refreshSpeakerStatus();
-    refreshWorkMemoryStatus();
     refreshSessionCatalog();
     attachSpeakerEvents();
   }, []);
@@ -702,7 +681,7 @@ export function App() {
     if (activePage === "sessions") {
       refreshSessionCatalog();
     }
-    if (activePage === "memory") {
+    if (activePage === "references") {
       refreshMemoryPage();
     }
     if (activePage === "models") {
@@ -736,6 +715,7 @@ export function App() {
     return () => {
       eventSourceRef.current?.close();
       speakerEventSourceRef.current?.close();
+      clearTestAutoStopTimer();
       if (evidenceHighlightTimerRef.current) {
         window.clearTimeout(evidenceHighlightTimerRef.current);
       }
@@ -746,12 +726,34 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    testSnapshotRef.current = {
+      transcript,
+      notes,
+      recall,
+      sidecarCards,
+      pipeline,
+      errors,
+      status,
+      testExpectedTerms,
+    };
+  }, [errors, notes, pipeline, recall, sidecarCards, status, testExpectedTerms, transcript]);
+
+  useEffect(() => {
     if (speakerBusy !== "recording") {
       return;
     }
     const timer = window.setInterval(() => setSpeakerRecordingNow(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [speakerBusy]);
+
+  useEffect(() => {
+    if (testBusy !== "playing" || testPlaybackStartedAtMs === null) {
+      return;
+    }
+    setTestPlaybackNow(Date.now());
+    const timer = window.setInterval(() => setTestPlaybackNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [testBusy, testPlaybackStartedAtMs]);
 
   const gpuLabel = useMemo(() => {
     if (!gpu.nvidia_available) return "GPU not visible";
@@ -776,12 +778,16 @@ export function App() {
     () => usefulContextCards.filter(isCurrentMeetingCard),
     [usefulContextCards],
   );
-  const workMemoryContextCards = useMemo(
-    () => usefulContextCards.filter(isWorkMemoryCard),
-    [usefulContextCards],
+  const addressedToNames = useMemo(
+    () => uniqueAddressedToNames(["Brandon", "Brandon Poole", "BP", gpu.speaker_identity_label]),
+    [gpu.speaker_identity_label],
+  );
+  const liveSignals = useMemo(
+    () => buildLiveSignals(transcriptEvents, currentMeetingCards, { maxSignals: 5, addressedToNames }),
+    [addressedToNames, currentMeetingCards, transcriptEvents],
   );
   const otherContextCards = useMemo(
-    () => usefulContextCards.filter((card) => !isCurrentMeetingCard(card) && !isWorkMemoryCard(card) && !isManualCard(card)),
+    () => usefulContextCards.filter((card) => !isCurrentMeetingCard(card) && !isManualCard(card)),
     [usefulContextCards],
   );
   const manualSourceCards = useMemo(
@@ -817,9 +823,6 @@ export function App() {
   const visibleMeetingCards = showAllContext
     ? currentMeetingCards
     : currentMeetingCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
-  const visibleMemoryCards = showAllContext
-    ? workMemoryContextCards
-    : workMemoryContextCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
   const visibleOtherContextCards = showAllContext
     ? otherContextCards
     : otherContextCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
@@ -847,7 +850,7 @@ export function App() {
   const testModeVisible = Boolean(gpu.test_mode_enabled);
   const webStatusLabel = gpu.web_context_enabled
     ? gpu.web_context_configured ? "web ready" : "web key missing"
-    : "web off";
+    : gpu.web_context_configured ? "web selectable" : "web off";
   const ollamaChatHostLabel = formatOllamaHostLabel(gpu.ollama_chat_host);
   const ollamaEmbedHostLabel = formatOllamaHostLabel(gpu.ollama_embed_host);
   const ollamaChatReachabilityLabel = gpu.ollama_chat_reachable == null
@@ -922,7 +925,7 @@ export function App() {
           ? `Finish and use ${speakerEnrollmentLabel} label`
           : `Record ${Math.max(1, Math.ceil(speakerNeededSpeech / Math.max(1, speakerSampleSeconds)))} more sample${Math.ceil(speakerNeededSpeech / Math.max(1, speakerSampleSeconds)) === 1 ? "" : "s"}`;
   const captureStarting = ["starting", "freeing_gpu", "loading_asr"].includes(status);
-  const captureActive = ["listening", "catching_up"].includes(status);
+  const captureActive = ["listening", "catching_up", "paused"].includes(status);
   const selectedServerMic = devices.find((device) => device.id === selectedDevice) ?? null;
   const serverMicInUse = Boolean(selectedServerMic?.in_use);
   const missingServerDevice = audioSource === "server_device" && (!selectedDevice || (serverMicInUse && !captureActive));
@@ -940,8 +943,10 @@ export function App() {
     ? serverMicStatus
     : `${serverMicStatus} · gain ${micTuning.input_gain_db > 0 ? "+" : ""}${micTuning.input_gain_db.toFixed(0)} dB · ${micTuning.speech_sensitivity}`;
   const activeRetention = activeSessionRetention ?? sessionRetention;
-  const captureModeLabel = audioSource === "fixture"
-    ? "Recording playback"
+  const playbackActive = ["playing", "starting-playback", "pausing", "paused", "resuming"].includes(testBusy);
+  const playbackPaused = testBusy === "paused" || status === "paused";
+  const captureModeLabel = playbackActive || audioSource === "fixture"
+    ? "Recorded audio"
     : "Server mic";
   const sessionRetentionStatus = sessionRetention === "saved" ? "Saved transcript" : "Not saved";
   const activeRetentionStatus = activeRetention === "saved" ? "Saved transcript" : "Not saved";
@@ -975,7 +980,7 @@ export function App() {
     : sessionRetention === "saved"
       ? "Start Recording"
       : "Start Listening";
-  const captureActiveLabel = activeRetention === "saved" ? "Recording" : "Listening";
+  const captureActiveLabel = playbackPaused ? "Paused" : activeRetention === "saved" ? "Recording" : "Listening";
   const captureButtonLabel = status === "freeing_gpu"
     ? "Freeing GPU..."
     : status === "loading_asr" || status === "starting"
@@ -987,8 +992,71 @@ export function App() {
     ? "Starting Playback..."
     : testBusy === "playing"
       ? "Playing..."
+      : testBusy === "paused"
+        ? "Resume"
       : "Start Playback";
   const prepareButtonLabel = testBusy === "preparing" ? "Preparing..." : testPrepared ? "Prepared" : "Prepare Audio";
+  const liveTestUploadDisabled = captureActive || captureStarting || Boolean(fileUploadBusy) || Boolean(testBusy);
+  const liveTestConfigDisabled = liveTestUploadDisabled;
+  const liveTestToggleDisabled = Boolean(fileUploadBusy) || testBusy === "preparing";
+  const liveTestStatus = fileUploadBusy === "test-audio"
+    ? "uploading"
+    : testBusy || (testPrepared ? "ready" : "idle");
+  const liveTestStateLabel = liveTestStatus === "uploading"
+    ? "Uploading"
+    : liveTestStatus === "preparing"
+      ? "Preparing"
+      : liveTestStatus === "starting-playback"
+        ? "Starting"
+        : liveTestStatus === "playing"
+          ? "Playing"
+          : liveTestStatus === "paused"
+            ? "Paused"
+            : liveTestStatus === "pausing"
+              ? "Pausing"
+              : liveTestStatus === "resuming"
+                ? "Resuming"
+                : testReport
+                  ? "Report ready"
+                  : testPrepared
+                    ? "Ready"
+                    : "Idle";
+  const liveTestStateDetail = liveTestStatus === "uploading"
+    ? "Uploading the file to local test storage."
+    : liveTestStatus === "preparing"
+      ? "Converting audio into a local WAV fixture."
+      : liveTestStatus === "starting-playback"
+        ? "Starting the live pipeline with recorded audio."
+        : liveTestStatus === "playing"
+          ? "Feeding recorded audio through the live transcript."
+          : liveTestStatus === "paused"
+            ? "Playback is paused; resume to continue the transcript."
+            : testReport
+              ? "Playback finished and the local report is ready."
+              : testPrepared
+                ? "Audio is prepared. Start playback when ready."
+                : "Upload a common audio file to run it through Live.";
+  const canResetLiveTest = Boolean(testPrepared || testReport || testBusy || fileUploadBusy === "test-audio");
+  const testPlaybackDurationSeconds = testPrepared?.duration_seconds ?? 0;
+  const testPlaybackElapsedSeconds = testBusy === "playing" && testPlaybackStartedAtMs !== null
+    ? Math.min(
+        testPlaybackDurationSeconds || Number.POSITIVE_INFINITY,
+        Math.max(0, (testPlaybackBaseElapsedMs + testPlaybackNow - testPlaybackStartedAtMs) / 1000),
+      )
+    : playbackPaused
+      ? Math.min(testPlaybackDurationSeconds || Number.POSITIVE_INFINITY, Math.max(0, testPlaybackBaseElapsedMs / 1000))
+    : 0;
+  const testPlaybackProgress = testPlaybackDurationSeconds > 0
+    ? Math.max(0, Math.min(100, (testPlaybackElapsedSeconds / testPlaybackDurationSeconds) * 100))
+    : 0;
+  const testPlaybackRemainingSeconds = testPlaybackDurationSeconds > 0
+    ? Math.max(0, testPlaybackDurationSeconds - testPlaybackElapsedSeconds)
+    : 0;
+  const testPlaybackMessage = transcript.length > 0
+    ? `${transcript.length} heard ${pluralize("line", transcript.length)} so far. Cards will land when there is enough evidence.`
+    : pipeline.asrEmptyWindows > 0
+      ? "Audio is moving; ASR has not found speech in the recent windows yet."
+      : "Audio is playing through the live pipeline. Waiting for the first transcript window.";
   const statusTone = status === "listening" || status === "catching_up"
     ? "live"
     : status === "error"
@@ -1080,12 +1148,6 @@ export function App() {
     setSpeakerStatus(await response.json());
   }
 
-  async function refreshWorkMemoryStatus() {
-    const response = await fetch(`${API_BASE}/api/work-memory/status`);
-    if (!response.ok) return;
-    setWorkMemoryStatus(await response.json());
-  }
-
   async function refreshSessionCatalog() {
     setSessionsBusy((current) => current || "loading");
     const query = sessionSearch.trim();
@@ -1141,12 +1203,13 @@ export function App() {
     }
   }
 
-  async function createSession(title?: string) {
+  async function createSession(title?: string, signal?: AbortSignal) {
     const requestedTitle = (title ?? currentSessionTitle.trim()) || null;
     const response = await fetch(`${API_BASE}/api/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: requestedTitle }),
+      signal,
     });
     const payload = await response.json();
     setSessionId(payload.id);
@@ -1156,7 +1219,6 @@ export function App() {
     setTranscript([]);
     setNotes([]);
     setRecall([]);
-    setWorkMemoryMatches([]);
     setErrors([]);
     setPipeline({
       queueDepth: 0,
@@ -1179,7 +1241,13 @@ export function App() {
     followLiveRef.current = true;
     setFollowLive(true);
     attachEvents(payload.id);
-    await refreshSessionCatalog();
+    void refreshSessionCatalog().catch(() => {
+      appendSystemLog({
+        level: "warning",
+        title: "Session list refresh skipped",
+        message: "The meeting session was created, but the saved-session list could not refresh yet.",
+      });
+    });
     return payload.id as string;
   }
 
@@ -1247,8 +1315,6 @@ export function App() {
     await Promise.all([
       refreshLibraryRoots(),
       refreshLibraryChunks(selectedLibrarySourcePath ?? undefined),
-      refreshWorkMemoryCollections(),
-      refreshWorkMemoryStatus(),
     ]);
     setMemoryBusy((current) => current === "loading" ? "" : current);
   }
@@ -1280,42 +1346,15 @@ export function App() {
     setLibraryChunks(payload.chunks ?? []);
   }
 
-  async function refreshWorkMemoryCollections() {
-    const [projectsResponse, sourcesResponse] = await Promise.all([
-      fetch(`${API_BASE}/api/work-memory/projects`),
-      fetch(`${API_BASE}/api/work-memory/sources?limit=120`),
-    ]);
-    if (projectsResponse.ok) {
-      const payload = await projectsResponse.json() as { projects?: WorkMemoryProject[] };
-      setWorkMemoryProjects(payload.projects ?? []);
-    }
-    if (sourcesResponse.ok) {
-      const payload = await sourcesResponse.json() as { sources?: WorkMemorySource[] };
-      setWorkMemorySources(payload.sources ?? []);
-    }
-  }
-
   async function searchMemory() {
     const query = memoryQuery.trim();
     if (!query) {
       await refreshLibraryChunks(selectedLibrarySourcePath ?? undefined);
-      setMemorySearchResults([]);
       return;
     }
     setMemoryBusy("searching");
-    const [workResponse] = await Promise.all([
-      fetch(`${API_BASE}/api/work-memory/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, limit: 8 }),
-      }),
-      refreshLibraryChunks(selectedLibrarySourcePath ?? undefined),
-    ]);
+    await refreshLibraryChunks(selectedLibrarySourcePath ?? undefined);
     setMemoryBusy("");
-    if (workResponse.ok) {
-      const payload = await workResponse.json() as { cards?: WorkMemoryCard[] };
-      setMemorySearchResults(payload.cards ?? []);
-    }
   }
 
   function attachEvents(id: string) {
@@ -1463,19 +1502,7 @@ export function App() {
     }
     if (envelope.type === "recall_hit") {
       const hit = recallHitFromPayload(payload);
-      if (hit.source_type === "work_memory_project") {
-        const card = workCardFromHit(hit);
-        setWorkMemoryMatches((current) => [
-          card,
-            ...current.filter((candidate) => candidate.project_id !== hit.source_id).slice(0, 5),
-        ]);
-        appendSidecarCard(displayCardForWorkCard(card, {
-          origin: hit.source_segment_ids?.length ? "live" : "unpaired",
-          sourceSegmentIds: hit.source_segment_ids,
-        }));
-      } else {
-        appendSidecarCard(displayCardForRecall(hit));
-      }
+      appendSidecarCard(displayCardForRecall(hit));
       setRecall((current) => [hit, ...current.slice(0, 11)]);
     }
     if (envelope.type === "error") {
@@ -1703,12 +1730,11 @@ export function App() {
     });
   }
 
-  function jumpToEvidence(card: SidecarDisplayCard) {
-    const ids = new Set((card.sourceSegmentIds ?? []).filter(Boolean));
+  function focusEvidenceIds(idsInput: string[]) {
+    const ids = new Set(idsInput.filter(Boolean));
     if (ids.size === 0) {
       return;
     }
-    setExpandedContextCards((current) => new Set(current).add(card.id));
     setHighlightedSourceIds(ids);
     if (evidenceHighlightTimerRef.current) {
       window.clearTimeout(evidenceHighlightTimerRef.current);
@@ -1733,18 +1759,62 @@ export function App() {
     setFollowState(false);
   }
 
+  function jumpToEvidence(card: SidecarDisplayCard) {
+    if ((card.sourceSegmentIds ?? []).filter(Boolean).length === 0) {
+      return;
+    }
+    setExpandedContextCards((current) => new Set(current).add(card.id));
+    focusEvidenceIds(card.sourceSegmentIds ?? []);
+  }
+
+  function jumpToLiveSignal(signal: LiveSignal) {
+    focusEvidenceIds([
+      ...signal.sourceEventIds,
+      ...signal.sourceSegmentIds,
+    ]);
+  }
+
   async function start(options: {
     fixtureWav?: string;
     testRun?: TestModePrepared;
     freshSession?: boolean;
+    signal?: AbortSignal;
   } = {}): Promise<boolean> {
-    if (captureStartDisabled) {
+    if (captureStarting || captureActive) {
       return false;
     }
-    const id = options.freshSession ? await createSession() : sessionId ?? (await createSession());
     const selectedSource: AudioSource = options.fixtureWav ? "fixture" : audioSource;
     const fixtureWav = options.fixtureWav
       ?? (selectedSource === "fixture" && fixturePath.trim() ? fixturePath.trim() : null);
+    if (!fixtureWav && missingServerDevice) {
+      return false;
+    }
+    let id: string;
+    try {
+      id = options.freshSession ? await createSession(undefined, options.signal) : sessionId ?? (await createSession(undefined, options.signal));
+    } catch (error) {
+      const aborted = error instanceof DOMException && error.name === "AbortError";
+      const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
+      const message = aborted
+        ? "Recorded audio start timed out before playback began."
+        : `Recorded audio could not create a playback session.${detail}`;
+      setStatus("error");
+      if (options.testRun) {
+        setTestBusy("");
+        activeTestPreparedRef.current = null;
+        setTestPlaybackStartedAtMs(null);
+        clearTestAutoStopTimer();
+      }
+      setActiveSessionRetention(null);
+      setActiveMeetingContract(null);
+      setErrors((current) => [message, ...current.slice(0, 4)]);
+      appendSystemLog({
+        level: "error",
+        title: aborted ? "Recorded audio did not start" : "Start failed",
+        message,
+      });
+      return false;
+    }
     const retentionForStart = sessionRetention;
     const contractForStart = buildMeetingContractPayload(meetingFocus);
     setActiveSessionRetention(retentionForStart);
@@ -1761,23 +1831,52 @@ export function App() {
         retentionForStart === "saved" ? "Transcript text will be saved." : "Transcript text will stay live only."
       }`,
     });
-    const response = await fetch(`${API_BASE}/api/sessions/${id}/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        device_id: null,
-        fixture_wav: fixtureWav,
-        audio_source: fixtureWav ? "fixture" : "server_device",
-        save_transcript: retentionForStart === "saved",
-        mic_tuning: micTuning,
-        meeting_contract: contractForStart,
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}/api/sessions/${id}/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          device_id: null,
+          fixture_wav: fixtureWav,
+          audio_source: fixtureWav ? "fixture" : "server_device",
+          save_transcript: retentionForStart === "saved",
+          mic_tuning: micTuning,
+          meeting_contract: contractForStart,
+          web_context_enabled: webContextEnabledForStart(meetingFocus),
+        }),
+        signal: options.signal,
+      });
+    } catch (error) {
+      const aborted = error instanceof DOMException && error.name === "AbortError";
+      const message = aborted
+        ? "Recorded audio start timed out before playback began."
+        : "Start failed while contacting the local runtime.";
+      setStatus("error");
+      if (options.testRun) {
+        setTestBusy("");
+        activeTestPreparedRef.current = null;
+        setTestPlaybackStartedAtMs(null);
+        clearTestAutoStopTimer();
+      }
+      setActiveSessionRetention(null);
+      setActiveMeetingContract(null);
+      setErrors((current) => [message, ...current.slice(0, 4)]);
+      appendSystemLog({
+        level: "error",
+        title: aborted ? "Recorded audio did not start" : "Start failed",
+        message,
+      });
+      return false;
+    }
     if (!response.ok) {
       const payload = await response.json();
       setStatus("error");
       if (options.testRun) {
         setTestBusy("");
+        activeTestPreparedRef.current = null;
+        setTestPlaybackStartedAtMs(null);
+        clearTestAutoStopTimer();
       }
       setActiveSessionRetention(null);
       setActiveMeetingContract(null);
@@ -1796,50 +1895,80 @@ export function App() {
       setActiveMeetingContract(normalizedContract);
     }
     if (options.testRun) {
-      testStartedAtRef.current = new Date().toISOString();
+      const startedAtMs = Date.now();
+      testStartedAtRef.current = new Date(startedAtMs).toISOString();
       testSessionIdRef.current = id;
+      activeTestPreparedRef.current = options.testRun;
+      setTestPlaybackStartedAtMs(startedAtMs);
+      setTestPlaybackBaseElapsedMs(0);
+      setTestPlaybackNow(startedAtMs);
+      scheduleTestAutoStop(options.testRun, id, options.testRun.duration_seconds * 1000);
       setTestBusy("playing");
     }
     setStatus((current) => current === "error" ? current : "listening");
     return true;
   }
 
-  async function stop() {
-    if (!sessionId) return;
-    const stoppedSessionId = sessionId;
+  async function stop(sessionIdOverride?: string) {
+    const stoppedSessionId = sessionIdOverride ?? sessionId;
+    if (!stoppedSessionId) return;
+    clearTestAutoStopTimer();
+    const snapshot = testSnapshotRef.current;
     const stoppedRetention = activeSessionRetention ?? sessionRetention;
-    await fetch(`${API_BASE}/api/sessions/${sessionId}/stop`, { method: "POST" });
+    await fetch(`${API_BASE}/api/sessions/${stoppedSessionId}/stop`, { method: "POST" });
     setStatus("stopped");
     appendSystemLog({
       level: "status",
       title: "Capture stopped",
       message: stoppedRetention === "saved"
-        ? `${transcript.length} heard lines saved as transcript text.`
-        : `${transcript.length} heard lines shown live; transcript text was not saved.`,
+        ? `${snapshot.transcript.length} heard lines saved as transcript text.`
+        : `${snapshot.transcript.length} heard lines shown live; transcript text was not saved.`,
     });
     setBriefVisible(true);
     setActiveSessionRetention(null);
+    setTestPlaybackStartedAtMs(null);
+    setTestPlaybackBaseElapsedMs(0);
     await refreshSessionCatalog();
-    if (testPrepared && testStartedAtRef.current && testSessionIdRef.current === stoppedSessionId) {
-      await saveTestReport(stoppedSessionId, testPrepared, testStartedAtRef.current);
+    const preparedForReport = activeTestPreparedRef.current ?? testPrepared;
+    if (preparedForReport && testStartedAtRef.current && testSessionIdRef.current === stoppedSessionId) {
+      await saveTestReport(stoppedSessionId, preparedForReport, testStartedAtRef.current);
     }
   }
 
-  async function prepareTestAudio() {
-    if (!testSourcePath.trim()) return;
+  function clearTestAutoStopTimer() {
+    if (testAutoStopTimerRef.current) {
+      window.clearTimeout(testAutoStopTimerRef.current);
+      testAutoStopTimerRef.current = null;
+    }
+  }
+
+  function scheduleTestAutoStop(prepared: TestModePrepared, sessionIdToStop: string, remainingMs?: number) {
+    clearTestAutoStopTimer();
+    const durationMs = Math.max(1000, remainingMs ?? prepared.duration_seconds * 1000);
+    testAutoStopTimerRef.current = window.setTimeout(() => {
+      testAutoStopTimerRef.current = null;
+      void stop(sessionIdToStop);
+    }, durationMs + TEST_PLAYBACK_AUTOSTOP_GRACE_MS);
+  }
+
+  async function prepareTestAudio(sourcePathOverride?: string): Promise<TestModePrepared | null> {
+    const sourcePath = (sourcePathOverride ?? testSourcePath).trim();
+    if (!sourcePath) return null;
     const maxSeconds = testMaxSeconds.trim() ? Number(testMaxSeconds.trim()) : null;
     if (maxSeconds !== null && (!Number.isFinite(maxSeconds) || maxSeconds <= 0)) {
       setErrors((current) => ["Max seconds must be a positive number.", ...current.slice(0, 4)]);
-      return;
+      return null;
     }
     setTestBusy("preparing");
+    setTestPlaybackStartedAtMs(null);
+    setTestPlaybackBaseElapsedMs(0);
     setTestPrepared(null);
     setTestReport(null);
     const response = await fetch(`${API_BASE}/api/test-mode/audio/prepare`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        source_path: testSourcePath.trim(),
+        source_path: sourcePath,
         max_seconds: maxSeconds,
         expected_terms: parseExpectedTerms(testExpectedTerms),
       }),
@@ -1848,7 +1977,7 @@ export function App() {
     setTestBusy("");
     if (!response.ok) {
       setErrors((current) => [payload.detail ?? "Could not prepare recorded audio", ...current.slice(0, 4)]);
-      return;
+      return null;
     }
     const prepared = payload as TestModePrepared;
     setTestPrepared(prepared);
@@ -1859,15 +1988,141 @@ export function App() {
       message: `${prepared.duration_seconds.toFixed(1)}s ready for playback. ${prepared.expected_terms.length} expected terms.`,
       metadata: prepared as unknown as Record<string, unknown>,
     });
+    return prepared;
   }
 
   async function startTestPlayback() {
     if (!testPrepared) return;
+    await startPreparedTestPlayback(testPrepared);
+  }
+
+  async function startPreparedTestPlayback(prepared: TestModePrepared): Promise<void> {
     setTestReport(null);
     setTestBusy("starting-playback");
-    const started = await start({ fixtureWav: testPrepared.fixture_wav, testRun: testPrepared, freshSession: true });
-    if (!started) {
-      setTestBusy("");
+    const controller = new AbortController();
+    const startTimer = window.setTimeout(() => {
+      controller.abort();
+    }, TEST_PLAYBACK_START_TIMEOUT_MS);
+    try {
+      const started = await start({
+        fixtureWav: prepared.fixture_wav,
+        testRun: prepared,
+        freshSession: true,
+        signal: controller.signal,
+      });
+      if (!started) {
+        setTestBusy("");
+      }
+    } finally {
+      window.clearTimeout(startTimer);
+    }
+  }
+
+  function currentTestPlaybackElapsedMs(): number {
+    if (testBusy === "playing" && testPlaybackStartedAtMs !== null) {
+      return Math.max(0, testPlaybackBaseElapsedMs + Date.now() - testPlaybackStartedAtMs);
+    }
+    return Math.max(0, testPlaybackBaseElapsedMs);
+  }
+
+  async function pauseTestPlayback() {
+    if (!sessionId || testBusy !== "playing") {
+      return;
+    }
+    const elapsedMs = currentTestPlaybackElapsedMs();
+    setTestBusy("pausing");
+    clearTestAutoStopTimer();
+    const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/pause`, { method: "POST" });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      setErrors((current) => [payload.detail ?? "Could not pause recorded audio playback.", ...current.slice(0, 4)]);
+      setTestBusy("playing");
+      const preparedForResume = activeTestPreparedRef.current ?? testPrepared;
+      if (preparedForResume) {
+        scheduleTestAutoStop(
+          preparedForResume,
+          sessionId,
+          Math.max(1000, preparedForResume.duration_seconds * 1000 - elapsedMs),
+        );
+      }
+      return;
+    }
+    setTestPlaybackBaseElapsedMs(elapsedMs);
+    setTestPlaybackStartedAtMs(null);
+    setTestBusy("paused");
+    setStatus("paused");
+  }
+
+  async function resumeTestPlayback() {
+    const activePrepared = activeTestPreparedRef.current ?? testPrepared;
+    if (!sessionId || !activePrepared || testBusy !== "paused") {
+      return;
+    }
+    setTestBusy("resuming");
+    const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/resume`, { method: "POST" });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      setErrors((current) => [payload.detail ?? "Could not resume recorded audio playback.", ...current.slice(0, 4)]);
+      setTestBusy("paused");
+      setStatus("paused");
+      return;
+    }
+    const resumedAtMs = Date.now();
+    setTestPlaybackStartedAtMs(resumedAtMs);
+    setTestPlaybackNow(resumedAtMs);
+    scheduleTestAutoStop(
+      activePrepared,
+      sessionId,
+      Math.max(1000, activePrepared.duration_seconds * 1000 - testPlaybackBaseElapsedMs),
+    );
+    setTestBusy("playing");
+    setStatus("listening");
+  }
+
+  async function restartTestPlayback() {
+    const preparedForRestart = activeTestPreparedRef.current ?? testPrepared;
+    const sessionToStop = testSessionIdRef.current ?? sessionId;
+    if (!preparedForRestart) {
+      return;
+    }
+    if (playbackActive && sessionToStop) {
+      await stop(sessionToStop);
+    }
+    await startPreparedTestPlayback(preparedForRestart);
+  }
+
+  async function resetTestPlayback() {
+    const sessionToStop = testSessionIdRef.current ?? sessionId;
+    if (playbackActive && sessionToStop) {
+      await stop(sessionToStop);
+    }
+    clearTestAutoStopTimer();
+    testStartedAtRef.current = null;
+    testSessionIdRef.current = null;
+    activeTestPreparedRef.current = null;
+    setTestBusy("");
+    setTestPrepared(null);
+    setTestReport(null);
+    setTestPlaybackStartedAtMs(null);
+    setTestPlaybackBaseElapsedMs(0);
+    setLiveTestExpanded(false);
+  }
+
+  async function handleLiveTestFilePick(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file || liveTestUploadDisabled) {
+      return;
+    }
+    setLiveTestExpanded(true);
+    const path = await uploadInputFile(file, "test-audio");
+    if (!path) {
+      return;
+    }
+    setTestSourcePath(path);
+    const prepared = await prepareTestAudio(path);
+    if (prepared) {
+      await startPreparedTestPlayback(prepared);
     }
   }
 
@@ -1888,18 +2143,21 @@ export function App() {
     setTestBusy("");
     testStartedAtRef.current = null;
     testSessionIdRef.current = null;
+    activeTestPreparedRef.current = null;
+    setTestPlaybackStartedAtMs(null);
+    clearTestAutoStopTimer();
   }
 
   function buildTestModeReport(sessionIdForReport: string, prepared: TestModePrepared, startedAt: string): TestModeReport {
+    const snapshot = testSnapshotRef.current;
     const expectedTerms = prepared.expected_terms.length > 0
       ? prepared.expected_terms
-      : parseExpectedTerms(testExpectedTerms);
+      : parseExpectedTerms(snapshot.testExpectedTerms);
     const responseText = [
-      transcript.map((line) => line.text).join("\n"),
-      notes.map((note) => `${note.title}\n${note.body}`).join("\n"),
-      recall.map((hit) => hit.text).join("\n"),
-      workMemoryMatches.map((card) => card.text).join("\n"),
-      sidecarCards.map((card) => `${card.title}\n${card.summary}\n${card.whyRelevant ?? ""}`).join("\n"),
+      snapshot.transcript.map((line) => line.text).join("\n"),
+      snapshot.notes.map((note) => `${note.title}\n${note.body}`).join("\n"),
+      snapshot.recall.map((hit) => hit.text).join("\n"),
+      snapshot.sidecarCards.map((card) => `${card.title}\n${card.summary}\n${card.whyRelevant ?? ""}`).join("\n"),
     ].filter(Boolean).join("\n");
     return {
       run_id: prepared.run_id,
@@ -1909,17 +2167,17 @@ export function App() {
       duration_seconds: prepared.duration_seconds,
       started_at: startedAt,
       completed_at: new Date().toISOString(),
-      status,
-      transcript_segments: transcript.length,
-      note_cards: notes.length,
-      recall_hits: recall.length,
-      queue_depth: pipeline.queueDepth,
-      dropped_windows: pipeline.droppedWindows,
-      work_parallel_rows: workMemoryMatches.length,
-      error_count: errors.length,
+      status: snapshot.status,
+      transcript_segments: snapshot.transcript.length,
+      note_cards: snapshot.notes.length,
+      recall_hits: snapshot.recall.length,
+      queue_depth: snapshot.pipeline.queueDepth,
+      dropped_windows: snapshot.pipeline.droppedWindows,
+      reference_context_cards: snapshot.sidecarCards.filter((card) => !isCurrentMeetingCard(card) && !isManualCard(card)).length,
+      error_count: snapshot.errors.length,
       expected_terms: expectedTerms,
       matched_expected_terms: matchExpectedTerms(responseText, expectedTerms),
-      issues: errors.length > 0 ? ["UI surfaced one or more errors during playback."] : [],
+      issues: snapshot.errors.length > 0 ? ["UI surfaced one or more errors during playback."] : [],
     };
   }
 
@@ -1942,7 +2200,6 @@ export function App() {
     });
     setLibraryPath("");
     await refreshLibraryRoots();
-    await refreshWorkMemoryStatus();
   }
 
   async function reindex() {
@@ -2006,29 +2263,6 @@ export function App() {
         metadata: payload as unknown as Record<string, unknown>,
       });
     }
-  }
-
-  async function reindexWorkMemory() {
-    setWorkMemoryBusy("indexing");
-    const response = await fetch(`${API_BASE}/api/work-memory/reindex`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    const payload = await response.json();
-    setWorkMemoryBusy("");
-    if (!response.ok) {
-      setErrors((current) => [payload.detail ?? "Work memory reindex failed", ...current]);
-      return;
-    }
-    await refreshWorkMemoryStatus();
-    setStatus(`work memory indexed ${payload.projects_indexed ?? 0} projects`);
-    appendSystemLog({
-      level: "status",
-      title: "Work memory indexed",
-      message: `${payload.projects_indexed ?? 0} projects refreshed.`,
-      metadata: payload,
-    });
   }
 
   async function testMicrophone() {
@@ -2261,7 +2495,7 @@ export function App() {
             {captureButtonLabel}
           </button>
           {!captureStopDisabled && (
-            <button className="danger" onClick={stop}>
+            <button className="danger" onClick={() => stop()}>
               Stop
             </button>
           )}
@@ -2287,17 +2521,152 @@ export function App() {
               onTitleSave={updateLiveSessionTitle}
               onRetentionChange={setSessionRetention}
             />
-            <div className="cockpit-control-row">
+            <div className={`cockpit-control-row ${testModeVisible ? "with-test" : ""}`}>
               <CaptureControlBar
                 statusSummary={captureStatusSummary}
                 warning={missingServerDevice ? serverMicStatus : ""}
               />
+
+              {testModeVisible && (
+                <section className={`live-test-panel ${liveTestExpanded ? "expanded" : "collapsed"}`} role="region" aria-label="Live audio test">
+                  <div className="live-test-head">
+                    <div>
+                      <span className="label">Test</span>
+                      <strong>Recorded audio</strong>
+                      <small>{liveTestStateDetail}</small>
+                    </div>
+                    <div className="live-test-head-actions">
+                      <span className={`live-test-state ${liveTestStatus}`}>{liveTestStateLabel}</span>
+                      {canResetLiveTest && (
+                        <button
+                          className="secondary compact-button"
+                          type="button"
+                          onClick={() => void resetTestPlayback()}
+                          disabled={fileUploadBusy === "test-audio" || testBusy === "preparing" || testBusy === "starting-playback"}
+                        >
+                          Reset
+                        </button>
+                      )}
+                      <button
+                        className={`secondary compact-button live-test-toggle ${liveTestExpanded ? "active" : ""}`}
+                        type="button"
+                        aria-expanded={liveTestExpanded}
+                        onClick={() => setLiveTestExpanded((current) => !current)}
+                        disabled={liveTestToggleDisabled}
+                      >
+                        {liveTestExpanded ? "Hide" : "Test"}
+                      </button>
+                    </div>
+                  </div>
+                  {liveTestExpanded && (
+                    <div className="live-test-grid">
+                      <FilePickAction
+                        label="Test audio upload"
+                        actionLabel="Upload and play"
+                        accept={TEST_AUDIO_ACCEPT}
+                        path={testSourcePath}
+                        busy={fileUploadBusy === "test-audio"}
+                        disabled={liveTestUploadDisabled}
+                        onChange={handleLiveTestFilePick}
+                      />
+                      <label className="field">
+                        <span>Max seconds</span>
+                        <input
+                          aria-label="Live test max seconds"
+                          inputMode="decimal"
+                          value={testMaxSeconds}
+                          onChange={(event) => setTestMaxSeconds(event.target.value)}
+                          placeholder="optional"
+                          disabled={liveTestConfigDisabled}
+                        />
+                      </label>
+                      <label className="field field-wide">
+                        <span>Expected terms</span>
+                        <input
+                          aria-label="Live test expected terms"
+                          value={testExpectedTerms}
+                          onChange={(event) => setTestExpectedTerms(event.target.value)}
+                          placeholder="optional validation terms"
+                          disabled={liveTestConfigDisabled}
+                        />
+                      </label>
+                    </div>
+                  )}
+                  {testPrepared && (
+                    <div className="test-mode-summary" aria-label="Live prepared audio">
+                      <span><strong>{testPrepared.duration_seconds.toFixed(1)}s</strong> duration</span>
+                      <span><strong>{testPrepared.expected_terms.length}</strong> expected terms</span>
+                      {(testBusy === "playing" || playbackPaused) && (
+                        <span>
+                          <strong>{formatPlaybackClock(testPlaybackElapsedSeconds)}</strong>
+                          {" / "}
+                          {formatPlaybackClock(testPrepared.duration_seconds)}
+                        </span>
+                      )}
+                      <small>{testPrepared.fixture_wav}</small>
+                    </div>
+                  )}
+                  {(testPrepared || playbackActive) && (
+                    <div className="test-playback-controls" role="group" aria-label="Recorded audio controls">
+                      <button
+                        className="primary compact-button"
+                        type="button"
+                        onClick={startTestPlayback}
+                        disabled={!testPrepared || Boolean(testBusy) || captureActive || captureStarting}
+                      >
+                        Start playback
+                      </button>
+                      <button
+                        className="secondary compact-button"
+                        type="button"
+                        onClick={pauseTestPlayback}
+                        disabled={testBusy !== "playing"}
+                      >
+                        Pause
+                      </button>
+                      <button
+                        className="secondary compact-button"
+                        type="button"
+                        onClick={resumeTestPlayback}
+                        disabled={testBusy !== "paused"}
+                      >
+                        Resume
+                      </button>
+                      <button
+                        className="secondary compact-button"
+                        type="button"
+                        onClick={restartTestPlayback}
+                        disabled={!testPrepared || ["preparing", "starting-playback", "pausing", "resuming"].includes(testBusy) || captureStarting}
+                      >
+                        Restart
+                      </button>
+                      <button
+                        className="danger compact-button"
+                        type="button"
+                        onClick={() => stop(testSessionIdRef.current ?? sessionId ?? undefined)}
+                        disabled={!playbackActive || !sessionId}
+                      >
+                        Stop playback
+                      </button>
+                    </div>
+                  )}
+                  {testReport && (
+                    <div className="test-mode-summary" aria-label="Live recorded audio report">
+                      <span><strong>{testReport.transcript_segments}</strong> heard lines</span>
+                      <span><strong>{testReport.matched_expected_terms.length}/{testReport.expected_terms.length}</strong> terms matched</span>
+                      <small>{testReport.report_path ?? testPrepared?.report_path}</small>
+                    </div>
+                  )}
+                </section>
+              )}
 
               <MeetingFocusControl
                 value={meetingFocus}
                 expanded={meetingFocusExpanded}
                 activeContract={activeMeetingContract}
                 captureActive={captureActive || captureStarting}
+                webContextConfigured={gpu.web_context_configured === true}
+                webContextGlobalEnabled={gpu.web_context_enabled === true}
                 onChange={setMeetingFocus}
                 onEdit={() => setMeetingFocusExpanded(true)}
                 onDone={() => setMeetingFocusExpanded(false)}
@@ -2306,8 +2675,8 @@ export function App() {
           </section>
           <div className="field-toolbar live-field-toolbar">
             <div>
-              <p className="label">Live Field</p>
-              <h1>Live field</h1>
+              <p className="label">Live</p>
+              <h1>Conversation</h1>
             </div>
             <div className="field-toolbar-status">
               <span>{transcript.length} heard</span>
@@ -2324,6 +2693,8 @@ export function App() {
             </section>
           )}
 
+          <LiveSignalsPanel signals={liveSignals} onJumpToEvidence={jumpToLiveSignal} />
+
           <div
             id="transcript"
             className="transcript-scroll live-field-scroll scroll"
@@ -2332,6 +2703,16 @@ export function App() {
             ref={transcriptScrollRef}
             onScroll={handleFieldScroll}
           >
+            {(testBusy === "playing" || playbackPaused) && testPrepared && (
+              <LivePlaybackCue
+                durationSeconds={testPrepared.duration_seconds}
+                elapsedSeconds={testPlaybackElapsedSeconds}
+                progress={testPlaybackProgress}
+                remainingSeconds={testPlaybackRemainingSeconds}
+                message={testPlaybackMessage}
+                paused={playbackPaused}
+              />
+            )}
             <LiveFieldPane
               rows={liveFieldRows}
               expandedCards={expandedContextCards}
@@ -2400,13 +2781,11 @@ export function App() {
             loading={manualQueryBusy}
             emptyTitle={contextEmptyTitle}
             emptyBody={contextEmptyBody}
-            workMemoryCards={visibleMemoryCards}
             contextCards={visibleOtherContextCards}
             manualCards={manualSourceCards}
             showAll={showAllContext}
             canShowMore={
               currentMeetingCards.length > DEFAULT_CONTEXT_CARD_LIMIT
-              || workMemoryContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT
               || otherContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT
             }
             onToggleShowAll={() => setShowAllContext((value) => !value)}
@@ -2422,7 +2801,7 @@ export function App() {
             <ConsultingBriefPane
               markdown={consultingBriefMarkdown}
               currentCount={currentMeetingCards.length}
-              memoryCount={workMemoryContextCards.length}
+              contextCount={otherContextCards.length}
               onCopy={copyConsultingBrief}
             />
           )}
@@ -2477,23 +2856,20 @@ export function App() {
         />
       )}
 
-      {activePage === "memory" && (
-        <MemoryPage
-          workMemoryStatus={workMemoryStatus}
+      {activePage === "references" && (
+        <ReferencesPage
           libraryPath={libraryPath}
           libraryRoots={libraryRoots}
           librarySources={librarySources}
           libraryChunks={libraryChunks}
           selectedLibrarySourcePath={selectedLibrarySourcePath}
           memoryQuery={memoryQuery}
-          memoryBusy={memoryBusy || workMemoryBusy}
-          workMemoryProjects={workMemoryProjects}
-          workMemorySources={workMemorySources}
-          memorySearchResults={memorySearchResults}
+          memoryBusy={memoryBusy}
+          webContextEnabled={gpu.web_context_enabled === true}
+          webContextConfigured={gpu.web_context_configured === true}
           onLibraryPathChange={setLibraryPath}
           onAddLibraryRoot={addLibraryRoot}
           onReindexLibrary={reindex}
-          onReindexWorkMemory={reindexWorkMemory}
           onSelectLibrarySource={(sourcePath) => {
             setSelectedLibrarySourcePath(sourcePath);
             refreshLibraryChunks(sourcePath);
@@ -2696,7 +3072,7 @@ export function App() {
                     <FilePickAction
                       label="Browse source audio"
                       actionLabel="Upload audio"
-                      accept="audio/*,.wav,.mp3,.m4a,.mp4,.aac,.flac,.ogg,.webm"
+                      accept={TEST_AUDIO_ACCEPT}
                       path={testSourcePath}
                       busy={fileUploadBusy === "test-audio"}
                       disabled={Boolean(fileUploadBusy) || testBusy === "preparing" || captureActive || captureStarting}
@@ -2725,7 +3101,7 @@ export function App() {
                 </label>
               </div>
               <div className="button-row">
-                <button className="secondary" onClick={prepareTestAudio} disabled={testBusy === "preparing" || captureActive || captureStarting}>
+                <button className="secondary" onClick={() => prepareTestAudio()} disabled={testBusy === "preparing" || captureActive || captureStarting}>
                   {prepareButtonLabel}
                 </button>
                 <button className="primary subtle" onClick={startTestPlayback} disabled={!testPrepared || Boolean(testBusy) || captureActive || captureStarting}>
@@ -2736,15 +3112,16 @@ export function App() {
                 <div className="test-mode-summary" aria-label="Prepared audio">
                   <span><strong>{testPrepared.duration_seconds.toFixed(1)}s</strong> duration</span>
                   <span><strong>{testPrepared.expected_terms.length}</strong> expected terms</span>
+                  {testBusy === "playing" && <span>Auto-stops at end</span>}
                   <small>{testPrepared.fixture_wav}</small>
                 </div>
               )}
-	              {testReport && (
-	                <div className="test-mode-summary" aria-label="Recorded audio report">
-	                  <span><strong>{testReport.transcript_segments}</strong> heard lines</span>
-	                  <span><strong>{testReport.matched_expected_terms.length}/{testReport.expected_terms.length}</strong> terms matched</span>
-	                  <small>{testReport.report_path ?? testPrepared?.report_path}</small>
-	                </div>
+              {testReport && (
+                <div className="test-mode-summary" aria-label="Recorded audio report">
+                  <span><strong>{testReport.transcript_segments}</strong> heard lines</span>
+                  <span><strong>{testReport.matched_expected_terms.length}/{testReport.expected_terms.length}</strong> terms matched</span>
+                  <small>{testReport.report_path ?? testPrepared?.report_path}</small>
+                </div>
               )}
             </section>
           )}
@@ -3066,7 +3443,7 @@ function Sidebar({
     { page: "sessions", label: "Sessions", short: "Log" },
     { page: "tools", label: "Tools", short: "Tool" },
     { page: "models", label: "Models", short: "AI" },
-    { page: "memory", label: "Memory", short: "Mem" },
+    { page: "references", label: "References", short: "Refs" },
   ];
   return (
     <aside className="sidebar" aria-label="Primary navigation">
@@ -3701,8 +4078,7 @@ function FilePickAction({
   );
 }
 
-function MemoryPage({
-  workMemoryStatus,
+function ReferencesPage({
   libraryPath,
   libraryRoots,
   librarySources,
@@ -3710,19 +4086,16 @@ function MemoryPage({
   selectedLibrarySourcePath,
   memoryQuery,
   memoryBusy,
-  workMemoryProjects,
-  workMemorySources,
-  memorySearchResults,
+  webContextEnabled,
+  webContextConfigured,
   onLibraryPathChange,
   onAddLibraryRoot,
   onReindexLibrary,
-  onReindexWorkMemory,
   onSelectLibrarySource,
   onMemoryQueryChange,
   onSearch,
   onRefresh,
 }: {
-  workMemoryStatus: WorkMemoryStatus | null;
   libraryPath: string;
   libraryRoots: string[];
   librarySources: LibraryChunkSource[];
@@ -3730,19 +4103,17 @@ function MemoryPage({
   selectedLibrarySourcePath: string | null;
   memoryQuery: string;
   memoryBusy: string;
-  workMemoryProjects: WorkMemoryProject[];
-  workMemorySources: WorkMemorySource[];
-  memorySearchResults: WorkMemoryCard[];
+  webContextEnabled: boolean;
+  webContextConfigured: boolean;
   onLibraryPathChange: (value: string) => void;
   onAddLibraryRoot: () => void;
   onReindexLibrary: () => void;
-  onReindexWorkMemory: () => void;
   onSelectLibrarySource: (sourcePath: string) => void;
   onMemoryQueryChange: (value: string) => void;
   onSearch: () => void;
   onRefresh: () => void;
 }) {
-  const [memoryView, setMemoryView] = useState<MemoryView>("overview");
+  const [memoryView, setMemoryView] = useState<ReferenceView>("overview");
   const [selectedMemoryItem, setSelectedMemoryItem] = useState<MemorySelection | null>(null);
   const cleanQuery = memoryQuery.trim().toLowerCase();
   const visibleRoots = cleanQuery
@@ -3754,69 +4125,27 @@ function MemoryPage({
       || source.source_path.toLowerCase().includes(cleanQuery)
     ))
     : librarySources;
-  const visibleWorkSources = cleanQuery
-    ? workMemorySources.filter((source) => (
-      source.title.toLowerCase().includes(cleanQuery)
-      || source.path.toLowerCase().includes(cleanQuery)
-      || source.source_group.toLowerCase().includes(cleanQuery)
-    ))
-    : workMemorySources;
-  const visibleProjects = cleanQuery
-    ? workMemoryProjects.filter((project) => (
-      project.title.toLowerCase().includes(cleanQuery)
-      || project.organization.toLowerCase().includes(cleanQuery)
-      || project.summary.toLowerCase().includes(cleanQuery)
-    ))
-    : workMemoryProjects;
   const selectedDocument = selectedMemoryItem?.view === "documents"
     ? selectedMemoryItem.source
     : librarySources.find((source) => source.source_path === selectedLibrarySourcePath) ?? null;
-  const selectedWorkSource = selectedMemoryItem?.view === "work_sources" ? selectedMemoryItem.source : null;
-  const selectedProject = selectedMemoryItem?.view === "projects" ? selectedMemoryItem.project : null;
-  const selectedSearchResult = selectedMemoryItem?.view === "search" ? selectedMemoryItem.result : null;
   const selectedRoot = selectedMemoryItem?.view === "roots" ? selectedMemoryItem.root : null;
-  const searchReady = memoryQuery.trim().length > 0 || memorySearchResults.length > 0;
+  const searchReady = memoryQuery.trim().length > 0;
   const selectedRootIndexedCount = selectedRoot
     ? librarySources.filter((source) => source.source_path.startsWith(selectedRoot)).length
     : 0;
-  const baseCategoryItems: { view: MemoryView; label: string; count: number; disabled?: boolean }[] = [
-    { view: "overview", label: "Overview", count: (workMemoryStatus?.sources ?? 0) + librarySources.length },
+  const categoryItems: { view: ReferenceView; label: string; count: number; disabled?: boolean }[] = [
+    { view: "overview", label: "Overview", count: librarySources.length },
     { view: "roots", label: "Library Roots", count: libraryRoots.length },
     { view: "documents", label: "Documents", count: librarySources.length },
-    { view: "work_sources", label: "Work Sources", count: workMemorySources.length },
-    { view: "projects", label: "Projects", count: workMemoryProjects.length },
   ];
-  const categoryItems = searchReady
-    ? [...baseCategoryItems, { view: "search" as MemoryView, label: "Search Results", count: memorySearchResults.length }]
-    : baseCategoryItems;
   const activeCategoryLabel = categoryItems.find((item) => item.view === memoryView)?.label ?? "Overview";
   const memoryPaneTitle = memoryView === "overview"
     ? "Index overview"
     : memoryView === "roots"
       ? "Library roots"
-      : memoryView === "documents"
-        ? "Documents"
-        : memoryView === "work_sources"
-          ? "Work sources"
-          : memoryView === "projects"
-            ? "Projects"
-            : "Search results";
+      : "Documents";
 
-  useEffect(() => {
-    if (memoryView !== "search" || memorySearchResults.length === 0) {
-      return;
-    }
-    if (selectedMemoryItem?.view === "search" && memorySearchResults.includes(selectedMemoryItem.result)) {
-      return;
-    }
-    setSelectedMemoryItem({
-      view: "search",
-      id: `search:${memorySearchResults[0].project_id}:${memorySearchResults[0].title}`,
-      result: memorySearchResults[0],
-    });
-  }, [memorySearchResults, memoryView, selectedMemoryItem]);
-
-  function activateMemoryView(view: MemoryView) {
+  function activateMemoryView(view: ReferenceView) {
     setMemoryView(view);
     if (view === "overview") {
       setSelectedMemoryItem(null);
@@ -3831,22 +4160,6 @@ function MemoryPage({
       onSelectLibrarySource(visibleDocuments[0].source_path);
       return;
     }
-    if (view === "work_sources" && visibleWorkSources[0]) {
-      setSelectedMemoryItem({ view, id: visibleWorkSources[0].id, source: visibleWorkSources[0] });
-      return;
-    }
-    if (view === "projects" && visibleProjects[0]) {
-      setSelectedMemoryItem({ view, id: visibleProjects[0].id, project: visibleProjects[0] });
-      return;
-    }
-    if (view === "search" && memorySearchResults[0]) {
-      setSelectedMemoryItem({
-        view,
-        id: `search:${memorySearchResults[0].project_id}:${memorySearchResults[0].title}`,
-        result: memorySearchResults[0],
-      });
-      return;
-    }
     setSelectedMemoryItem(null);
   }
 
@@ -3854,7 +4167,6 @@ function MemoryPage({
     if (!memoryQuery.trim()) {
       return;
     }
-    setMemoryView("search");
     onSearch();
   }
 
@@ -3865,20 +4177,20 @@ function MemoryPage({
   }
 
   return (
-    <main className="page memory-page" aria-label="Memory">
+    <main className="page memory-page" aria-label="References">
       <header className="page-header">
         <div>
           <p className="label">Index</p>
-          <h1>Memory</h1>
-          <span>{workMemoryStatus ? `${workMemoryStatus.projects} projects / ${workMemoryStatus.sources} sources` : "Index status loading"}</span>
+          <h1>References</h1>
+          <span>{librarySources.length} indexed documents / {libraryRoots.length} roots</span>
         </div>
         <div className="page-header-actions">
-          {memoryBusy === "loading" && <span className="inline-loading">Refreshing memory</span>}
+          {memoryBusy === "loading" && <span className="inline-loading">Refreshing references</span>}
           <button className="secondary" type="button" onClick={onRefresh} disabled={memoryBusy === "loading"}>Refresh</button>
         </div>
       </header>
       <div className="memory-explorer explorer-shell">
-        <aside className="memory-tree explorer-nav scroll" aria-label="Memory categories">
+        <aside className="memory-tree explorer-nav scroll" aria-label="Reference categories">
           <form
             className="memory-search-form"
             role="search"
@@ -3888,16 +4200,16 @@ function MemoryPage({
             }}
           >
             <label className="field field-wide">
-              <span>Search memory</span>
+              <span>Search references</span>
               <input
-                aria-label="Search memory"
+                aria-label="Search references"
                 value={memoryQuery}
                 onChange={(event) => onMemoryQueryChange(event.target.value)}
-                placeholder="project, document, phrase"
+                placeholder="document, standard, phrase"
               />
             </label>
-            <p className="memory-search-note" aria-label="Memory search behavior">
-              Type filters the open category. Search runs source-grounded work-memory lookup.
+            <p className="memory-search-note" aria-label="Reference search behavior">
+              Type filters the open category. Search loads matching EE reference chunks.
             </p>
             <div className="memory-search-actions">
               <button className="secondary" type="submit" disabled={!memoryQuery.trim() || memoryBusy === "searching"}>
@@ -3910,7 +4222,7 @@ function MemoryPage({
               )}
             </div>
           </form>
-          <nav className="memory-category-nav" aria-label="Memory category navigation">
+          <nav className="memory-category-nav" aria-label="Reference category navigation">
             {categoryItems.map((item) => (
               <button
                 key={item.view}
@@ -3927,38 +4239,32 @@ function MemoryPage({
           </nav>
         </aside>
 
-        <section className="memory-list-pane scroll" aria-label="Memory items">
+        <section className="memory-list-pane scroll" aria-label="Reference items">
           <div className="memory-pane-head">
             <div>
               <p className="label">{activeCategoryLabel}</p>
               <h2>{memoryPaneTitle}</h2>
             </div>
             <div className="button-row">
-              {(memoryView === "overview" || memoryView === "roots" || memoryView === "documents") && (
-                <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex Library</button>
-              )}
-              {(memoryView === "overview" || memoryView === "work_sources" || memoryView === "projects") && (
-                <button className="secondary" type="button" onClick={onReindexWorkMemory}>Reindex Work</button>
-              )}
+              <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex References</button>
             </div>
           </div>
 
           {memoryView === "overview" && (
             <>
-              <div className="memory-overview" aria-label="Work memory index summary">
-                <span><strong>{workMemoryStatus?.projects ?? 0}</strong> projects</span>
-                <span><strong>{workMemoryStatus?.sources ?? 0}</strong> work sources</span>
-                <span><strong>{workMemoryStatus?.evidence ?? 0}</strong> citations</span>
+              <div className="memory-overview" aria-label="Reference index summary">
                 <span><strong>{libraryRoots.length}</strong> library roots</span>
                 <span><strong>{librarySources.length}</strong> documents</span>
-                <span><strong>{workMemoryStatus?.disabled_sources ?? 0}</strong> guarded</span>
+                <span><strong>{librarySources.reduce((total, source) => total + source.chunk_count, 0)}</strong> chunks</span>
+                <span><strong>{webContextEnabled ? "on" : "off"}</strong> Brave</span>
+                <span><strong>{webContextConfigured ? "ready" : "missing"}</strong> web key</span>
               </div>
-              <div className="memory-short-list" aria-label="Recent sources">
+              <div className="memory-short-list" aria-label="Recent references">
                 <div className="section-heading-row">
-                  <h3>Recent sources</h3>
-                  <span>{Math.min(4, librarySources.length + workMemorySources.length)} shown</span>
+                  <h3>Recent references</h3>
+                  <span>{Math.min(4, librarySources.length)} shown</span>
                 </div>
-                {[...librarySources.slice(0, 2).map((source) => ({
+                {librarySources.slice(0, 4).map((source) => ({
                   id: `doc:${source.source_path}`,
                   title: source.title,
                   meta: `${source.chunk_count} chunks · ${PathHint(source.source_path)}`,
@@ -3967,15 +4273,7 @@ function MemoryPage({
                     setSelectedMemoryItem({ view: "documents", id: source.source_path, source });
                     onSelectLibrarySource(source.source_path);
                   },
-                })), ...workMemorySources.slice(0, 2).map((source) => ({
-                  id: `work:${source.id}`,
-                  title: source.title,
-                  meta: `${source.source_group} · ${source.status}`,
-                  onClick: () => {
-                    setMemoryView("work_sources");
-                    setSelectedMemoryItem({ view: "work_sources", id: source.id, source });
-                  },
-                }))].map((item) => (
+                })).map((item) => (
                   <button
                     key={item.id}
                     type="button"
@@ -3986,6 +4284,12 @@ function MemoryPage({
                     <span>{item.meta}</span>
                   </button>
                 ))}
+                {librarySources.length === 0 && (
+                  <div className="empty-panel">
+                    <h2>No indexed references yet</h2>
+                    <p>Add the EE reference root or reindex the configured roots.</p>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -4048,89 +4352,20 @@ function MemoryPage({
             ))
           )}
 
-          {memoryView === "work_sources" && (
-            visibleWorkSources.length === 0 ? (
-              <div className="empty-panel">
-                <h2>No work sources found</h2>
-                <p>Work-memory source rows will appear here after the work index refreshes.</p>
-              </div>
-            ) : visibleWorkSources.map((source) => (
-              <button
-                key={source.id}
-                type="button"
-                className={`memory-item-row ${selectedWorkSource?.id === source.id ? "active" : ""} ${source.disabled ? "muted" : ""}`}
-                onClick={() => setSelectedMemoryItem({ view: "work_sources", id: source.id, source })}
-              >
-                <strong>{source.title}</strong>
-                <span>{source.source_group} · {source.status} · {source.sensitivity}</span>
-                <small>{source.disabled ? "guarded source" : "available source"} · {PathHint(source.path)}</small>
-              </button>
-            ))
-          )}
-
-          {memoryView === "projects" && (
-            visibleProjects.length === 0 ? (
-              <div className="empty-panel">
-                <h2>No projects found</h2>
-                <p>Project memory appears after the work-memory index has usable project evidence.</p>
-              </div>
-            ) : (
-              <div className="memory-short-list compact-project-list">
-                {visibleProjects.map((project) => (
-                  <button
-                    key={project.id}
-                    type="button"
-                    className={`memory-item-row ${selectedProject?.id === project.id ? "active" : ""}`}
-                    onClick={() => setSelectedMemoryItem({ view: "projects", id: project.id, project })}
-                  >
-                    <strong>{project.title}</strong>
-                    <span>{project.organization} · {project.date_range}</span>
-                    <small>{project.source_group} · {project.domain} · {Math.round(project.confidence * 100)}% confidence</small>
-                  </button>
-                ))}
-              </div>
-            )
-          )}
-
-          {memoryView === "search" && (
-            memorySearchResults.length === 0 ? (
-              <div className="empty-panel">
-                <h2>{memoryBusy === "searching" ? "Searching memory" : "No search results yet"}</h2>
-                <p>{memoryQuery.trim() ? `No source-grounded results for "${memoryQuery.trim()}".` : "Run a search to gather matching work-memory cards without mixing them into documents or projects."}</p>
-              </div>
-            ) : (
-              <>
-                <div className="search-result-head">
-                  <span>Results for "{memoryQuery.trim()}"</span>
-                  <button className="secondary" type="button" onClick={clearMemorySearch}>Clear search</button>
-                </div>
-                {memorySearchResults.map((result, index) => (
-                  <button
-                    key={`${result.project_id}-${result.title}-${index}`}
-                    type="button"
-                    className={`memory-item-row ${selectedSearchResult === result ? "active" : ""}`}
-                    onClick={() => setSelectedMemoryItem({ view: "search", id: `search:${result.project_id}:${index}`, result })}
-                  >
-                    <strong>{result.title}</strong>
-                    <span>{result.organization} · {result.date_range}</span>
-                    <small>{result.text}</small>
-                    <small>{Math.round(result.score * 100)}% match · {result.reason || "source evidence"}</small>
-                  </button>
-                ))}
-              </>
-            )
-          )}
         </section>
 
-        <section className="memory-detail explorer-detail scroll" aria-label="Memory detail">
+        <section className="memory-detail explorer-detail scroll" aria-label="Reference detail">
           {memoryView === "overview" && (
             <div className="memory-detail-stack">
               <div className="empty-panel">
-                <h2>Memory index status</h2>
-                <p>{workMemoryStatus?.guardrail ?? "Work-memory guardrail status is loading."}</p>
+                <h2>Reference index status</h2>
+                <p>Local EE references ground technical analysis. Brave adds sanitized, live-only public context when enabled and configured.</p>
               </div>
               <div className="chip-row">
-                {(workMemoryStatus?.default_roots ?? []).slice(0, 6).map((root) => <span key={root} className="chip">{PathLabel(root)}</span>)}
+                {libraryRoots.slice(0, 6).map((root) => <span key={root} className="chip">{PathLabel(root)}</span>)}
+                <span className={webContextEnabled && webContextConfigured ? "chip" : "chip warning"}>
+                  Brave {webContextEnabled ? webContextConfigured ? "ready" : "key missing" : "off"}
+                </span>
               </div>
             </div>
           )}
@@ -4139,12 +4374,9 @@ function MemoryPage({
             <div className="empty-panel">
               <h2>
                 {memoryView === "roots" ? "No root selected"
-                  : memoryView === "documents" ? "No document selected"
-                    : memoryView === "work_sources" ? "No work source selected"
-                      : memoryView === "projects" ? "No project selected"
-                        : "No search result selected"}
+                  : "No document selected"}
               </h2>
-              <p>Select a row to inspect metadata, full paths, chunks, snippets, and contextual actions for this category.</p>
+              <p>Select a row to inspect paths, chunks, and indexing context for this category.</p>
             </div>
           )}
 
@@ -4157,7 +4389,7 @@ function MemoryPage({
                 <span className="chip">{selectedRootIndexedCount} indexed documents</span>
               </div>
               <div className="button-row">
-                <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex Library</button>
+                <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex References</button>
               </div>
             </div>
           )}
@@ -4183,70 +4415,6 @@ function MemoryPage({
             </div>
           )}
 
-          {selectedWorkSource && (
-            <div className="memory-detail-stack">
-              <p className="label">Work Source</p>
-              <h2>{selectedWorkSource.title}</h2>
-              <code>{selectedWorkSource.path}</code>
-              <div className="chip-row">
-                <span className="chip">{selectedWorkSource.source_group}</span>
-                <span className="chip">{selectedWorkSource.status}</span>
-                <span className={selectedWorkSource.disabled ? "chip warning" : "chip"}>{selectedWorkSource.disabled ? "guarded" : selectedWorkSource.sensitivity}</span>
-              </div>
-              <details className="metadata-details">
-                <summary>Metadata</summary>
-                <pre>{formatDebugValue(selectedWorkSource.metadata)}</pre>
-              </details>
-            </div>
-          )}
-
-          {selectedProject && (
-            <div className="memory-detail-stack">
-              <p className="label">Project</p>
-              <h2>{selectedProject.title}</h2>
-              <span>{selectedProject.organization} · {selectedProject.role} · {selectedProject.date_range}</span>
-              <p>{selectedProject.summary}</p>
-              <div className="chip-row">
-                <span className="chip">{selectedProject.domain}</span>
-                <span className="chip">{selectedProject.source_group}</span>
-                <span className="chip">{Math.round(selectedProject.confidence * 100)}%</span>
-              </div>
-              {(selectedProject.lessons ?? []).length > 0 && (
-                <div className="memory-evidence-list" aria-label="Project lessons">
-                  {selectedProject.lessons.map((lesson) => <p key={lesson}>{lesson}</p>)}
-                </div>
-              )}
-              {(selectedProject.evidence ?? []).length > 0 && (
-                <div className="memory-evidence-list" aria-label="Project evidence">
-                  {selectedProject.evidence!.map((item) => (
-                    <article key={item.id}>
-                      <strong>{PathLabel(item.source_path)}</strong>
-                      <p>{item.snippet}</p>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {selectedSearchResult && (
-            <div className="memory-detail-stack">
-              <p className="label">Search Result</p>
-              <h2>{selectedSearchResult.title}</h2>
-              <span>{selectedSearchResult.organization} · {selectedSearchResult.date_range}</span>
-              <p>{selectedSearchResult.text}</p>
-              <blockquote>{selectedSearchResult.lesson}</blockquote>
-              <div className="chip-row">
-                <span className="chip">{Math.round(selectedSearchResult.score * 100)}% match</span>
-                <span className="chip">{Math.round(selectedSearchResult.confidence * 100)}% confidence</span>
-              </div>
-              <div className="memory-evidence-list" aria-label="Search citations">
-                {selectedSearchResult.citations.length === 0 ? <p>No citations attached.</p> : selectedSearchResult.citations.map((citation) => (
-                  <code key={citation}>{citation}</code>
-                ))}
-              </div>
-            </div>
-          )}
         </section>
       </div>
     </main>
@@ -4285,6 +4453,8 @@ function MeetingFocusControl({
   expanded,
   activeContract,
   captureActive,
+  webContextConfigured,
+  webContextGlobalEnabled,
   onChange,
   onEdit,
   onDone,
@@ -4293,6 +4463,8 @@ function MeetingFocusControl({
   expanded: boolean;
   activeContract: MeetingContractPayload | null;
   captureActive: boolean;
+  webContextConfigured: boolean;
+  webContextGlobalEnabled: boolean;
   onChange: (value: MeetingFocusState) => void;
   onEdit: () => void;
   onDone: () => void;
@@ -4310,6 +4482,7 @@ function MeetingFocusControl({
         <div className="meeting-focus-summary" aria-label="Meeting Focus summary">
           <span>Focus</span>
           <strong>{capitalize(summaryContract.mode)}</strong>
+          <span>{webContextSummary(value.webContextMode, webContextConfigured, webContextGlobalEnabled)}</span>
           <span>{reminderSummary}</span>
           <p>{goalSummary}</p>
         </div>
@@ -4329,7 +4502,13 @@ function MeetingFocusControl({
       )}
 
       {expanded && !captureActive && (
-        <MeetingFocusEditor value={value} onChange={onChange} onDone={onDone} />
+        <MeetingFocusEditor
+          value={value}
+          webContextConfigured={webContextConfigured}
+          webContextGlobalEnabled={webContextGlobalEnabled}
+          onChange={onChange}
+          onDone={onDone}
+        />
       )}
     </section>
   );
@@ -4337,13 +4516,22 @@ function MeetingFocusControl({
 
 function MeetingFocusEditor({
   value,
+  webContextConfigured,
+  webContextGlobalEnabled,
   onChange,
   onDone,
 }: {
   value: MeetingFocusState;
+  webContextConfigured: boolean;
+  webContextGlobalEnabled: boolean;
   onChange: (value: MeetingFocusState) => void;
   onDone: () => void;
 }) {
+  const webModes: { mode: WebContextMode; label: string }[] = [
+    { mode: "default", label: webContextGlobalEnabled ? "Default on" : "Default off" },
+    { mode: "on", label: "On" },
+    { mode: "off", label: "Off" },
+  ];
   return (
     <div className="meeting-focus-editor">
       <label className="field meeting-focus-goal">
@@ -4368,6 +4556,23 @@ function MeetingFocusEditor({
               <span>{capitalize(mode)}</span>
             </button>
           ))}
+        </div>
+        <div className="meeting-web-context-control">
+          <span>Brave web</span>
+          <div className="mode-control compact" role="group" aria-label="Brave web context">
+            {webModes.map(({ mode, label }) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={value.webContextMode === mode}
+                className={value.webContextMode === mode ? "active" : ""}
+                disabled={mode === "on" && !webContextConfigured}
+                onClick={() => onChange({ ...value, webContextMode: mode })}
+              >
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
         </div>
         <div className="meeting-reminder-grid" aria-label="Meeting focus reminders">
           {MEETING_REMINDER_OPTIONS.map((option) => (
@@ -4431,6 +4636,99 @@ function EnergyLensBadge({ frame }: { frame: EnergyFrame | null }) {
         {frame.evidenceQuote && <p className="energy-lens-evidence">{frame.evidenceQuote}</p>}
       </div>
     </details>
+  );
+}
+
+function LiveSignalsPanel({
+  signals,
+  onJumpToEvidence,
+}: {
+  signals: LiveSignal[];
+  onJumpToEvidence: (signal: LiveSignal) => void;
+}) {
+  if (signals.length === 0) {
+    return null;
+  }
+  return (
+    <section className="live-signals" aria-label="Live Signals">
+      <div className="live-signals-head">
+        <span className="label">Live Signals</span>
+        <span>{signals.length} active</span>
+      </div>
+      <div className="live-signal-list">
+        {signals.map((signal) => {
+          const canJump = signal.sourceEventIds.length > 0 || signal.sourceSegmentIds.length > 0;
+          return (
+            <button
+              key={signal.id}
+              type="button"
+              className={`live-signal ${signal.kind} ${signal.provisional ? "provisional" : ""}`}
+              onClick={() => canJump && onJumpToEvidence(signal)}
+              aria-label={`${liveSignalKindLabel(signal.kind)} signal`}
+            >
+              <span className="live-signal-top">
+                <span className="live-signal-kind">{liveSignalKindLabel(signal.kind)}</span>
+                {signal.provisional && <span className="live-signal-badge">Provisional</span>}
+              </span>
+              <span className="live-signal-title">{signal.title}</span>
+              <span className="live-signal-body">{signal.body}</span>
+              {(signal.suggestedAsk || signal.suggestedSay) && (
+                <span className="live-signal-suggestion">
+                  <strong>{signal.suggestedAsk ? "Ask" : "Say"}</strong>
+                  {signal.suggestedAsk ?? signal.suggestedSay}
+                </span>
+              )}
+              <span className="live-signal-evidence">{signal.evidenceQuote}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function liveSignalKindLabel(kind: LiveSignal["kind"]): string {
+  if (kind === "thread") return "Thread";
+  if (kind === "attention") return "To me";
+  if (kind === "question") return "Question";
+  if (kind === "action") return "Action";
+  if (kind === "risk") return "Risk";
+  if (kind === "decision") return "Decision";
+  return "Suggestion";
+}
+
+function LivePlaybackCue({
+  durationSeconds,
+  elapsedSeconds,
+  progress,
+  remainingSeconds,
+  message,
+  paused,
+}: {
+  durationSeconds: number;
+  elapsedSeconds: number;
+  progress: number;
+  remainingSeconds: number;
+  message: string;
+  paused: boolean;
+}) {
+  return (
+    <section className="live-playback-cue" aria-label="Recorded audio playback">
+      <div className="live-playback-head">
+        <div>
+          <span className="label">Recorded audio</span>
+          <strong>{paused ? "Paused" : "Playing through Live"}</strong>
+        </div>
+        <span>
+          {formatPlaybackClock(elapsedSeconds)} / {formatPlaybackClock(durationSeconds)}
+        </span>
+      </div>
+      <div className="live-playback-bar" aria-label={`Playback progress ${Math.round(progress)}%`}>
+        <span style={{ width: `${progress}%` }} />
+      </div>
+      <p>{message}</p>
+      <small>{formatPlaybackClock(remainingSeconds)} remaining · {paused ? "resume to continue feeding audio" : "transcript and cards appear as ASR windows complete"}</small>
+    </section>
   );
 }
 
@@ -4541,7 +4839,6 @@ function SessionContextPane({
   loading,
   emptyTitle,
   emptyBody,
-  workMemoryCards,
   contextCards,
   manualCards,
   showAll,
@@ -4565,7 +4862,6 @@ function SessionContextPane({
   loading: boolean;
   emptyTitle: string;
   emptyBody: string;
-  workMemoryCards: SidecarDisplayCard[];
   contextCards: SidecarDisplayCard[];
   manualCards: SidecarDisplayCard[];
   showAll: boolean;
@@ -4581,7 +4877,7 @@ function SessionContextPane({
 }) {
   const cardCount = MEETING_OUTPUT_SECTIONS.reduce((count, section) => count + groups[section.bucket].length, 0);
   const visibleSections = MEETING_OUTPUT_SECTIONS.filter((section) => groups[section.bucket].length > 0);
-  const hasSupplementalCards = workMemoryCards.length > 0 || contextCards.length > 0 || manualCards.length > 0;
+  const hasSupplementalCards = contextCards.length > 0 || manualCards.length > 0;
   const quietTitle = captureActive && cardCount === 0 ? "Silent by design" : emptyTitle;
   const quietBody = captureActive && cardCount === 0
     ? "No grounded cards yet. Unsupported/noisy cards are being suppressed."
@@ -4635,35 +4931,10 @@ function SessionContextPane({
         </button>
       )}
 
-      {workMemoryCards.length > 0 && (
-        <details className="session-context-preview memory-output" aria-label="Work memory cards">
-          <summary>
-            <span>Work memory</span>
-            <strong>{workMemoryCards.length}</strong>
-          </summary>
-          <div className="context-preview-list">
-            {workMemoryCards.map((card) => (
-              <ContextCard
-                key={`memory-${card.id}`}
-                card={card}
-                compact
-                expanded={expandedCards.has(card.id)}
-                showDebugMetadata={showDebugMetadata}
-                onToggle={() => onToggle(card.id)}
-                onJumpToEvidence={() => onJumpToEvidence(card)}
-                onPin={() => onPin(card)}
-                onDismiss={() => onDismiss(card)}
-                onCopy={() => onCopy(card)}
-              />
-            ))}
-          </div>
-        </details>
-      )}
-
       {contextCards.length > 0 && (
-        <details className="session-context-preview context-output" aria-label="Context cards">
+        <details className="session-context-preview context-output reference-context-output" aria-label="Reference context">
           <summary>
-            <span>Context / past transcript / web</span>
+            <span>Reference context</span>
             <strong>{contextCards.length}</strong>
           </summary>
           <div className="context-preview-list">
@@ -4731,7 +5002,7 @@ function QualityStrip({
       <summary>Details</summary>
       <section className="quality-strip" aria-label="Sidecar quality status">
         <span><strong>{metrics.acceptedCurrentCount}</strong> current</span>
-        <span><strong>{metrics.workMemoryCount}</strong> memory</span>
+        <span><strong>{metrics.contextCount}</strong> context</span>
         <span><strong>{metrics.manualCount}</strong> manual</span>
         {diagnostics && (
           <>
@@ -4754,12 +5025,12 @@ function QualityStrip({
 function ConsultingBriefPane({
   markdown,
   currentCount,
-  memoryCount,
+  contextCount,
   onCopy,
 }: {
   markdown: string;
   currentCount: number;
-  memoryCount: number;
+  contextCount: number;
   onCopy: () => void;
 }) {
   return (
@@ -4772,7 +5043,7 @@ function ConsultingBriefPane({
         <button className="secondary" type="button" onClick={onCopy}>Copy Markdown</button>
       </div>
       <p className="tool-note">
-        Built from {currentCount} current-meeting cards and {memoryCount} separated work-memory cards.
+        Built from {currentCount} current-meeting cards and {contextCount} reference/web context cards.
       </p>
       <pre>{markdown}</pre>
     </section>
@@ -4783,9 +5054,13 @@ function ManualSourceSections({ cards }: { cards: SidecarDisplayCard[] }) {
   if (cards.length === 0) {
     return null;
   }
+  const isTechnicalReference = (card: SidecarDisplayCard) => (
+    card.sourceType === "local_file" || card.sourceType === "document_chunk" || card.sourceType === "file"
+  );
   const sections = [
-    { title: "Prior transcript", cards: cards.filter((card) => card.sourceType === "saved_transcript" || card.sourceType === "session" || card.category === "memory") },
-    { title: "Work memory", cards: cards.filter((card) => isWorkMemoryCard(card)) },
+    { title: "Company refs", cards: cards.filter(isCompanyReferenceCard) },
+    { title: "Technical references", cards: cards.filter(isTechnicalReference) },
+    { title: "Prior transcript", cards: cards.filter((card) => !isCompanyReferenceCard(card) && !isTechnicalReference(card) && (card.sourceType === "saved_transcript" || card.sourceType === "session" || card.category === "memory")) },
     { title: "Web", cards: cards.filter((card) => card.category === "web" || card.sourceType === "brave_web") },
     { title: "Suggested meeting contribution", cards: cards.filter((card) => card.category === "contribution") },
   ].filter((section) => section.cards.length > 0);
@@ -4842,7 +5117,7 @@ function ContextCard({
   const qualityLabel = card.qualityLabel ?? "";
   return (
     <article
-      className={`context-card field-bubble ${compact ? "compact" : ""} ${card.provisional ? "provisional" : ""} ${confidenceClass(card)} ${card.category === "work" || card.category === "work_memory" ? "memory" : card.category}`}
+      className={`context-card field-bubble ${compact ? "compact" : ""} ${card.provisional ? "provisional" : ""} ${confidenceClass(card)} ${card.category}`}
       aria-label={`${categoryLabel(card.category)} context card`}
     >
       <div className="context-card-head">
@@ -4944,25 +5219,6 @@ function ContextCard({
       )}
     </article>
   );
-}
-
-function workCardFromHit(hit: RecallHit): WorkMemoryCard {
-  const metadata = hit.metadata;
-  const citations = Array.isArray(metadata.citations)
-    ? metadata.citations.map((item) => String(item))
-    : [];
-  return {
-    project_id: hit.source_id,
-    title: String(metadata.title ?? "Prior project"),
-    organization: String(metadata.organization ?? "work history"),
-    date_range: String(metadata.date_range ?? ""),
-    score: hit.score,
-    confidence: Number(metadata.confidence ?? hit.score),
-    reason: String(metadata.reason ?? ""),
-    lesson: String(metadata.lesson ?? ""),
-    citations,
-    text: hit.text,
-  };
 }
 
 function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope: EventEnvelope): SidecarDisplayCard | null {
@@ -5169,48 +5425,6 @@ function displayCardForRecall(hit: RecallHit, options: BackendItemOptions = {}):
   };
 }
 
-function displayCardForWorkCard(card: WorkMemoryCard, options: BackendItemOptions = {}): SidecarDisplayCard {
-  const sourceSegmentIds = options.sourceSegmentIds ?? [];
-  const sourceType = "work_memory_project";
-  const explicitlyRequested = options.origin === "manual";
-  const at = Date.now();
-  const draftCard = {
-    sourceType,
-    sourceSegmentIds,
-    explicitlyRequested,
-    confidence: card.confidence,
-    category: "work_memory",
-  } as SidecarDisplayCard;
-  return {
-    id: `work-${card.project_id}-${at}`,
-    cardKey: `work:${card.project_id}`,
-    category: "work_memory",
-    title: readableTitle(card.title, "Prior work"),
-    summary: card.lesson || card.text,
-    whyRelevant: card.reason ? `Similar pattern: ${card.reason}` : "Relevant prior work pattern.",
-    source: sourceLabel(sourceType, explicitlyRequested),
-    sourceType,
-    sourceLabel: sourceLabel(sourceType, explicitlyRequested),
-    qualityLabel: qualityLabelForCard(draftCard),
-    date: [card.organization, card.date_range].filter(Boolean).join(" / "),
-    at,
-    score: card.score,
-    rawText: card.text,
-    citations: card.citations,
-    sourceSegmentIds,
-    explicitlyRequested,
-    priority: card.score < 0.45 && options.origin !== "manual" ? "low" : card.score >= 0.72 || card.confidence >= 0.9 ? "high" : "normal",
-    debugMetadata: {
-      sourceType,
-      sourceId: card.project_id,
-      score: card.score,
-      confidence: card.confidence,
-      retrievalReason: card.reason,
-      sourceSegmentIds,
-    },
-  };
-}
-
 function areCardsEquivalent(left: SidecarDisplayCard, right: SidecarDisplayCard): boolean {
   const leftKey = left.cardKey ?? "";
   const rightKey = right.cardKey ?? "";
@@ -5231,7 +5445,6 @@ function areCardsEquivalent(left: SidecarDisplayCard, right: SidecarDisplayCard)
 
 function categoryLabel(category: SidecarDisplayCard["category"]): string {
   if (category === "web") return "Web";
-  if (category === "work" || category === "work_memory") return "Work memory";
   if (category === "action") return "Follow-up";
   if (category === "decision") return "Decision";
   if (category === "question") return "Ask this";
@@ -5240,6 +5453,7 @@ function categoryLabel(category: SidecarDisplayCard["category"]): string {
   if (category === "contribution") return "Say this";
   if (category === "status") return "Status";
   if (category === "memory") return "Memory";
+  if (category === "reference") return "Reference";
   return "Note";
 }
 
@@ -5351,8 +5565,7 @@ function sidecarCategoryFromPayload(value: unknown): SidecarDisplayCard["categor
       "clarification",
       "contribution",
       "memory",
-      "work",
-      "work_memory",
+      "reference",
       "web",
       "status",
       "note",
@@ -5589,6 +5802,21 @@ function parseExpectedTerms(value: string): string[] {
     .slice(0, 64);
 }
 
+function uniqueAddressedToNames(names: Array<string | undefined>): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    const clean = String(name ?? "").trim();
+    const key = normalizeForMatch(clean);
+    if (!clean || !key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(clean);
+  }
+  return result;
+}
+
 function matchExpectedTerms(text: string, terms: string[]): string[] {
   const normalizedText = normalizeForMatch(text);
   return terms.filter((term) => normalizedText.includes(normalizeForMatch(term)));
@@ -5648,6 +5876,13 @@ function formatSeconds(value: number): string {
   return `${Number(value).toFixed(1)}s`;
 }
 
+function formatPlaybackClock(value: number): string {
+  const totalSeconds = Math.max(0, Math.round(Number.isFinite(value) ? value : 0));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
 function PathLabel(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) ?? path;
@@ -5662,7 +5897,7 @@ function PathHint(path: string): string {
 }
 
 function isAppPage(value: string | null): value is AppPage {
-  return value === "live" || value === "sessions" || value === "tools" || value === "models" || value === "memory";
+  return value === "live" || value === "sessions" || value === "tools" || value === "models" || value === "references";
 }
 
 function formatOllamaHostLabel(host?: string): string {
@@ -5762,6 +5997,7 @@ function defaultMeetingFocus(): MeetingFocusState {
   return {
     goal: "",
     mode: "quiet",
+    webContextMode: "default",
     reminders: MEETING_REMINDER_OPTIONS.reduce((result, option) => ({
       ...result,
       [option.key]: true,
@@ -5806,6 +6042,11 @@ function normalizeMicTuning(value?: Partial<MicTuning> | null): MicTuning {
 function normalizeMeetingFocus(value?: Partial<MeetingFocusState> | null): MeetingFocusState {
   const fallback = defaultMeetingFocus();
   const mode = value?.mode === "balanced" || value?.mode === "assertive" ? value.mode : "quiet";
+  const webContextMode = (
+    value?.webContextMode === "on" || value?.webContextMode === "off"
+      ? value.webContextMode
+      : "default"
+  );
   const reminders = { ...fallback.reminders };
   if (value?.reminders && typeof value.reminders === "object") {
     for (const option of MEETING_REMINDER_OPTIONS) {
@@ -5815,6 +6056,7 @@ function normalizeMeetingFocus(value?: Partial<MeetingFocusState> | null): Meeti
   return {
     goal: String(value?.goal ?? "").slice(0, 420),
     mode,
+    webContextMode,
     reminders,
   };
 }
@@ -5828,6 +6070,33 @@ function buildMeetingContractPayload(focus: MeetingFocusState): MeetingContractP
     mode: focus.mode,
     reminders,
   };
+}
+
+function webContextEnabledForStart(focus: MeetingFocusState): boolean | undefined {
+  if (focus.webContextMode === "on") {
+    return true;
+  }
+  if (focus.webContextMode === "off") {
+    return false;
+  }
+  return undefined;
+}
+
+function webContextSummary(
+  mode: WebContextMode,
+  configured: boolean,
+  globalEnabled: boolean,
+): string {
+  if (!configured) {
+    return "Brave key missing";
+  }
+  if (mode === "on") {
+    return "Brave on";
+  }
+  if (mode === "off") {
+    return "Brave off";
+  }
+  return globalEnabled ? "Brave default on" : "Brave default off";
 }
 
 function meetingContractFromPayload(value: unknown): MeetingContractPayload | null {

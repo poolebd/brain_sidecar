@@ -94,7 +94,7 @@ def build_report(result: EvalReplayResult, memory_events: list[EvalMemoryEvent] 
 
 
 def is_current_note_card(card: SidecarCard) -> bool:
-    if card.category in {"memory", "work_memory", "web"}:
+    if card.category in {"memory", "web"}:
         return False
     return card.source_type in {"transcript", "model_fallback"}
 

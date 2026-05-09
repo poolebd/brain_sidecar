@@ -23,6 +23,13 @@ class ManualRecall:
     async def search(self, query: str, limit: int = 8, **kwargs) -> list[SearchHit]:
         return [
             SearchHit(
+                source_type="document_chunk",
+                source_id="ref_ee",
+                text="DOE electrical reference notes discuss rollback validation and breaker acceptance criteria.",
+                score=0.92,
+                metadata={"title": "DOE Electrical Science", "path": "/tmp/reference/doe.pdf"},
+            ),
+            SearchHit(
                 source_type="session_summary",
                 source_id="ses_old",
                 text="Prior transcript summary covered Apollo rollback validation.",
@@ -30,6 +37,11 @@ class ManualRecall:
                 metadata={"title": "Apollo rollout"},
             )
         ]
+
+
+class EmptyRecall:
+    async def search(self, query: str, limit: int = 8, **kwargs) -> list[SearchHit]:
+        return []
 
 
 def test_manual_web_context_search_returns_ephemeral_note(monkeypatch, tmp_path: Path) -> None:
@@ -94,7 +106,7 @@ def test_manual_web_context_search_disabled_is_nonfatal(monkeypatch, tmp_path: P
     assert payload["cards"] == []
 
 
-def test_manual_sidecar_query_separates_local_work_and_web_sources(monkeypatch, tmp_path: Path) -> None:
+def test_manual_sidecar_query_separates_technical_references_and_web_sources(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("BRAIN_SIDECAR_WEB_CONTEXT_ENABLED", "true")
     monkeypatch.setenv("BRAIN_SIDECAR_BRAVE_SEARCH_API_KEY", "test-key")
@@ -109,28 +121,6 @@ def test_manual_sidecar_query_separates_local_work_and_web_sources(monkeypatch, 
             )
         ]
     )
-    storage = app.state.manager.storage
-    project_id = storage.upsert_work_memory_project(
-        key="apollo_rollout",
-        title="Apollo Rollout",
-        organization="BP history",
-        date_range="2025",
-        role="Lead",
-        domain="Software",
-        summary="Rollback validation and owner mapping.",
-        lessons=["Make rollback owner explicit before release."],
-        triggers=["Apollo", "rollback", "validation"],
-        source_group="pas_history",
-        confidence=0.9,
-    )
-    storage.add_work_memory_evidence(
-        project_id=project_id,
-        source_id=None,
-        source_path="/tmp/apollo.md",
-        snippet="Rollback owner evidence.",
-        artifact_type="text_supported",
-        weight=1.0,
-    )
 
     response = TestClient(app).post(
         "/api/sidecar/query",
@@ -141,7 +131,31 @@ def test_manual_sidecar_query_separates_local_work_and_web_sources(monkeypatch, 
     payload = response.json()
     assert payload["raw_audio_retained"] is False
     assert payload["sections"]["prior_transcript"]
-    assert payload["sections"]["pas_past_work"]
+    assert payload["sections"]["technical_references"]
     assert payload["sections"]["current_public_web"]
     assert payload["sections"]["suggested_meeting_contribution"]
     assert all(card["explicitly_requested"] is True for card in payload["cards"])
+
+
+def test_company_refs_api_and_manual_sidecar_query_are_local(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BRAIN_SIDECAR_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BRAIN_SIDECAR_WEB_CONTEXT_ENABLED", "false")
+    app = create_app()
+    app.state.manager.recall = EmptyRecall()  # type: ignore[assignment]
+    client = TestClient(app)
+
+    status = client.get("/api/company-refs/status")
+    assert status.status_code == 200
+    assert status.json()["active_ref_count"] >= 1
+
+    search = client.get("/api/company-refs/search", params={"query": "Siemens"})
+    assert search.status_code == 200
+    assert search.json()["company_refs"][0]["id"] == "siemens"
+
+    query = client.post("/api/sidecar/query", json={"query": "What does Siemens do?"})
+    assert query.status_code == 200
+    payload = query.json()
+    assert payload["raw_audio_retained"] is False
+    assert payload["sections"]["company_refs"]
+    assert payload["sections"]["company_refs"][0]["source_type"] == "company_ref"
+    assert payload["sections"]["suggested_meeting_contribution"] == []

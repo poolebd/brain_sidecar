@@ -63,6 +63,7 @@ class StartSessionRequest(BaseModel):
     save_transcript: bool = True
     mic_tuning: MicTuningRequest | None = None
     meeting_contract: MeetingContractRequest | None = None
+    web_context_enabled: bool | None = None
 
 
 class LibraryRootRequest(BaseModel):
@@ -72,16 +73,6 @@ class LibraryRootRequest(BaseModel):
 class RecallSearchRequest(BaseModel):
     query: Annotated[str, Field(min_length=1)]
     limit: int = Field(default=8, ge=1, le=24)
-
-
-class WorkMemoryReindexRequest(BaseModel):
-    roots: list[str] | None = None
-    embed: bool = True
-
-
-class WorkMemorySearchRequest(BaseModel):
-    query: Annotated[str, Field(min_length=1)]
-    limit: int = Field(default=5, ge=1, le=12)
 
 
 class WebContextSearchRequest(BaseModel):
@@ -328,15 +319,14 @@ def create_app() -> FastAPI:
         status["recall_max_live_hits"] = settings.recall_max_live_hits
         status["recall_prefer_summaries"] = settings.recall_prefer_summaries
         status["assume_technical_conversation"] = settings.assume_technical_conversation
+        status["company_refs_enabled"] = settings.company_refs_enabled
+        status["company_refs_status"] = app.state.manager.company_refs.status()
         status["notes_every_segments"] = settings.notes_every_segments
         status["sidecar_quality_gate_enabled"] = settings.sidecar_quality_gate_enabled
         status["sidecar_min_evidence_segments"] = settings.sidecar_min_evidence_segments
         status["sidecar_max_cards_per_5min"] = settings.sidecar_max_cards_per_5min
         status["sidecar_max_cards_per_generation_pass"] = settings.sidecar_max_cards_per_generation_pass
         status["energy_lens_max_cards_per_pass"] = settings.energy_lens_max_cards_per_pass
-        status["work_memory_job_history_root"] = str(settings.work_memory_job_history_root)
-        status["work_memory_past_work_root"] = str(settings.work_memory_past_work_root)
-        status["work_memory_pas_root"] = str(settings.work_memory_pas_root) if settings.work_memory_pas_root else None
         status["test_mode_enabled"] = settings.test_mode_enabled
         status["test_audio_run_dir"] = str(settings.test_audio_run_dir)
         return status
@@ -422,6 +412,22 @@ def create_app() -> FastAPI:
     async def search_web_context(request: WebContextSearchRequest) -> dict:
         return await manager.search_web_context(request.query, session_id=request.session_id)
 
+    @app.get("/api/company-refs/status")
+    async def company_refs_status() -> dict:
+        return await asyncio.to_thread(manager.company_refs.status)
+
+    @app.get("/api/company-refs/search")
+    async def company_refs_search(query: str = "", limit: int = 12) -> dict:
+        refs = await asyncio.to_thread(manager.company_refs.search, query, max(1, min(limit, 50)))
+        return {"query": query, "company_refs": refs, "raw_audio_retained": False}
+
+    @app.post("/api/company-refs/reload")
+    async def company_refs_reload() -> dict:
+        try:
+            return await asyncio.to_thread(manager.company_refs.reload)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/sidecar/query")
     async def sidecar_query(request: SidecarQueryRequest) -> dict:
         try:
@@ -485,6 +491,7 @@ def create_app() -> FastAPI:
                 save_transcript=request.save_transcript,
                 mic_tuning=_mic_tuning_payload(request.mic_tuning),
                 meeting_contract=_meeting_contract_payload(request.meeting_contract),
+                web_context_enabled=request.web_context_enabled,
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -495,6 +502,10 @@ def create_app() -> FastAPI:
             "save_transcript": request.save_transcript,
             "raw_audio_retained": False,
             "meeting_contract": _meeting_contract_payload(request.meeting_contract),
+            "web_context_enabled": request.web_context_enabled
+            if request.web_context_enabled is not None
+            else settings.web_context_enabled,
+            "web_context_configured": bool(settings.brave_search_api_key.strip()),
         }
 
     @app.websocket("/api/sessions/{session_id}/audio-stream")
@@ -506,6 +517,20 @@ def create_app() -> FastAPI:
     async def stop_session(session_id: str) -> dict:
         await manager.stop_session(session_id)
         return {"status": "stopped", "session_id": session_id, "raw_audio_retained": False}
+
+    @app.post("/api/sessions/{session_id}/pause")
+    async def pause_session(session_id: str) -> dict:
+        paused = await manager.pause_session(session_id)
+        if not paused:
+            raise HTTPException(status_code=400, detail="Only active recorded-audio playback can be paused.")
+        return {"status": "paused", "session_id": session_id, "raw_audio_retained": False}
+
+    @app.post("/api/sessions/{session_id}/resume")
+    async def resume_session(session_id: str) -> dict:
+        resumed = await manager.resume_session(session_id)
+        if not resumed:
+            raise HTTPException(status_code=400, detail="Only paused recorded-audio playback can be resumed.")
+        return {"status": "listening", "session_id": session_id, "raw_audio_retained": False}
 
     async def _event_stream(session_id: str | None, last_event_id: str | None):
         async def stream():
@@ -680,43 +705,6 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"hits": [hit.to_dict() for hit in hits]}
-
-    @app.get("/api/work-memory/status")
-    async def work_memory_status() -> dict:
-        return manager.work_memory.status()
-
-    @app.get("/api/work-memory/projects")
-    async def work_memory_projects() -> dict:
-        projects = manager.storage.work_memory_projects()
-        for project in projects:
-            project["evidence"] = manager.storage.work_memory_evidence(project["id"], limit=4)
-        return {"projects": projects}
-
-    @app.get("/api/work-memory/sources")
-    async def work_memory_sources(limit: int = 80) -> dict:
-        return {"sources": manager.storage.work_memory_sources(limit=max(1, min(limit, 200)))}
-
-    @app.post("/api/work-memory/reindex")
-    async def work_memory_reindex(request: WorkMemoryReindexRequest | None = None) -> dict:
-        roots = None
-        if request and request.roots:
-            roots = [Path(root).expanduser().resolve() for root in request.roots]
-            missing = [str(root) for root in roots if not root.exists()]
-            if missing:
-                raise HTTPException(status_code=400, detail=f"Work memory root does not exist: {missing[0]}")
-        try:
-            report = await manager.work_memory.reindex(roots=roots, embed=True if request is None else request.embed)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return report.to_dict()
-
-    @app.post("/api/work-memory/search")
-    async def work_memory_search(request: WorkMemorySearchRequest) -> dict:
-        try:
-            cards = manager.work_memory.search(request.query, limit=request.limit, manual=True)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"cards": [card.to_dict() for card in cards]}
 
     @app.on_event("shutdown")
     async def shutdown() -> None:

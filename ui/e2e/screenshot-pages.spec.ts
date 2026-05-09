@@ -78,9 +78,9 @@ test("captures meeting cockpit page screenshots", async ({ page }) => {
   await expect(page.getByRole("main", { name: "Models" })).toContainText("Dross runtime ready");
   await page.screenshot({ path: path.join(screenshotDir, "models.png"), fullPage: true, animations: "disabled" });
 
-  await page.getByRole("button", { name: "Memory" }).click();
-  await page.getByRole("navigation", { name: "Memory category navigation" }).getByRole("button", { name: /Documents/ }).click();
-  await page.getByRole("button", { name: /OGMS spec.txt/ }).click();
-  await expect(page.getByRole("main", { name: "Memory" })).toContainText("Monitoring signals are useful when they map to decisions.");
-  await page.screenshot({ path: path.join(screenshotDir, "memory.png"), fullPage: true, animations: "disabled" });
+  await page.getByRole("button", { name: "References" }).click();
+  await page.getByRole("navigation", { name: "Reference category navigation" }).getByRole("button", { name: /Documents/ }).click();
+  await page.getByRole("button", { name: /DOE Electrical Science Volume 1/ }).click();
+  await expect(page.getByRole("main", { name: "References" })).toContainText("breaker coordination");
+  await page.screenshot({ path: path.join(screenshotDir, "references.png"), fullPage: true, animations: "disabled" });
 });

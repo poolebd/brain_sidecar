@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -8,6 +9,16 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from brain_sidecar.core.models import NoteCard, SessionRecord, TranscriptSegment, new_id
+
+
+def _item_value(item: Any, name: str, default: Any = None) -> Any:
+    if isinstance(item, dict):
+        return item.get(name, default)
+    return getattr(item, name, default)
+
+
+def _normalize_search_text(value: object) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())).strip()
 
 
 class Storage:
@@ -224,57 +235,6 @@ class Storage:
                   metadata_json text not null
                 );
                 create index if not exists idx_speaker_feedback_session on speaker_label_feedback(session_id, created_at);
-                create table if not exists work_memory_sources (
-                  id text primary key,
-                  path text not null unique,
-                  source_group text not null,
-                  sensitivity text not null,
-                  status text not null,
-                  title text not null,
-                  content_hash text not null,
-                  metadata text not null,
-                  disabled integer not null,
-                  created_at real not null,
-                  updated_at real not null
-                );
-                create index if not exists idx_work_memory_sources_group on work_memory_sources(source_group, status);
-                create table if not exists work_memory_projects (
-                  id text primary key,
-                  project_key text not null unique,
-                  title text not null,
-                  organization text not null,
-                  date_range text not null,
-                  role text not null,
-                  domain text not null,
-                  summary text not null,
-                  lessons_json text not null,
-                  triggers_json text not null,
-                  source_group text not null,
-                  confidence real not null,
-                  updated_at real not null
-                );
-                create index if not exists idx_work_memory_projects_group on work_memory_projects(source_group);
-                create table if not exists work_memory_evidence (
-                  id text primary key,
-                  project_id text not null,
-                  source_id text,
-                  source_path text not null,
-                  snippet text not null,
-                  artifact_type text not null,
-                  weight real not null,
-                  created_at real not null
-                );
-                create index if not exists idx_work_memory_evidence_project on work_memory_evidence(project_id, weight);
-                create table if not exists work_memory_recall_events (
-                  id text primary key,
-                  session_id text,
-                  project_id text not null,
-                  query text not null,
-                  score real not null,
-                  reason text not null,
-                  created_at real not null
-                );
-                create index if not exists idx_work_memory_recall_session on work_memory_recall_events(session_id, created_at);
                 create table if not exists session_memory_summaries (
                   session_id text primary key,
                   title text not null,
@@ -289,6 +249,32 @@ class Storage:
                   created_at real not null,
                   updated_at real not null
                 );
+                create table if not exists company_refs (
+                  id text primary key,
+                  canonical_name text not null,
+                  entity_type text not null default 'company',
+                  domain text not null default '',
+                  description text not null,
+                  website text,
+                  metadata_json text not null default '{}',
+                  sources_json text not null default '[]',
+                  active integer not null default 1,
+                  updated_at real not null
+                );
+                create table if not exists company_ref_aliases (
+                  id text primary key,
+                  ref_id text not null,
+                  alias text not null,
+                  normalized_alias text not null,
+                  alias_type text not null,
+                  weight real not null default 1.0,
+                  requires_context integer not null default 0,
+                  context_terms_json text not null default '[]',
+                  negative_terms_json text not null default '[]'
+                );
+                create index if not exists idx_company_ref_aliases_normalized on company_ref_aliases(normalized_alias);
+                create index if not exists idx_company_ref_aliases_ref on company_ref_aliases(ref_id);
+                create index if not exists idx_company_refs_active on company_refs(active);
                 """
             )
             self._ensure_column("voice_corrections", "quarantined", "integer not null default 0")
@@ -1531,6 +1517,172 @@ class Storage:
         ).fetchone()
         return int(row["count"]), float(row["updated_at"])
 
+    def upsert_company_refs(self, refs: Iterable[Any]) -> int:
+        count = 0
+        with self._lock:
+            for ref in refs:
+                ref_id = str(_item_value(ref, "id") or "").strip()
+                canonical_name = str(_item_value(ref, "canonical_name") or "").strip()
+                description = str(_item_value(ref, "description") or "").strip()
+                if not ref_id or not canonical_name or not description:
+                    continue
+                updated_at = float(_item_value(ref, "updated_at") or time.time())
+                self.conn.execute(
+                    """
+                    insert into company_refs(
+                      id, canonical_name, entity_type, domain, description, website,
+                      metadata_json, sources_json, active, updated_at
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    on conflict(id) do update set
+                      canonical_name = excluded.canonical_name,
+                      entity_type = excluded.entity_type,
+                      domain = excluded.domain,
+                      description = excluded.description,
+                      website = excluded.website,
+                      metadata_json = excluded.metadata_json,
+                      sources_json = excluded.sources_json,
+                      active = excluded.active,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        ref_id,
+                        canonical_name,
+                        str(_item_value(ref, "entity_type") or "company").strip() or "company",
+                        str(_item_value(ref, "domain") or "").strip(),
+                        description,
+                        _item_value(ref, "website"),
+                        json.dumps(_item_value(ref, "metadata") or {}, sort_keys=True),
+                        json.dumps(_item_value(ref, "sources") or []),
+                        1 if bool(_item_value(ref, "active", True)) else 0,
+                        updated_at,
+                    ),
+                )
+                self.conn.execute("delete from company_ref_aliases where ref_id = ?", (ref_id,))
+                for alias in list(_item_value(ref, "aliases") or []):
+                    alias_text = str(_item_value(alias, "alias") or "").strip()
+                    normalized_alias = str(_item_value(alias, "normalized_alias") or "").strip()
+                    if not alias_text or not normalized_alias:
+                        continue
+                    self.conn.execute(
+                        """
+                        insert into company_ref_aliases(
+                          id, ref_id, alias, normalized_alias, alias_type, weight,
+                          requires_context, context_terms_json, negative_terms_json
+                        )
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(_item_value(alias, "id") or new_id("calias")),
+                            ref_id,
+                            alias_text,
+                            normalized_alias,
+                            str(_item_value(alias, "alias_type") or "name").strip() or "name",
+                            float(_item_value(alias, "weight") or 1.0),
+                            1 if bool(_item_value(alias, "requires_context", False)) else 0,
+                            json.dumps(_item_value(alias, "context_terms") or []),
+                            json.dumps(_item_value(alias, "negative_terms") or []),
+                        ),
+                    )
+                count += 1
+            self.conn.commit()
+        return count
+
+    def company_refs(self, active_only: bool = True) -> list[dict[str, Any]]:
+        where = "where active = 1" if active_only else ""
+        rows = self.conn.execute(
+            f"""
+            select *
+            from company_refs
+            {where}
+            order by lower(canonical_name)
+            """
+        ).fetchall()
+        refs = [self._company_ref_row_to_dict(row) for row in rows]
+        aliases_by_ref = self._company_aliases_by_ref(active_only=active_only)
+        for ref in refs:
+            ref["aliases"] = aliases_by_ref.get(ref["id"], [])
+        return refs
+
+    def company_ref_aliases(self, active_only: bool = True) -> list[dict[str, Any]]:
+        if active_only:
+            rows = self.conn.execute(
+                """
+                select a.*
+                from company_ref_aliases a
+                join company_refs r on r.id = a.ref_id
+                where r.active = 1
+                order by lower(a.normalized_alias), lower(a.alias)
+                """
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                select *
+                from company_ref_aliases
+                order by lower(normalized_alias), lower(alias)
+                """
+            ).fetchall()
+        return [self._company_alias_row_to_dict(row) for row in rows]
+
+    def company_ref_status(self) -> dict[str, Any]:
+        row = self.conn.execute(
+            """
+            select
+              count(*) as ref_count,
+              sum(case when active = 1 then 1 else 0 end) as active_ref_count,
+              coalesce(max(updated_at), 0) as latest_updated_at
+            from company_refs
+            """
+        ).fetchone()
+        alias_row = self.conn.execute(
+            """
+            select count(*) as alias_count
+            from company_ref_aliases a
+            join company_refs r on r.id = a.ref_id
+            where r.active = 1
+            """
+        ).fetchone()
+        return {
+            "ref_count": int(row["ref_count"] or 0),
+            "active_ref_count": int(row["active_ref_count"] or 0),
+            "active_alias_count": int(alias_row["alias_count"] or 0),
+            "latest_updated_at": float(row["latest_updated_at"] or 0.0),
+        }
+
+    def search_company_refs(self, query: str, limit: int = 12) -> list[dict[str, Any]]:
+        clean_query = _normalize_search_text(query)
+        tokens = [
+            token for token in clean_query.split()
+            if len(token) >= 2 and token not in {"the", "and", "for", "what", "does", "who", "company"}
+        ]
+        needles = [clean_query, *tokens] if clean_query else []
+        if not needles:
+            return []
+        scored: list[tuple[int, str, dict[str, Any]]] = []
+        for ref in self.company_refs(active_only=True):
+            canonical = _normalize_search_text(ref["canonical_name"])
+            aliases = [_normalize_search_text(alias["alias"]) for alias in ref.get("aliases", [])]
+            haystack = " ".join([
+                canonical,
+                _normalize_search_text(ref["domain"]),
+                _normalize_search_text(ref["description"]),
+                *aliases,
+            ])
+            score = 0
+            if clean_query == canonical or clean_query in aliases:
+                score = 100
+            elif any(needle and needle in aliases for needle in needles):
+                score = 90
+            elif any(needle and needle in canonical for needle in needles):
+                score = 80
+            elif any(needle and needle in haystack for needle in needles):
+                score = 60
+            if score:
+                scored.append((score, canonical, ref))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [item[2] for item in scored[: max(1, min(int(limit), 50))]]
+
     def upsert_session_memory_summary(
         self,
         *,
@@ -1598,225 +1750,6 @@ class Storage:
         journal_mode = self.conn.execute("pragma journal_mode").fetchone()[0]
         busy_timeout = self.conn.execute("pragma busy_timeout").fetchone()[0]
         return {"journal_mode": journal_mode, "busy_timeout": int(busy_timeout)}
-
-    def clear_work_memory(self) -> None:
-        with self._lock:
-            self.conn.execute("delete from work_memory_recall_events")
-            self.conn.execute("delete from work_memory_evidence")
-            self.conn.execute("delete from work_memory_projects")
-            self.conn.execute("delete from work_memory_sources")
-            self.conn.execute("delete from embedding_records where source_type = ?", ("work_memory_project",))
-            self.conn.commit()
-
-    def upsert_work_memory_source(
-        self,
-        *,
-        path: str,
-        source_group: str,
-        sensitivity: str,
-        status: str,
-        title: str,
-        content_hash: str,
-        metadata: dict[str, Any],
-        disabled: bool,
-    ) -> str:
-        source_id = new_id("wsrc")
-        now = time.time()
-        with self._lock:
-            self.conn.execute(
-                """
-                insert into work_memory_sources(
-                  id, path, source_group, sensitivity, status, title, content_hash,
-                  metadata, disabled, created_at, updated_at
-                )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(path) do update set
-                  source_group = excluded.source_group,
-                  sensitivity = excluded.sensitivity,
-                  status = excluded.status,
-                  title = excluded.title,
-                  content_hash = excluded.content_hash,
-                  metadata = excluded.metadata,
-                  disabled = excluded.disabled,
-                  updated_at = excluded.updated_at
-                """,
-                (
-                    source_id,
-                    path,
-                    source_group,
-                    sensitivity,
-                    status,
-                    title,
-                    content_hash,
-                    json.dumps(metadata),
-                    1 if disabled else 0,
-                    now,
-                    now,
-                ),
-            )
-            row = self.conn.execute("select id from work_memory_sources where path = ?", (path,)).fetchone()
-            self.conn.commit()
-        return str(row["id"])
-
-    def upsert_work_memory_project(
-        self,
-        *,
-        key: str,
-        title: str,
-        organization: str,
-        date_range: str,
-        role: str,
-        domain: str,
-        summary: str,
-        lessons: list[str],
-        triggers: list[str],
-        source_group: str,
-        confidence: float,
-    ) -> str:
-        project_id = new_id("wproj")
-        now = time.time()
-        with self._lock:
-            self.conn.execute(
-                """
-                insert into work_memory_projects(
-                  id, project_key, title, organization, date_range, role, domain,
-                  summary, lessons_json, triggers_json, source_group, confidence, updated_at
-                )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(project_key) do update set
-                  title = excluded.title,
-                  organization = excluded.organization,
-                  date_range = excluded.date_range,
-                  role = excluded.role,
-                  domain = excluded.domain,
-                  summary = excluded.summary,
-                  lessons_json = excluded.lessons_json,
-                  triggers_json = excluded.triggers_json,
-                  source_group = excluded.source_group,
-                  confidence = excluded.confidence,
-                  updated_at = excluded.updated_at
-                """,
-                (
-                    project_id,
-                    key,
-                    title,
-                    organization,
-                    date_range,
-                    role,
-                    domain,
-                    summary,
-                    json.dumps(lessons),
-                    json.dumps(triggers),
-                    source_group,
-                    confidence,
-                    now,
-                ),
-            )
-            row = self.conn.execute("select id from work_memory_projects where project_key = ?", (key,)).fetchone()
-            self.conn.commit()
-        return str(row["id"])
-
-    def add_work_memory_evidence(
-        self,
-        *,
-        project_id: str,
-        source_id: str | None,
-        source_path: str,
-        snippet: str,
-        artifact_type: str,
-        weight: float,
-    ) -> str:
-        evidence_id = new_id("wevd")
-        with self._lock:
-            self.conn.execute(
-                """
-                insert into work_memory_evidence(
-                  id, project_id, source_id, source_path, snippet, artifact_type, weight, created_at
-                )
-                values (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (evidence_id, project_id, source_id, source_path, snippet, artifact_type, weight, time.time()),
-            )
-            self.conn.commit()
-        return evidence_id
-
-    def work_memory_projects(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            select * from work_memory_projects
-            order by date_range, title
-            """
-        ).fetchall()
-        return [self._work_memory_project_row_to_dict(row) for row in rows]
-
-    def work_memory_sources(self, limit: int = 120) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            select * from work_memory_sources
-            order by updated_at desc
-            limit ?
-            """,
-            (limit,),
-        ).fetchall()
-        return [self._work_memory_source_row_to_dict(row) for row in rows]
-
-    def work_memory_evidence(self, project_id: str, limit: int = 12) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            select * from work_memory_evidence
-            where project_id = ?
-            order by weight desc, created_at desc
-            limit ?
-            """,
-            (project_id, limit),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def add_work_memory_recall_event(
-        self,
-        *,
-        session_id: str | None,
-        project_id: str,
-        query: str,
-        score: float,
-        reason: str,
-    ) -> str:
-        event_id = new_id("wrec")
-        with self._lock:
-            self.conn.execute(
-                """
-                insert into work_memory_recall_events(id, session_id, project_id, query, score, reason, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (event_id, session_id, project_id, query, score, reason, time.time()),
-            )
-            self.conn.commit()
-        return event_id
-
-    def work_memory_summary(self) -> dict[str, Any]:
-        project_count = self.conn.execute("select count(*) as count from work_memory_projects").fetchone()["count"]
-        evidence_count = self.conn.execute("select count(*) as count from work_memory_evidence").fetchone()["count"]
-        source_count = self.conn.execute("select count(*) as count from work_memory_sources").fetchone()["count"]
-        disabled_count = self.conn.execute(
-            "select count(*) as count from work_memory_sources where disabled = 1"
-        ).fetchone()["count"]
-        latest_row = self.conn.execute("select max(updated_at) as latest from work_memory_sources").fetchone()
-        rows = self.conn.execute(
-            """
-            select source_group, count(*) as count
-            from work_memory_sources
-            group by source_group
-            order by source_group
-            """
-        ).fetchall()
-        return {
-            "projects": int(project_count),
-            "evidence": int(evidence_count),
-            "sources": int(source_count),
-            "disabled_sources": int(disabled_count),
-            "latest_index_at": latest_row["latest"],
-            "source_groups": {row["source_group"]: int(row["count"]) for row in rows},
-        }
 
     def _session_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         transcript_count = int(row["transcript_count"])
@@ -1894,37 +1827,39 @@ class Storage:
             "raw_audio_retained": False,
         }
 
-    def _work_memory_project_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _company_ref_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row["id"],
-            "project_key": row["project_key"],
-            "title": row["title"],
-            "organization": row["organization"],
-            "date_range": row["date_range"],
-            "role": row["role"],
+            "canonical_name": row["canonical_name"],
+            "entity_type": row["entity_type"],
             "domain": row["domain"],
-            "summary": row["summary"],
-            "lessons": json.loads(row["lessons_json"]),
-            "triggers": json.loads(row["triggers_json"]),
-            "source_group": row["source_group"],
-            "confidence": float(row["confidence"]),
-            "updated_at": row["updated_at"],
+            "description": row["description"],
+            "website": row["website"],
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "sources": json.loads(row["sources_json"] or "[]"),
+            "active": bool(row["active"]),
+            "updated_at": float(row["updated_at"]),
+            "raw_audio_retained": False,
         }
 
-    def _work_memory_source_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _company_alias_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row["id"],
-            "path": row["path"],
-            "source_group": row["source_group"],
-            "sensitivity": row["sensitivity"],
-            "status": row["status"],
-            "title": row["title"],
-            "content_hash": row["content_hash"],
-            "metadata": json.loads(row["metadata"]),
-            "disabled": bool(row["disabled"]),
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
+            "ref_id": row["ref_id"],
+            "alias": row["alias"],
+            "normalized_alias": row["normalized_alias"],
+            "alias_type": row["alias_type"],
+            "weight": float(row["weight"]),
+            "requires_context": bool(row["requires_context"]),
+            "context_terms": json.loads(row["context_terms_json"] or "[]"),
+            "negative_terms": json.loads(row["negative_terms_json"] or "[]"),
         }
+
+    def _company_aliases_by_ref(self, *, active_only: bool) -> dict[str, list[dict[str, Any]]]:
+        aliases: dict[str, list[dict[str, Any]]] = {}
+        for alias in self.company_ref_aliases(active_only=active_only):
+            aliases.setdefault(alias["ref_id"], []).append(alias)
+        return aliases
 
     def _session_memory_summary_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         return {

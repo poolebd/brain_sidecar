@@ -231,7 +231,7 @@ class MemoryBoundaryAgent:
         transcript_terms = _terms(transcript_text)
         recall_only_terms = _terms(recall_text) - transcript_terms
         for card in cards:
-            if card.category in {"memory", "work_memory", "web", "status"}:
+            if card.category in {"memory", "web", "status"}:
                 kept.append(card)
                 continue
             output_terms = _terms(" ".join([card.title, card.body, card.suggested_say or "", card.suggested_ask or ""]))

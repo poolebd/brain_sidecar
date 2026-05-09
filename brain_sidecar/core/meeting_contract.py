@@ -16,10 +16,10 @@ DEFAULT_MEETING_GOAL = (
 DEFAULT_MEETING_REMINDERS = [
     "Prefer silence over noisy, weak, or unsupported cards.",
     "Ground current-meeting cards only in the current transcript with valid source IDs and evidence.",
-    "Use memory, work memory, and web context as reminder context only, never as current-meeting facts.",
+    "Use saved memory, technical references, and web context as reminder context only, never as current-meeting facts.",
     "Assign BP ownership conservatively and only when speaker_role is user with high confidence or BP is explicitly named.",
     "Focus outputs on ask, say, do, watch, and remember items.",
-    "Prepare a post-call brief with actions, decisions, questions, risks, follow-up language, work memory, and evidence.",
+    "Prepare a post-call brief with actions, decisions, questions, risks, follow-up language, references, and evidence.",
 ]
 
 

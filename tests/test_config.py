@@ -23,6 +23,11 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
         "BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS",
         "BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS",
         "BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION",
+        "BRAIN_SIDECAR_COMPANY_REFS_ENABLED",
+        "BRAIN_SIDECAR_COMPANY_REFS_SEED_PATH",
+        "BRAIN_SIDECAR_COMPANY_REFS_MIN_CONFIDENCE",
+        "BRAIN_SIDECAR_COMPANY_REFS_MAX_LIVE_CARDS",
+        "BRAIN_SIDECAR_COMPANY_REFS_DUPLICATE_WINDOW_SECONDS",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -45,6 +50,11 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
     assert settings.recall_max_live_hits == 4
     assert settings.recall_prefer_summaries is True
     assert settings.assume_technical_conversation is True
+    assert settings.company_refs_enabled is True
+    assert settings.company_refs_seed_path is None
+    assert settings.company_refs_min_confidence == 0.70
+    assert settings.company_refs_max_live_cards == 3
+    assert settings.company_refs_duplicate_window_seconds == 900.0
 
 
 def test_load_settings_reads_repo_dotenv_without_overriding_exports(monkeypatch, tmp_path) -> None:
@@ -214,15 +224,12 @@ def test_partial_transcript_env_overrides_are_guarded(monkeypatch, tmp_path) -> 
     assert settings.partial_min_interval_seconds == 0.5
 
 
-def test_recall_and_work_memory_env_overrides(monkeypatch, tmp_path) -> None:
+def test_recall_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     monkeypatch.setenv("BRAIN_SIDECAR_RECALL_MIN_SCORE", "0.7")
     monkeypatch.setenv("BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS", "2")
     monkeypatch.setenv("BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES", "false")
     monkeypatch.setenv("BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION", "false")
-    monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT", str(tmp_path / "job"))
-    monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT", str(tmp_path / "past"))
-    monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT", str(tmp_path / "pas"))
 
     settings = load_settings()
 
@@ -230,9 +237,6 @@ def test_recall_and_work_memory_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.recall_max_live_hits == 2
     assert settings.recall_prefer_summaries is False
     assert settings.assume_technical_conversation is False
-    assert settings.work_memory_job_history_root == tmp_path / "job"
-    assert settings.work_memory_past_work_root == tmp_path / "past"
-    assert settings.work_memory_pas_root == tmp_path / "pas"
 
 
 def test_sidecar_quality_gate_env_overrides(monkeypatch, tmp_path) -> None:

@@ -89,7 +89,7 @@ Return JSON only:
 {{
   "cards": [
     {{
-      "category": "action|decision|question|risk|clarification|contribution|memory|work_memory|web|status|note",
+      "category": "action|decision|question|risk|clarification|contribution|memory|web|status|note",
       "title": "short title",
       "body": "one or two grounded sentences",
       "suggested_say": "optional concise sentence BP could say",
@@ -448,7 +448,7 @@ def dedupe_heuristic_cards(cards: list[SidecarCard]) -> list[SidecarCard]:
 
 
 def note_from_sidecar(card: SidecarCard) -> NoteCard:
-    kind = "context" if card.category in {"status", "memory", "work_memory", "web", "note"} else card.category
+    kind = "context" if card.category in {"status", "memory", "web", "note"} else card.category
     return NoteCard(
         id=new_id("note"),
         session_id=card.session_id,

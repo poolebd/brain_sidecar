@@ -254,6 +254,42 @@ def test_note_updates_also_publish_normalized_sidecar_cards(event_loop, tmp_path
     assert active.meeting_diagnostics["suppressed_count"] == 0
 
 
+def test_final_transcript_can_publish_company_reference_card(event_loop, tmp_path: Path) -> None:
+    manager = SessionManager(make_settings(tmp_path))
+    session = manager.storage.create_session("company-ref")
+    active = active_session(session.id, save_transcript=False)
+    manager._active[session.id] = active
+
+    collector = event_loop.create_task(collect_event(manager, session.id, EVENT_SIDECAR_CARD))
+    event_loop.run_until_complete(
+        manager._accept_final_segment(
+            session.id,
+            active,
+            TranscriptSegment(
+                id="seg-company",
+                session_id=session.id,
+                start_s=0.0,
+                end_s=2.0,
+                text="We need Siemens to answer the power quality question.",
+            ),
+            asr_model="fake-asr",
+            speaker_payload={},
+            asr_duration_ms=1.0,
+        )
+    )
+    event_loop.run_until_complete(manager._publish_company_reference_cards(session.id, active))
+    event = event_loop.run_until_complete(asyncio.wait_for(collector, timeout=1.0))
+
+    assert event.payload["category"] == "reference"
+    assert event.payload["source_type"] == "company_ref"
+    assert event.payload["title"] == "Siemens"
+    assert event.payload["priority"] == "low"
+    assert event.payload["source_segment_ids"] == ["seg-company"]
+    assert event.payload["evidence_quote"] == "We need Siemens to answer the power quality question."
+    assert event.payload["raw_audio_retained"] is False
+    assert manager.storage.session_note_cards(session.id) == []
+
+
 async def collect_event(manager: SessionManager, session_id: str, event_type: str) -> SidecarEvent:
     async for event in manager.bus.subscribe(session_id):
         if event.type == event_type:

@@ -55,6 +55,7 @@ def make_settings(
     *,
     min_interval: float = 0.0,
     disable_live_embeddings: bool = True,
+    web_context_enabled: bool = True,
 ) -> Settings:
     return Settings(
         data_dir=tmp_path,
@@ -69,7 +70,7 @@ def make_settings(
         transcription_queue_size=1,
         postprocess_queue_size=1,
         disable_live_embeddings=disable_live_embeddings,
-        web_context_enabled=True,
+        web_context_enabled=web_context_enabled,
         brave_search_api_key="test-key",
         web_context_min_interval_seconds=min_interval,
     )
@@ -92,6 +93,36 @@ def test_refresh_notes_enqueues_web_context_without_calling_search(event_loop, t
     assert active.web_context_queue is not None
     assert active.web_context_queue.qsize() == 1
     assert search.calls == []
+
+
+def test_session_web_context_override_can_enable_global_off(event_loop, tmp_path: Path) -> None:
+    manager = SessionManager(make_settings(tmp_path, web_context_enabled=False))
+    session = manager.storage.create_session("web context override")
+    active = make_active(session.id, web_context_enabled=True)
+    manager._active[session.id] = active
+
+    manager._maybe_enqueue_web_context(
+        session.id,
+        [segment(session.id, "What are current best practices for vector database indexing?")],
+    )
+
+    assert active.web_context_queue is not None
+    assert active.web_context_queue.qsize() == 1
+
+
+def test_session_web_context_override_can_disable_global_on(tmp_path: Path) -> None:
+    manager = SessionManager(make_settings(tmp_path, web_context_enabled=True))
+    session = manager.storage.create_session("web context override")
+    active = make_active(session.id, web_context_enabled=False)
+    manager._active[session.id] = active
+
+    manager._maybe_enqueue_web_context(
+        session.id,
+        [segment(session.id, "What are current best practices for vector database indexing?")],
+    )
+
+    assert active.web_context_queue is not None
+    assert active.web_context_queue.qsize() == 0
 
 
 def test_web_context_worker_dedupes_repeated_query(event_loop, tmp_path: Path) -> None:
@@ -177,7 +208,7 @@ async def collect_recall_hit(manager: SessionManager, session_id: str) -> Sideca
     raise AssertionError("subscription ended")
 
 
-def make_active(session_id: str) -> ActiveSession:
+def make_active(session_id: str, *, web_context_enabled: bool = True) -> ActiveSession:
     return ActiveSession(
         id=session_id,
         capture=DummyCapture(),
@@ -186,6 +217,7 @@ def make_active(session_id: str) -> ActiveSession:
         tasks=[],
         deduper=TranscriptDeduplicator(max_recent=4, similarity_threshold=0.88),
         web_context_queue=asyncio.Queue(maxsize=4),
+        web_context_enabled=web_context_enabled,
     )
 
 
