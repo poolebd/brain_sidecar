@@ -10,6 +10,7 @@ ui/node_modules/
 ui/dist/
 ui/test-results/
 ui/playwright-report/
+test-results/
 ui/tsconfig.tsbuildinfo
 *.egg-info/
 __pycache__/

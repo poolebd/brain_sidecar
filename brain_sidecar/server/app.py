@@ -9,15 +9,17 @@ from uuid import uuid4
 from typing import Annotated, Any, Literal
 
 import uvicorn
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile, WebSocket
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from brain_sidecar.config import load_settings, update_dotenv_value
+from brain_sidecar.core.audio_spool import AudioSpoolWriter
 from brain_sidecar.core.devices import list_audio_devices
 from brain_sidecar.core.gpu import read_gpu_status
 from brain_sidecar.core.meeting_contract import normalize_meeting_contract
+from brain_sidecar.core.review import ReviewService
 from brain_sidecar.core.session import SessionManager
 from brain_sidecar.core.test_mode import TestModeService
 
@@ -61,6 +63,16 @@ class StartSessionRequest(BaseModel):
     fixture_wav: str | None = None
     audio_source: str | None = None
     save_transcript: bool = True
+    mic_tuning: MicTuningRequest | None = None
+    meeting_contract: MeetingContractRequest | None = None
+    web_context_enabled: bool | None = None
+
+
+class StartLiveRequest(BaseModel):
+    device_id: str | None = None
+    fixture_wav: str | None = None
+    audio_source: str | None = None
+    title: str | None = None
     mic_tuning: MicTuningRequest | None = None
     meeting_contract: MeetingContractRequest | None = None
     web_context_enabled: bool | None = None
@@ -204,6 +216,25 @@ def _ollama_models_payload(settings, models: list[dict[str, Any]], *, error: str
     }
 
 
+async def _read_limited_upload(file: UploadFile) -> bytes:
+    size = 0
+    chunks: list[bytes] = []
+    try:
+        while True:
+            chunk = await file.read(UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_INPUT_FILE_BYTES:
+                raise HTTPException(status_code=413, detail="Input file is larger than 1 GB.")
+            chunks.append(chunk)
+    finally:
+        await file.close()
+    if size == 0:
+        raise HTTPException(status_code=400, detail="Input file is empty.")
+    return b"".join(chunks)
+
+
 async def _ollama_reachability(manager: SessionManager, chat_host: str, embed_host: str) -> tuple[bool, bool]:
     if chat_host == embed_host:
         reachable = await asyncio.to_thread(manager.ollama.host_reachable, chat_host)
@@ -214,10 +245,31 @@ async def _ollama_reachability(manager: SessionManager, chat_host: str, embed_ho
     return bool(chat_reachable), bool(embed_reachable)
 
 
+def _public_review_job(job: dict[str, Any], *, include_result: bool = True) -> dict[str, Any]:
+    payload = dict(job)
+    payload.pop("temporary_audio_path", None)
+    if not include_result:
+        result = payload.get("result")
+        if isinstance(result, dict):
+            diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
+            payload["result_preview"] = {
+                "clean_segment_count": len(result.get("clean_transcript") or []),
+                "meeting_card_count": len(result.get("meeting_cards") or []),
+                "summary": (result.get("summary") or {}).get("summary") if isinstance(result.get("summary"), dict) else None,
+                "diagnostics": diagnostics,
+            }
+        payload.pop("result", None)
+        payload["clean_segments"] = []
+        payload["meeting_cards"] = []
+        payload["summary"] = None
+    return payload
+
+
 def create_app() -> FastAPI:
     settings = load_settings()
     manager = SessionManager(settings)
     test_mode = TestModeService(settings)
+    review_service = ReviewService(settings, manager)
 
     app = FastAPI(
         title="Brain Sidecar",
@@ -226,6 +278,15 @@ def create_app() -> FastAPI:
     )
     app.state.manager = manager
     app.state.settings = settings
+    app.state.review_service = review_service
+
+    @app.on_event("startup")
+    async def start_review_worker() -> None:
+        await review_service.start_worker()
+
+    @app.on_event("shutdown")
+    async def stop_review_worker() -> None:
+        await review_service.stop_worker()
 
     app.add_middleware(
         CORSMiddleware,
@@ -295,6 +356,8 @@ def create_app() -> FastAPI:
         status["transcription_overlap_seconds"] = settings.transcription_overlap_seconds
         status["transcription_queue_size"] = settings.transcription_queue_size
         status["speaker_enrollment_sample_seconds"] = settings.speaker_enrollment_sample_seconds
+        status["speaker_enrollment_minimum_seconds"] = settings.speaker_enrollment_minimum_seconds
+        status["speaker_enrollment_target_seconds"] = settings.speaker_enrollment_target_seconds
         status["speaker_identity_label"] = settings.speaker_identity_label
         status["speaker_retain_raw_enrollment_audio"] = settings.speaker_retain_raw_enrollment_audio
         status["dedupe_similarity_threshold"] = settings.dedupe_similarity_threshold
@@ -408,6 +471,74 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/review/jobs")
+    async def create_review_job(
+        file: UploadFile = File(...),
+        save_result: bool = Form(False),
+        title: str | None = Form(None),
+    ) -> dict:
+        try:
+            data = await _read_limited_upload(file)
+            job = await review_service.create_job(
+                filename=file.filename or "review-audio",
+                data=data,
+                save_result=False,
+                title=title,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _public_review_job(job)
+
+    @app.get("/api/review/jobs")
+    async def list_review_jobs(limit: int = 50, status: str | None = None) -> dict:
+        jobs = await review_service.list_jobs(limit=max(1, min(limit, 200)), status=status)
+        return {"jobs": [_public_review_job(job, include_result=False) for job in jobs]}
+
+    @app.get("/api/review/jobs/latest")
+    async def get_latest_review_job() -> dict:
+        job = await review_service.latest_job()
+        if job is None:
+            raise HTTPException(status_code=404, detail="No review jobs have been started.")
+        return _public_review_job(job)
+
+    @app.post("/api/review/jobs/{job_id}/cancel")
+    async def cancel_review_job(job_id: str) -> dict:
+        try:
+            job = await review_service.cancel_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Review job not found: {job_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _public_review_job(job)
+
+    @app.post("/api/review/jobs/{job_id}/approve")
+    async def approve_review_job(job_id: str) -> dict:
+        try:
+            job = await review_service.approve_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Review job not found: {job_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _public_review_job(job)
+
+    @app.post("/api/review/jobs/{job_id}/discard")
+    async def discard_review_job(job_id: str) -> dict:
+        try:
+            job = await review_service.discard_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Review job not found: {job_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _public_review_job(job)
+
+    @app.get("/api/review/jobs/{job_id}")
+    async def get_review_job(job_id: str) -> dict:
+        try:
+            job = await review_service.get_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Review job not found: {job_id}") from exc
+        return _public_review_job(job)
+
     @app.post("/api/web-context/search")
     async def search_web_context(request: WebContextSearchRequest) -> dict:
         return await manager.search_web_context(request.query, session_id=request.session_id)
@@ -434,6 +565,90 @@ def create_app() -> FastAPI:
             return await manager.ask_sidecar(request.query, session_id=request.session_id)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/live/start")
+    async def start_live(request: StartLiveRequest) -> dict:
+        fixture_wav = Path(request.fixture_wav).expanduser().resolve() if request.fixture_wav else None
+        if fixture_wav and not fixture_wav.exists():
+            raise HTTPException(status_code=400, detail=f"Fixture WAV does not exist: {fixture_wav}")
+        audio_source = _audio_source_for_request(
+            request.audio_source,
+            fixture_wav,
+            test_mode_enabled=settings.test_mode_enabled,
+        )
+        live_id = f"live_{uuid4().hex[:16]}"
+        title = " ".join((request.title or "").split()).strip() or time.strftime("Live meeting %Y-%m-%d %H:%M")
+        spool_path = settings.data_dir / "review-spool" / live_id / "live.wav"
+        spool = AudioSpoolWriter(spool_path, sample_rate=settings.audio_sample_rate)
+        try:
+            await manager.start_session(
+                live_id,
+                device_id=request.device_id,
+                fixture_wav=fixture_wav,
+                audio_source=audio_source,
+                save_transcript=False,
+                mic_tuning=_mic_tuning_payload(request.mic_tuning),
+                meeting_contract=_meeting_contract_payload(request.meeting_contract),
+                web_context_enabled=request.web_context_enabled,
+                persist_session=False,
+                audio_spool=spool,
+                live_title=title,
+            )
+        except Exception as exc:
+            spool.abort()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "status": "running",
+            "live_id": live_id,
+            "title": title,
+            "audio_source": audio_source,
+            "raw_audio_retained": False,
+            "temporary_audio_retained": True,
+            "meeting_contract": _meeting_contract_payload(request.meeting_contract),
+            "web_context_enabled": request.web_context_enabled
+            if request.web_context_enabled is not None
+            else settings.web_context_enabled,
+        }
+
+    @app.post("/api/live/{live_id}/stop")
+    async def stop_live(live_id: str) -> dict:
+        stop_result = await manager.stop_session(live_id)
+        audio_path = stop_result.get("audio_path")
+        bytes_written = int(stop_result.get("spooled_audio_bytes") or 0)
+        if not audio_path or bytes_written <= 0:
+            return {
+                "status": "stopped",
+                "live_id": live_id,
+                "review_job_id": None,
+                "temporary_audio_retained": False,
+                "raw_audio_retained": False,
+                "message": "No audio was captured; no Review job was created.",
+            }
+        try:
+            job = await review_service.create_live_handoff_job(
+                live_id=live_id,
+                title=str(stop_result.get("live_title") or "Live meeting review"),
+                audio_path=Path(str(audio_path)),
+                filename=f"{live_id}.wav",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "status": "queued",
+            "live_id": live_id,
+            "review_job_id": job["id"],
+            "queue_position": job.get("queue_position"),
+            "temporary_audio_retained": True,
+            "raw_audio_retained": True,
+            "message": "Temporary audio queued for Review validation.",
+        }
+
+    @app.get("/api/live/{live_id}/events")
+    async def live_events(
+        live_id: str,
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ):
+        return await _event_stream(live_id, last_event_id)
 
     @app.post("/api/sessions")
     async def create_session(request: CreateSessionRequest) -> dict:
@@ -471,6 +686,15 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Session not found: {session_id}") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/sessions/{session_id}/review/regenerate")
+    async def regenerate_session_review(session_id: str) -> dict:
+        try:
+            return await review_service.regenerate_session_review(session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/sessions/{session_id}/start")
     async def start_session(session_id: str, request: StartSessionRequest) -> dict:

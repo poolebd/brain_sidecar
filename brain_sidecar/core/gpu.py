@@ -304,7 +304,7 @@ def _insufficient_vram_message(
     process_summary = _process_summary(after.gpu_processes)
     error_summary = f" Ollama stop errors: {'; '.join(errors)}." if errors else ""
     return (
-        f"Could not reserve enough free GPU memory for CUDA Faster-Whisper. "
+        f"Could not reserve enough free GPU memory for CUDA ASR. "
         f"Need at least {min_free_mb} MB free VRAM before loading ASR; currently free: {free_mb} MB. "
         f"{action}{error_summary} GPU processes: {process_summary}."
     )

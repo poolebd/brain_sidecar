@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from brain_sidecar.config import Settings
+from brain_sidecar.core.audio_spool import AudioSpoolResult, AudioSpoolWriter
 from brain_sidecar.core.audio import AudioCapture, FFmpegAudioCapture, FixtureWavAudioCapture, MAX_INPUT_GAIN_DB, MIN_INPUT_GAIN_DB
 from brain_sidecar.core.asr import ASR_BACKEND_FASTER_WHISPER
 from brain_sidecar.core.asr_factory import create_asr_backend
@@ -87,6 +88,10 @@ class ActiveSession:
     selected_device_id: str | None = None
     input_gain_db: float = 0.0
     save_transcript: bool = True
+    persist_session: bool = True
+    live_title: str | None = None
+    audio_spool: AudioSpoolWriter | None = None
+    spooled_audio_bytes: int = 0
     recent_segments: list[TranscriptSegment] = field(default_factory=list)
     final_segment_count: int = 0
     next_note_segment_count: int = 3
@@ -176,6 +181,9 @@ class SessionManager:
         mic_tuning: dict[str, object] | None = None,
         meeting_contract: object | None = None,
         web_context_enabled: bool | None = None,
+        persist_session: bool = True,
+        audio_spool: AudioSpoolWriter | None = None,
+        live_title: str | None = None,
     ) -> None:
         async with self._lock:
             if session_id in self._active:
@@ -219,6 +227,9 @@ class SessionManager:
                 selected_device_id=capture.device.id if isinstance(capture, FFmpegAudioCapture) else None,
                 input_gain_db=capture.input_gain_db if isinstance(capture, FFmpegAudioCapture) else 0.0,
                 save_transcript=save_transcript,
+                persist_session=persist_session,
+                live_title=live_title,
+                audio_spool=audio_spool,
                 next_note_segment_count=self.settings.notes_every_segments,
                 asr_backend=self._asr_backend_name(),
                 asr_model=self._asr_model_name(),
@@ -234,7 +245,8 @@ class SessionManager:
                 active.tasks.append(asyncio.create_task(self._run_web_context_loop(session_id, web_context_queue)))
             for task in active.tasks:
                 task.add_done_callback(lambda done_task, sid=session_id: self._surface_task_exception(sid, done_task))
-            self.storage.set_session_status(session_id, "running", save_transcript=save_transcript)
+            if persist_session:
+                self.storage.set_session_status(session_id, "running", save_transcript=save_transcript)
 
         await self.bus.publish(
             SidecarEvent(
@@ -255,6 +267,8 @@ class SessionManager:
                     "selected_device_id": active.selected_device_id,
                     "input_gain_db": active.input_gain_db,
                     "save_transcript": active.save_transcript,
+                    "persist_session": active.persist_session,
+                    "temporary_audio_retained": active.audio_spool is not None,
                     "web_context_enabled": active.web_context_enabled,
                     "web_context_configured": bool(self.settings.brave_search_api_key.strip()),
                     "raw_audio_retained": False,
@@ -326,18 +340,29 @@ class SessionManager:
             return False
         return bool(status.ollama_gpu_models)
 
-    async def stop_session(self, session_id: str) -> None:
+    def has_active_capture(self) -> bool:
+        return bool(self._active)
+
+    async def stop_session(self, session_id: str) -> dict[str, object]:
         async with self._lock:
             active = self._active.get(session_id)
         if active is None:
-            return
+            return {"status": "stopped", "session_id": session_id, "audio_path": None, "spooled_audio_bytes": 0}
         async with self._lock:
             self._active.pop(session_id, None)
         await active.capture.stop()
         for task in active.tasks:
             task.cancel()
         await asyncio.gather(*active.tasks, return_exceptions=True)
-        self.storage.set_session_status(session_id, "stopped", ended_at=time.time())
+        spool_result: AudioSpoolResult | None = None
+        if active.audio_spool is not None:
+            try:
+                spool_result = await asyncio.to_thread(active.audio_spool.finalize)
+            except Exception:
+                active.audio_spool.abort()
+                spool_result = active.audio_spool.result(path=None)
+        if active.persist_session:
+            self.storage.set_session_status(session_id, "stopped", ended_at=time.time())
         await self.bus.publish(
             SidecarEvent(
                 type=EVENT_AUDIO_STATUS,
@@ -345,15 +370,26 @@ class SessionManager:
                 payload={
                     "status": "stopped",
                     "raw_audio_retained": False,
+                    "temporary_audio_retained": bool(spool_result and spool_result.path),
                     "save_transcript": active.save_transcript,
+                    "persist_session": active.persist_session,
                     "dropped_windows": active.dropped_windows,
+                    "spooled_audio_bytes": active.spooled_audio_bytes,
                     **self._pipeline_metrics(active),
                     **self._meeting_status(active),
                 },
             )
         )
-        if active.save_transcript and active.recent_segments:
+        if active.persist_session and active.save_transcript and active.recent_segments:
             await self._safe_store_session_memory_summary(session_id, active.recent_segments)
+        return {
+            "status": "stopped",
+            "session_id": session_id,
+            "audio_path": str(spool_result.path) if spool_result and spool_result.path else None,
+            "spooled_audio_bytes": active.spooled_audio_bytes,
+            "duration_seconds": spool_result.duration_seconds if spool_result else 0.0,
+            "live_title": active.live_title,
+        }
 
     async def pause_session(self, session_id: str) -> bool:
         async with self._lock:
@@ -718,6 +754,7 @@ class SessionManager:
                 payload={
                     "status": "listening",
                     "raw_audio_retained": False,
+                    "temporary_audio_retained": active.audio_spool is not None if active is not None else False,
                     **(self._pipeline_metrics(active) if active is not None else {}),
                     **(self._meeting_status(active) if active is not None else {}),
                 },
@@ -727,6 +764,9 @@ class SessionManager:
         try:
             async for chunk in capture.chunks():
                 total_bytes += len(chunk)
+                if active is not None and active.audio_spool is not None:
+                    active.audio_spool.write_pcm16(chunk)
+                    active.spooled_audio_bytes += len(chunk)
                 buffer.extend(chunk)
                 if self.settings.partial_transcripts_enabled and len(buffer) >= partial_bytes:
                     buffer_seconds = len(buffer) / bytes_per_second
@@ -1039,6 +1079,8 @@ class SessionManager:
             "asr_model": asr_model,
             "speaker_identity_active": self.speaker_identity.status()["ready"],
             "save_transcript": active.save_transcript,
+            "persist_session": active.persist_session,
+            "temporary_audio_retained": active.audio_spool is not None,
             "transcript_retention": "saved" if active.save_transcript else "temporary",
             "raw_audio_retained": False,
             **speaker_payload,
@@ -1557,7 +1599,9 @@ class SessionManager:
 
     async def _publish_error(self, session_id: str, message: str, *, fatal: bool = False) -> None:
         if fatal:
-            self.storage.set_session_status(session_id, "error", ended_at=time.time())
+            active = self._active.get(session_id)
+            if active is None or active.persist_session:
+                self.storage.set_session_status(session_id, "error", ended_at=time.time())
         await self.bus.publish(
             SidecarEvent(type=EVENT_ERROR, session_id=session_id, payload={"message": message, "fatal": fatal})
         )
@@ -1600,12 +1644,14 @@ def _segment_with_speaker_payload(segment: TranscriptSegment, payload: dict) -> 
         speaker_role=payload.get("speaker_role") or segment.speaker_role,
         speaker_label=payload.get("speaker_label") or segment.speaker_label,
         speaker_confidence=payload.get("speaker_confidence") if payload.get("speaker_confidence") is not None else segment.speaker_confidence,
+        speaker_match_score=payload.get("speaker_match_score") if payload.get("speaker_match_score") is not None else segment.speaker_match_score,
         speaker_match_reason=payload.get("speaker_match_reason") or segment.speaker_match_reason,
         speaker_low_confidence=(
             bool(payload.get("speaker_low_confidence"))
             if payload.get("speaker_low_confidence") is not None
             else segment.speaker_low_confidence
         ),
+        diarization_speaker_id=payload.get("diarization_speaker_id") or segment.diarization_speaker_id,
     )
 
 

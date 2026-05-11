@@ -126,8 +126,10 @@ class TranscriptSegment:
     speaker_role: str | None = None
     speaker_label: str | None = None
     speaker_confidence: float | None = None
+    speaker_match_score: float | None = None
     speaker_match_reason: str | None = None
     speaker_low_confidence: bool | None = None
+    diarization_speaker_id: str | None = None
     source_segment_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -146,10 +148,14 @@ class TranscriptSegment:
             payload["speaker_label"] = self.speaker_label
         if self.speaker_confidence is not None:
             payload["speaker_confidence"] = self.speaker_confidence
+        if self.speaker_match_score is not None:
+            payload["speaker_match_score"] = self.speaker_match_score
         if self.speaker_match_reason:
             payload["speaker_match_reason"] = self.speaker_match_reason
         if self.speaker_low_confidence is not None:
             payload["speaker_low_confidence"] = self.speaker_low_confidence
+        if self.diarization_speaker_id:
+            payload["diarization_speaker_id"] = self.diarization_speaker_id
         if self.source_segment_ids:
             payload["source_segment_ids"] = self.source_segment_ids
         return payload

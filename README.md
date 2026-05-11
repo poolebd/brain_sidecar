@@ -63,6 +63,18 @@ UI: `http://127.0.0.1:8766`
 Hosted access remains through the existing Caddy route at
 `https://notes.shoalstone.net/`.
 
+To smoke-test the actual local Caddy route, set
+`BRAIN_SIDECAR_CADDY_BASIC_PASSWORD` in your environment or local `.env`, then
+run:
+
+```bash
+./scripts/test_hosted_caddy.sh
+```
+
+This checks that `notes.shoalstone.net` resolves to the local Caddy listener,
+loads the app through Basic auth, opens Review, and reaches `/api/health/gpu`
+through Caddy.
+
 `./start.sh` runs the FastAPI backend and Vite UI detached, writes PID files
 under `runtime/dev/pids/`, and writes logs under `runtime/dev/logs/`:
 
@@ -122,6 +134,14 @@ Useful knobs:
 - `BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB`: free VRAM target before loading the selected ASR backend, default `3500`.
 - `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before CUDA ASR load when VRAM is tight, default `false`.
 - `BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS`: wait budget after unloading Ollama, default `10`.
+- `BRAIN_SIDECAR_REVIEW_ASR_BACKEND`: batch Review ASR backend, default `nemo`; set `faster_whisper` only for compatibility testing.
+- `BRAIN_SIDECAR_REVIEW_ASR_MODEL`: Review ASR model, default `stt_en_fastconformer_ctc_xxlarge`.
+- `BRAIN_SIDECAR_REVIEW_ASR_DEVICE`: Review ASR device, `auto`, `cpu`, or `cuda`, default `auto`.
+- `BRAIN_SIDECAR_REVIEW_ASR_BATCH_SIZE`: Review ASR chunk batch size, default `2`.
+- `BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS`: Review ASR chunk length before NeMo batching, default `45`.
+- `BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS`: Review ASR chunk overlap for boundary protection, default `3`.
+- `BRAIN_SIDECAR_REVIEW_CORRECTION_BATCH_SIZE`: transcript segments sent per conservative Ollama correction call, default `12`.
+- `BRAIN_SIDECAR_REVIEW_CORRECTION_CONCURRENCY`: concurrent transcript correction calls, default `2`.
 - `BRAIN_SIDECAR_OLLAMA_HOST`: default Ollama host used when split hosts are unset, default `http://127.0.0.1:11434`.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_HOST`: Ollama host for note/card synthesis, default local `http://127.0.0.1:11434`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_HOST`: Ollama host for recall embeddings, default local.
@@ -140,6 +160,8 @@ Useful knobs:
 - `BRAIN_SIDECAR_DEDUPE_SIMILARITY_THRESHOLD`: suppresses repeated text from overlapping windows.
 - `BRAIN_SIDECAR_ASR_INITIAL_PROMPT`: optional vocabulary/context hint for names, projects, or jargon.
 - `BRAIN_SIDECAR_SPEAKER_ENROLLMENT_SAMPLE_SECONDS`: USB-mic recording window for each Speaker Identity sample, default `8`.
+- `BRAIN_SIDECAR_SPEAKER_ENROLLMENT_MINIMUM_SECONDS`: usable BP-only speech required before the BP label is active, default `60`.
+- `BRAIN_SIDECAR_SPEAKER_ENROLLMENT_TARGET_SECONDS`: stronger BP-only training target shown in the UI, default `120`.
 - `BRAIN_SIDECAR_SPEAKER_IDENTITY_LABEL`: display label for BP's own voice, default `BP`.
 - `BRAIN_SIDECAR_SPEAKER_RETAIN_RAW_ENROLLMENT_AUDIO`: must remain `false` unless explicitly changing the privacy contract; default `false`.
 - `BRAIN_SIDECAR_RECALL_MIN_SCORE`: minimum passive live recall score, default `0.58`.
@@ -277,11 +299,13 @@ finalization uses only the current training
 attempt and can ignore an outlier sample when enough consistent single-speaker
 speech remains, so a failed attempt should not poison the next one.
 
-When ready, transcript events can label high-confidence BP speech with
-`speaker_role: "user"` and the configured label. Meeting-intelligence cards use
-that metadata conservatively: BP-owned first-person commitments can become
-follow-ups, other-speaker commitments do not become BP actions, and unknown or
-low-confidence speakers are worded cautiously.
+When ready, Live and Review transcript events can label high-confidence BP
+speech with `speaker_role: "user"` and the configured label. Non-matches are
+only treated as `Other speaker` or `Unknown speaker`; Brain Sidecar is not meant
+to identify everyone in the room. Meeting-intelligence cards use that metadata
+conservatively: BP-owned first-person commitments can become follow-ups,
+other-speaker commitments do not become BP actions, and unknown or low-confidence
+speakers are worded cautiously.
 
 ## Useful Checks
 

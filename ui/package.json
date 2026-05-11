@@ -10,6 +10,8 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:headed": "playwright test --headed",
+    "test:e2e:hosted": "playwright test --config=playwright.hosted.config.ts",
+    "test:e2e:hosted:caddy": "bash ../scripts/test_hosted_caddy.sh",
     "test:e2e:integration": "bash ../scripts/test_e2e_integration.sh",
     "test:user-audio": "bash ../scripts/test_user_audio.sh",
     "playwright:install": "playwright install --with-deps chromium",

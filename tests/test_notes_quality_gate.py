@@ -194,6 +194,7 @@ def test_identity_specific_bp_card_requires_literal_name_or_enrolled_identity() 
 
     assert gate().evaluate(item, evidence, status()).reason == "identity_claim_not_supported"
     assert accepted(gate().evaluate(item, evidence, status(ready=True, enrolled=True)))
+    assert accepted(gate().evaluate(item, evidence, {"ready": True, "enrollment_status": "ready"}))
 
 
 def test_repeated_owner_unclear_is_rate_limited() -> None:

@@ -22,7 +22,7 @@ test("captures meeting cockpit page screenshots", async ({ page }) => {
   await mockApi(page, { testModeEnabled: true });
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
   await emitSessionEvent(page, {
     type: "transcript_final",
@@ -52,9 +52,33 @@ test("captures meeting cockpit page screenshots", async ({ page }) => {
   });
   await page.screenshot({ path: path.join(screenshotDir, "live.png"), fullPage: true, animations: "disabled" });
 
+  await page.getByRole("banner").getByRole("button", { name: "Stop & Queue" }).click();
+  await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("button", { name: "Review", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
+  await page.screenshot({ path: path.join(screenshotDir, "review.png"), fullPage: true, animations: "disabled" });
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, {
+    latestReviewStatus: "completed_awaiting_validation",
+    longReviewEvidence: true,
+    reviewQueueScenario: "two_jobs",
+    reviewTypographyStress: true,
+  });
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("button", { name: "Review", exact: true }).click();
+  const denseReview = page.getByRole("main", { name: "Review" });
+  await denseReview.getByText("Queue (2)").click();
+  await denseReview.getByRole("button", { name: /Apollo/ }).click();
+  await denseReview.getByLabel("Review queue menu").locator("summary").click();
+  await expect(denseReview.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
+  await denseReview.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({ path: path.join(screenshotDir, "review-dense.png"), fullPage: true, animations: "disabled" });
+
   await page.getByRole("button", { name: "Sessions" }).click();
   await page.getByRole("button", { name: /Saved model planning call/ }).click();
-  await expect(page.getByRole("main", { name: "Sessions" })).toContainText("Same-GPU default");
+  await expect(page.getByRole("main", { name: "Sessions" })).toContainText("CPU ASR default");
   await page.screenshot({ path: path.join(screenshotDir, "sessions.png"), fullPage: true, animations: "disabled" });
 
   await page.getByRole("button", { name: "Tools" }).click();

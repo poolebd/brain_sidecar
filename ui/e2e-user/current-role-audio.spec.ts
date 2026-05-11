@@ -9,7 +9,7 @@ const artifactDir = process.env.BRAIN_SIDECAR_USER_TEST_ARTIFACT_DIR
 const durationSeconds = Number(process.env.BRAIN_SIDECAR_USER_TEST_DURATION_SECONDS ?? 300);
 const screenshotIntervalMs = Number(process.env.BRAIN_SIDECAR_USER_TEST_SCREENSHOT_INTERVAL_MS ?? 90_000);
 const maxStallMs = Number(process.env.BRAIN_SIDECAR_USER_TEST_MAX_TRANSCRIPT_STALL_MS ?? 240_000);
-const expectWorkMemory = process.env.BRAIN_SIDECAR_EXPECT_WORK_MEMORY === "1";
+const expectReferenceContext = process.env.BRAIN_SIDECAR_EXPECT_REFERENCE_CONTEXT === "1";
 const expectedResponseTerms = parseExpectedTerms(process.env.BRAIN_SIDECAR_EXPECT_RESPONSE_TERMS ?? "");
 const expectedTranscriptTerms = parseExpectedTerms(process.env.BRAIN_SIDECAR_EXPECT_TRANSCRIPT_TERMS ?? "");
 const expectedCardTerms = parseExpectedTerms(process.env.BRAIN_SIDECAR_EXPECT_CARD_TERMS ?? "");
@@ -35,11 +35,10 @@ type Checkpoint = {
   status: string;
   transcript_segments: number;
   note_cards: number;
-  recall_hits: number;
+  reference_context_cards: number;
   queue_depth: number;
   dropped_windows: number;
-  work_parallel_rows: number;
-  memory_text_chars: number;
+  reference_context_text_chars: number;
   error_count: number;
   latest_heard_chars: number;
   meeting_output_cards: number;
@@ -57,7 +56,6 @@ type Report = {
   started_at: string;
   completed_at?: string;
   health?: Record<string, unknown>;
-  work_memory_index?: Record<string, unknown>;
   checkpoints: Checkpoint[];
   final?: Omit<Checkpoint, "screenshot" | "screenshots">;
   expected_response_terms?: string[];
@@ -118,17 +116,11 @@ test("plays current-role audio through the real UI and validates response qualit
     report.expected_energy_lens = true;
   }
 
-  const indexResponse = await request.post(`${apiBase}/api/work-memory/reindex`, {
-    data: { embed: false },
-    timeout: 120_000,
-  });
-  const indexPayload = await indexResponse.json();
-  expect(indexResponse.ok(), `Work memory reindex failed: ${JSON.stringify(indexPayload)}`).toBeTruthy();
-  report.work_memory_index = indexPayload;
   writeReport(report);
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Live field" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Conversation" })).toBeVisible();
+  await expect(page.getByRole("feed", { name: "Live field" })).toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
   const toolsPage = page.getByRole("main", { name: "Tools" });
   const fixtureControls = toolsPage.getByRole("region", { name: "Fixture audio test controls" });
@@ -176,7 +168,7 @@ test("plays current-role audio through the real UI and validates response qualit
     }
   }
 
-  await page.getByRole("button", { name: "Stop" }).click();
+  await page.getByRole("banner").getByRole("button", { name: /Stop|Stop & Queue|Stop Playback/ }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("stopped", { timeout: 30_000 });
   await expandMeetingOutputDetails(page);
   const finalCheckpoint = await captureCheckpoint(page, report, `${String(checkpointIndex).padStart(2, "0")}-final`);
@@ -230,9 +222,9 @@ test("plays current-role audio through the real UI and validates response qualit
   expect(report.issues, `User-audio issues: ${report.issues.join("; ")}`).toEqual([]);
   expect(finalCheckpoint.transcript_segments).toBeGreaterThan(0);
   expect(finalCheckpoint.latest_heard_chars).toBeGreaterThan(8);
-  if (expectWorkMemory) {
-    expect(finalCheckpoint.work_parallel_rows).toBeGreaterThan(0);
-    expect(finalCheckpoint.memory_text_chars).toBeGreaterThan(80);
+  if (expectReferenceContext) {
+    expect(finalCheckpoint.reference_context_cards).toBeGreaterThan(0);
+    expect(finalCheckpoint.reference_context_text_chars).toBeGreaterThan(80);
   }
 });
 
@@ -257,11 +249,10 @@ async function captureCheckpoint(page: Page, report: Report, label: string): Pro
     status: await runtimeStatus(page),
     transcript_segments: await readMetric(page, "Transcript"),
     note_cards: await readMetric(page, "Notes"),
-    recall_hits: await readMetric(page, "Recall"),
+    reference_context_cards: await referenceContextCardCount(page),
     queue_depth: await readMetric(page, "Queue"),
     dropped_windows: await droppedWindows(page),
-    work_parallel_rows: await page.locator(".field-bubble.memory").count(),
-    memory_text_chars: await memoryTextCharCount(page),
+    reference_context_text_chars: await referenceContextTextCharCount(page),
     error_count: await page.getByRole("alert").count(),
     latest_heard_chars: await latestHeardCharCount(page),
     meeting_output_cards: await meetingOutputCardCount(page),
@@ -319,9 +310,6 @@ async function readMetric(page: Page, label: string): Promise<number> {
   if (label === "Notes") {
     return numberFromText(await page.locator(".context-toolbar .field-toolbar-status").innerText(), /(\d+)\s+current/i);
   }
-  if (label === "Recall") {
-    return await page.locator("#recall .context-card.memory").count();
-  }
   if (label === "Queue") {
     const queue = page.getByLabel("Capture queue status");
     if (await queue.count()) {
@@ -349,12 +337,16 @@ async function latestHeardCharCount(page: Page): Promise<number> {
   return text.trim().length;
 }
 
-async function memoryTextCharCount(page: Page): Promise<number> {
-  const recall = page.locator("#recall");
-  if ((await recall.count()) === 0 || !(await recall.isVisible())) {
+async function referenceContextCardCount(page: Page): Promise<number> {
+  return page.locator("#recall .reference-context-output .context-card").count();
+}
+
+async function referenceContextTextCharCount(page: Page): Promise<number> {
+  const referenceContext = page.locator("#recall .reference-context-output");
+  if ((await referenceContext.count()) === 0) {
     return 0;
   }
-  const text = await recall.innerText();
+  const text = await referenceContext.evaluate((element) => element.textContent ?? "");
   return text.trim().length;
 }
 

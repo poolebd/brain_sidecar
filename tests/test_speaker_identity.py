@@ -53,6 +53,8 @@ def make_settings(tmp_path: Path) -> Settings:
         transcription_queue_size=1,
         postprocess_queue_size=1,
         speaker_enrollment_sample_seconds=8.0,
+        speaker_enrollment_minimum_seconds=15.0,
+        speaker_enrollment_target_seconds=20.0,
     )
 
 
@@ -183,12 +185,12 @@ def test_runtime_labels_matching_cluster_as_bp_only_above_threshold(tmp_path: Pa
     assert me.display_speaker_label == "BP"
     assert me.speaker_role == "user"
     assert me.match_score is not None and me.match_score >= 0.82
-    assert other.display_speaker_label == "Speaker 1"
+    assert other.display_speaker_label == "Other speaker"
     assert other.matched_profile_id is None
     assert other.speaker_role == "other"
 
 
-def test_anonymous_speaker_numbering_is_stable_within_session(tmp_path: Path) -> None:
+def test_non_bp_speaker_label_is_generic_within_session(tmp_path: Path) -> None:
     service = speaker_service(
         tmp_path,
         [
@@ -220,8 +222,8 @@ def test_anonymous_speaker_numbering_is_stable_within_session(tmp_path: Path) ->
         end_ms=3900,
     )
 
-    assert first.display_speaker_label == "Speaker 1"
-    assert second.display_speaker_label == "Speaker 1"
+    assert first.display_speaker_label == "Other speaker"
+    assert second.display_speaker_label == "Other speaker"
 
 
 def test_bad_legacy_asr_corrections_can_be_quarantined(tmp_path: Path) -> None:

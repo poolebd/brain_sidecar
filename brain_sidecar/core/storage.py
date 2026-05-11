@@ -21,6 +21,63 @@ def _normalize_search_text(value: object) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())).strip()
 
 
+def _review_steps_for_payload(status: str, phase: str, message: str, progress: int) -> list[dict[str, Any]]:
+    specs = [
+        ("conditioning", "Conditioning"),
+        ("transcribing", "High-accuracy ASR"),
+        ("reviewing", "Segment review"),
+        ("evaluating", "Meeting output"),
+        ("completed", "Validation"),
+    ]
+    active_index = 0
+    if status in {"queued", "paused_for_live"}:
+        active_index = -1
+    elif status == "running_asr":
+        active_index = 1 if phase == "asr" else 0
+    elif status == "running_cards":
+        active_index = 2
+    elif status == "running_summary":
+        active_index = 3
+    elif status in {"completed_awaiting_validation", "approved", "discarded"}:
+        active_index = 4
+    elif status in {"canceled", "error"}:
+        active_index = min(4, max(0, progress // 25))
+
+    steps: list[dict[str, Any]] = []
+    for index, (key, label) in enumerate(specs):
+        if active_index < 0:
+            step_status = "pending"
+            step_progress = 0
+            step_message = "Queued." if index == 0 and status == "queued" else ""
+        elif index < active_index:
+            step_status = "completed"
+            step_progress = 100
+            step_message = "Completed."
+        elif index == active_index:
+            if status == "error":
+                step_status = "error"
+            elif status == "canceled":
+                step_status = "canceled"
+            elif status in {"completed_awaiting_validation", "approved", "discarded"}:
+                step_status = "completed"
+            else:
+                step_status = "running"
+            step_progress = max(0, min(100, progress))
+            step_message = message
+        else:
+            step_status = "pending"
+            step_progress = 0
+            step_message = ""
+        steps.append({
+            "key": key,
+            "label": label,
+            "status": step_status,
+            "message": step_message,
+            "progress": step_progress,
+        })
+    return steps
+
+
 class Storage:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
@@ -246,9 +303,50 @@ class Storage:
                   entities_json text not null,
                   lessons_json text not null,
                   source_segment_ids_json text not null,
+                  review_standard text not null default '',
+                  key_points_json text not null default '[]',
+                  projects_json text not null default '[]',
+                  project_workstreams_json text not null default '[]',
+                  technical_findings_json text not null default '[]',
+                  portfolio_rollup_json text not null default '{}',
+                  review_metrics_json text not null default '{}',
+                  risks_json text not null default '[]',
+                  coverage_notes_json text not null default '[]',
+                  reference_context_json text not null default '[]',
+                  context_diagnostics_json text not null default '{}',
                   created_at real not null,
                   updated_at real not null
                 );
+                create table if not exists review_jobs (
+                  id text primary key,
+                  source text not null,
+                  title text not null,
+                  status text not null,
+                  validation_status text not null,
+                  phase text,
+                  progress_pct real not null default 0,
+                  message text,
+                  queue_position integer,
+                  session_id text,
+                  live_id text,
+                  source_filename text,
+                  temporary_audio_path text,
+                  temporary_audio_retained integer not null default 0,
+                  audio_deleted_at real,
+                  audio_delete_error text,
+                  cleanup_status text,
+                  result_json text,
+                  error_message text,
+                  created_at real not null,
+                  updated_at real not null,
+                  started_at real,
+                  completed_at real,
+                  approved_at real,
+                  discarded_at real,
+                  canceled_at real
+                );
+                create index if not exists idx_review_jobs_status on review_jobs(status, created_at);
+                create index if not exists idx_review_jobs_updated on review_jobs(updated_at);
                 create table if not exists company_refs (
                   id text primary key,
                   canonical_name text not null,
@@ -287,16 +385,34 @@ class Storage:
         self._ensure_column("transcript_segments", "speaker_role", "text")
         self._ensure_column("transcript_segments", "speaker_label", "text")
         self._ensure_column("transcript_segments", "speaker_confidence", "real")
+        self._ensure_column("transcript_segments", "speaker_match_score", "real")
         self._ensure_column("transcript_segments", "speaker_match_reason", "text")
         self._ensure_column("transcript_segments", "speaker_low_confidence", "integer")
+        self._ensure_column("transcript_segments", "diarization_speaker_id", "text")
         self._ensure_column("note_cards", "evidence_quote", "text not null default ''")
         self._ensure_column("note_cards", "owner", "text")
         self._ensure_column("note_cards", "due_date", "text")
         self._ensure_column("note_cards", "missing_info", "text")
+        self._ensure_column("session_memory_summaries", "key_points_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "projects_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "review_standard", "text not null default ''")
+        self._ensure_column("session_memory_summaries", "project_workstreams_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "technical_findings_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "portfolio_rollup_json", "text not null default '{}'")
+        self._ensure_column("session_memory_summaries", "review_metrics_json", "text not null default '{}'")
+        self._ensure_column("session_memory_summaries", "risks_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "coverage_notes_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "reference_context_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "context_diagnostics_json", "text not null default '{}'")
         self._record_migration("20260507_session_retention")
         self._record_migration("20260504_transcript_speaker_fields")
         self._record_migration("20260504_session_memory_summaries")
         self._record_migration("20260505_note_evidence_fields")
+        self._record_migration("20260510_review_jobs")
+        self._record_migration("20260510_review_summary_fields")
+        self._record_migration("20260510_review_summary_context_fields")
+        self._record_migration("20260510_energy_consultant_review_standard")
+        self._record_migration("20260510_review_terminal_summary_fields")
 
     def _record_migration(self, name: str) -> None:
         self.conn.execute(
@@ -1216,6 +1332,318 @@ class Storage:
         ).fetchone()
         return self._session_memory_summary_row_to_dict(row) if row else None
 
+    def create_review_job(
+        self,
+        *,
+        job_id: str,
+        source: str,
+        title: str,
+        status: str,
+        validation_status: str,
+        source_filename: str | None,
+        temporary_audio_path: Path,
+        live_id: str | None = None,
+        message: str = "",
+    ) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                insert into review_jobs(
+                  id, source, title, status, validation_status, phase, progress_pct,
+                  message, queue_position, session_id, live_id, source_filename,
+                  temporary_audio_path, temporary_audio_retained, audio_deleted_at,
+                  audio_delete_error, cleanup_status, result_json, error_message,
+                  created_at, updated_at, started_at, completed_at, approved_at,
+                  discarded_at, canceled_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    source,
+                    title,
+                    status,
+                    validation_status,
+                    status,
+                    0.0,
+                    message,
+                    None,
+                    None,
+                    live_id,
+                    source_filename,
+                    str(temporary_audio_path),
+                    1,
+                    None,
+                    None,
+                    "retained",
+                    None,
+                    None,
+                    now,
+                    now,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(job_id)
+
+    def list_review_jobs(
+        self,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where = ""
+        params: list[Any] = []
+        if status:
+            where = "where status = ?"
+            params.append(status)
+        with self._lock:
+            rows = self.conn.execute(
+                f"""
+                select * from review_jobs
+                {where}
+                order by
+                  case when status in ('queued', 'paused_for_live') then 0
+                       when status like 'running_%' then 1
+                       when status = 'completed_awaiting_validation' then 2
+                       else 3 end,
+                  coalesce(queue_position, 999999),
+                  updated_at desc
+                limit ?
+                """,
+                (*params, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [self._review_job_row_to_dict(row) for row in rows]
+
+    def review_job(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self.conn.execute("select * from review_jobs where id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return self._review_job_row_to_dict(row)
+
+    def latest_review_job(self) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute(
+                """
+                select * from review_jobs
+                order by
+                  case when status not in ('approved', 'discarded', 'canceled', 'error') then 0 else 1 end,
+                  updated_at desc
+                limit 1
+                """
+            ).fetchone()
+        return self._review_job_row_to_dict(row) if row is not None else None
+
+    def refresh_review_queue_positions(self) -> None:
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                select id from review_jobs
+                where status in ('queued', 'paused_for_live')
+                order by created_at
+                """
+            ).fetchall()
+            for index, row in enumerate(rows, start=1):
+                self.conn.execute(
+                    "update review_jobs set queue_position = ? where id = ?",
+                    (index, row["id"]),
+                )
+            self.conn.execute(
+                "update review_jobs set queue_position = null where status not in ('queued', 'paused_for_live')"
+            )
+            self.conn.commit()
+
+    def claim_next_review_job(self) -> dict[str, Any] | None:
+        now = time.time()
+        with self._lock:
+            row = self.conn.execute(
+                """
+                select * from review_jobs
+                where status in ('queued', 'paused_for_live')
+                order by created_at
+                limit 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, phase = ?, progress_pct = ?, message = ?,
+                    queue_position = null, started_at = coalesce(started_at, ?),
+                    updated_at = ?
+                where id = ? and status in ('queued', 'paused_for_live')
+                """,
+                ("running_asr", "asr", 5.0, "Preparing high-accuracy Review ASR.", now, now, row["id"]),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(str(row["id"]))
+
+    def update_review_job_progress(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        phase: str | None,
+        progress_pct: float,
+        message: str = "",
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, phase = ?, progress_pct = ?, message = ?,
+                    error_message = ?, updated_at = ?
+                where id = ?
+                """,
+                (status, phase, float(max(0.0, min(100.0, progress_pct))), message, error_message, now, job_id),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(job_id)
+
+    def complete_review_job(self, job_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, validation_status = ?, phase = ?, progress_pct = ?,
+                    message = ?, result_json = ?, completed_at = ?, updated_at = ?
+                where id = ?
+                """,
+                (
+                    "completed_awaiting_validation",
+                    "pending",
+                    "awaiting_validation",
+                    100.0,
+                    "Review output ready for validation.",
+                    json.dumps(result, sort_keys=True),
+                    now,
+                    now,
+                    job_id,
+                ),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
+    def approve_review_job(self, job_id: str, session_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            current = self.review_job(job_id)
+            if current["status"] == "approved":
+                return current
+            if current["status"] != "completed_awaiting_validation":
+                raise ValueError(f"Cannot approve review job in status {current['status']}.")
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, validation_status = ?, session_id = ?, approved_at = ?,
+                    phase = ?, message = ?, updated_at = ?
+                where id = ?
+                """,
+                ("approved", "approved", session_id, now, "approved", "Review approved and saved.", now, job_id),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
+    def discard_review_job(self, job_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            current = self.review_job(job_id)
+            if current["status"] == "discarded":
+                return current
+            if current["status"] not in {"queued", "paused_for_live", "completed_awaiting_validation", "error"}:
+                raise ValueError(f"Cannot discard review job in status {current['status']}.")
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, validation_status = ?, discarded_at = ?,
+                    phase = ?, message = ?, updated_at = ?
+                where id = ?
+                """,
+                ("discarded", "discarded", now, "discarded", "Review discarded.", now, job_id),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(job_id)
+
+    def cancel_review_job(self, job_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            current = self.review_job(job_id)
+            if current["status"] == "canceled":
+                return current
+            if current["status"] not in {"queued", "paused_for_live"}:
+                raise ValueError(f"Cannot cancel review job in status {current['status']}.")
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, validation_status = ?, canceled_at = ?,
+                    phase = ?, message = ?, updated_at = ?
+                where id = ?
+                """,
+                ("canceled", "canceled", now, "canceled", "Review canceled.", now, job_id),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(job_id)
+
+    def error_review_job(self, job_id: str, message: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, phase = ?, progress_pct = ?, message = ?,
+                    error_message = ?, completed_at = coalesce(completed_at, ?), updated_at = ?
+                where id = ?
+                """,
+                ("error", "error", 100.0, message, message, now, now, job_id),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
+    def mark_review_audio_deleted(self, job_id: str, deleted_at: float | None = None) -> dict[str, Any]:
+        now = deleted_at or time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set temporary_audio_retained = 0, audio_deleted_at = ?,
+                    audio_delete_error = null, cleanup_status = ?, updated_at = ?
+                where id = ?
+                """,
+                (now, "deleted", now, job_id),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
+    def mark_review_audio_cleanup_error(self, job_id: str, error: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set temporary_audio_retained = 1, audio_delete_error = ?,
+                    cleanup_status = ?, updated_at = ?
+                where id = ?
+                """,
+                (error, "error", now, job_id),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
     def add_transcript_segment(self, segment: TranscriptSegment) -> None:
         with self._lock:
             self.conn.execute(
@@ -1224,9 +1652,10 @@ class Storage:
                 (
                   id, session_id, start_s, end_s, text, is_final, created_at,
                   speaker_role, speaker_label, speaker_confidence,
-                  speaker_match_reason, speaker_low_confidence
+                  speaker_match_score, speaker_match_reason, speaker_low_confidence,
+                  diarization_speaker_id
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     segment.id,
@@ -1239,8 +1668,10 @@ class Storage:
                     segment.speaker_role,
                     segment.speaker_label,
                     segment.speaker_confidence,
+                    segment.speaker_match_score,
                     segment.speaker_match_reason,
                     None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                    segment.diarization_speaker_id,
                 ),
             )
             self.conn.commit()
@@ -1253,8 +1684,9 @@ class Storage:
                 update transcript_segments
                 set id = ?, start_s = ?, end_s = ?, text = ?, is_final = ?,
                     created_at = ?, speaker_role = ?, speaker_label = ?,
-                    speaker_confidence = ?, speaker_match_reason = ?,
-                    speaker_low_confidence = ?
+                    speaker_confidence = ?, speaker_match_score = ?,
+                    speaker_match_reason = ?, speaker_low_confidence = ?,
+                    diarization_speaker_id = ?
                 where session_id = ? and id = ?
                 """,
                 (
@@ -1267,8 +1699,10 @@ class Storage:
                     segment.speaker_role,
                     segment.speaker_label,
                     segment.speaker_confidence,
+                    segment.speaker_match_score,
                     segment.speaker_match_reason,
                     None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                    segment.diarization_speaker_id,
                     segment.session_id,
                     target_id,
                 ),
@@ -1279,8 +1713,9 @@ class Storage:
                     update transcript_segments
                     set start_s = ?, end_s = ?, text = ?, is_final = ?,
                         created_at = ?, speaker_role = ?, speaker_label = ?,
-                        speaker_confidence = ?, speaker_match_reason = ?,
-                        speaker_low_confidence = ?
+                        speaker_confidence = ?, speaker_match_score = ?,
+                        speaker_match_reason = ?, speaker_low_confidence = ?,
+                        diarization_speaker_id = ?
                     where session_id = ? and id = ?
                     """,
                     (
@@ -1292,8 +1727,10 @@ class Storage:
                         segment.speaker_role,
                         segment.speaker_label,
                         segment.speaker_confidence,
+                        segment.speaker_match_score,
                         segment.speaker_match_reason,
                         None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                        segment.diarization_speaker_id,
                         segment.session_id,
                         segment.id,
                     ),
@@ -1305,9 +1742,10 @@ class Storage:
                     (
                       id, session_id, start_s, end_s, text, is_final, created_at,
                       speaker_role, speaker_label, speaker_confidence,
-                      speaker_match_reason, speaker_low_confidence
+                      speaker_match_score, speaker_match_reason, speaker_low_confidence,
+                      diarization_speaker_id
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         segment.id,
@@ -1320,8 +1758,10 @@ class Storage:
                         segment.speaker_role,
                         segment.speaker_label,
                         segment.speaker_confidence,
+                        segment.speaker_match_score,
                         segment.speaker_match_reason,
                         None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                        segment.diarization_speaker_id,
                     ),
                 )
             self.conn.commit()
@@ -1362,6 +1802,34 @@ class Storage:
                     note.missing_info,
                 ),
             )
+            self.conn.commit()
+
+    def replace_session_notes(self, session_id: str, notes: list[NoteCard]) -> None:
+        with self._lock:
+            self.conn.execute("delete from note_cards where session_id = ?", (session_id,))
+            for note in notes:
+                self.conn.execute(
+                    """
+                    insert into note_cards(
+                      id, session_id, kind, title, body, source_segment_ids, created_at,
+                      evidence_quote, owner, due_date, missing_info
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        note.id,
+                        note.session_id,
+                        note.kind,
+                        note.title,
+                        note.body,
+                        json.dumps(note.source_segment_ids),
+                        note.created_at,
+                        note.evidence_quote,
+                        note.owner,
+                        note.due_date,
+                        note.missing_info,
+                    ),
+                )
             self.conn.commit()
 
     def add_library_root(self, path: Path) -> str:
@@ -1696,6 +2164,17 @@ class Storage:
         entities: list[str],
         lessons: list[str],
         source_segment_ids: list[str],
+        review_standard: str | None = None,
+        key_points: list[str] | None = None,
+        projects: list[str] | None = None,
+        project_workstreams: list[dict[str, Any]] | None = None,
+        technical_findings: list[dict[str, Any]] | None = None,
+        portfolio_rollup: dict[str, Any] | None = None,
+        review_metrics: dict[str, Any] | None = None,
+        risks: list[str] | None = None,
+        coverage_notes: list[str] | None = None,
+        reference_context: list[dict[str, Any]] | None = None,
+        context_diagnostics: dict[str, Any] | None = None,
     ) -> None:
         now = time.time()
         with self._lock:
@@ -1704,9 +2183,13 @@ class Storage:
                 insert into session_memory_summaries(
                   session_id, title, summary, topics_json, decisions_json, actions_json,
                   unresolved_questions_json, entities_json, lessons_json,
-                  source_segment_ids_json, created_at, updated_at
+                  source_segment_ids_json, review_standard, key_points_json, projects_json,
+                  project_workstreams_json, technical_findings_json, portfolio_rollup_json,
+                  review_metrics_json, risks_json,
+                  coverage_notes_json, reference_context_json, context_diagnostics_json,
+                  created_at, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(session_id) do update set
                   title = excluded.title,
                   summary = excluded.summary,
@@ -1717,6 +2200,17 @@ class Storage:
                   entities_json = excluded.entities_json,
                   lessons_json = excluded.lessons_json,
                   source_segment_ids_json = excluded.source_segment_ids_json,
+                  review_standard = excluded.review_standard,
+                  key_points_json = excluded.key_points_json,
+                  projects_json = excluded.projects_json,
+                  project_workstreams_json = excluded.project_workstreams_json,
+                  technical_findings_json = excluded.technical_findings_json,
+                  portfolio_rollup_json = excluded.portfolio_rollup_json,
+                  review_metrics_json = excluded.review_metrics_json,
+                  risks_json = excluded.risks_json,
+                  coverage_notes_json = excluded.coverage_notes_json,
+                  reference_context_json = excluded.reference_context_json,
+                  context_diagnostics_json = excluded.context_diagnostics_json,
                   updated_at = excluded.updated_at
                 """,
                 (
@@ -1730,6 +2224,17 @@ class Storage:
                     json.dumps(entities),
                     json.dumps(lessons),
                     json.dumps(source_segment_ids),
+                    review_standard or "",
+                    json.dumps(key_points or []),
+                    json.dumps(projects or []),
+                    json.dumps(project_workstreams or []),
+                    json.dumps(technical_findings or []),
+                    json.dumps(portfolio_rollup or {}),
+                    json.dumps(review_metrics or {}),
+                    json.dumps(risks or []),
+                    json.dumps(coverage_notes or []),
+                    json.dumps(reference_context or []),
+                    json.dumps(context_diagnostics or {}),
                     now,
                     now,
                 ),
@@ -1779,6 +2284,78 @@ class Storage:
             "raw_audio_retained": False,
         }
 
+    def _review_job_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        result = None
+        result_json = row["result_json"]
+        if result_json:
+            try:
+                result = json.loads(result_json)
+            except json.JSONDecodeError:
+                result = None
+        temporary_audio_retained = bool(row["temporary_audio_retained"])
+        payload = {
+            "id": row["id"],
+            "job_id": row["id"],
+            "source": row["source"],
+            "title": row["title"],
+            "status": row["status"],
+            "validation_status": row["validation_status"],
+            "phase": row["phase"],
+            "progress_pct": float(row["progress_pct"] or 0.0),
+            "progress_percent": int(round(float(row["progress_pct"] or 0.0))),
+            "message": row["message"] or "",
+            "queue_position": row["queue_position"],
+            "session_id": row["session_id"],
+            "live_id": row["live_id"],
+            "source_filename": row["source_filename"],
+            "filename": row["source_filename"] or "",
+            "temporary_audio_path": row["temporary_audio_path"],
+            "temporary_audio_retained": temporary_audio_retained,
+            "raw_audio_retained": temporary_audio_retained,
+            "audio_deleted_at": row["audio_deleted_at"],
+            "audio_delete_error": row["audio_delete_error"],
+            "cleanup_status": row["cleanup_status"] or ("retained" if temporary_audio_retained else "deleted"),
+            "result": result,
+            "error": row["error_message"],
+            "error_message": row["error_message"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "approved_at": row["approved_at"],
+            "discarded_at": row["discarded_at"],
+            "canceled_at": row["canceled_at"],
+            "active": row["status"] not in {"approved", "discarded", "canceled", "error", "completed_awaiting_validation"},
+        }
+        if result:
+            payload["clean_segments"] = result.get("clean_transcript") or []
+            payload["meeting_cards"] = result.get("meeting_cards") or []
+            payload["summary"] = result.get("summary")
+            diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
+            payload["duration_seconds"] = diagnostics.get("duration_seconds")
+            payload["raw_segment_count"] = diagnostics.get("raw_segment_count", len(payload["clean_segments"]))
+            payload["corrected_segment_count"] = diagnostics.get("corrected_segment_count", len(payload["clean_segments"]))
+            payload["asr_backend"] = diagnostics.get("asr_backend")
+            payload["asr_model"] = diagnostics.get("asr_model")
+            payload["diagnostics"] = diagnostics
+        else:
+            payload["clean_segments"] = []
+            payload["meeting_cards"] = []
+            payload["summary"] = None
+            payload["duration_seconds"] = None
+            payload["raw_segment_count"] = 0
+            payload["corrected_segment_count"] = 0
+            payload["asr_backend"] = None
+            payload["asr_model"] = None
+            payload["diagnostics"] = {}
+        payload["steps"] = _review_steps_for_payload(
+            str(payload["status"]),
+            str(payload.get("phase") or ""),
+            str(payload.get("message") or ""),
+            int(payload["progress_percent"]),
+        )
+        return payload
+
     def _transcript_row_to_segment(self, row: sqlite3.Row) -> TranscriptSegment:
         return TranscriptSegment(
             id=row["id"],
@@ -1791,12 +2368,14 @@ class Storage:
             speaker_role=row["speaker_role"],
             speaker_label=row["speaker_label"],
             speaker_confidence=row["speaker_confidence"],
+            speaker_match_score=row["speaker_match_score"],
             speaker_match_reason=row["speaker_match_reason"],
             speaker_low_confidence=(
                 bool(row["speaker_low_confidence"])
                 if row["speaker_low_confidence"] is not None
                 else None
             ),
+            diarization_speaker_id=row["diarization_speaker_id"],
         )
 
     def _note_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -1864,14 +2443,25 @@ class Storage:
     def _session_memory_summary_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "session_id": row["session_id"],
+            "review_standard": row["review_standard"] or "",
             "title": row["title"],
             "summary": row["summary"],
+            "key_points": json.loads(row["key_points_json"] or "[]"),
             "topics": json.loads(row["topics_json"]),
+            "projects": json.loads(row["projects_json"] or "[]"),
+            "project_workstreams": json.loads(row["project_workstreams_json"] or "[]"),
+            "technical_findings": json.loads(row["technical_findings_json"] or "[]"),
+            "portfolio_rollup": json.loads(row["portfolio_rollup_json"] or "{}"),
+            "review_metrics": json.loads(row["review_metrics_json"] or "{}"),
             "decisions": json.loads(row["decisions_json"]),
             "actions": json.loads(row["actions_json"]),
             "unresolved_questions": json.loads(row["unresolved_questions_json"]),
+            "risks": json.loads(row["risks_json"] or "[]"),
             "entities": json.loads(row["entities_json"]),
             "lessons": json.loads(row["lessons_json"]),
+            "coverage_notes": json.loads(row["coverage_notes_json"] or "[]"),
+            "reference_context": json.loads(row["reference_context_json"] or "[]"),
+            "context_diagnostics": json.loads(row["context_diagnostics_json"] or "{}"),
             "source_segment_ids": json.loads(row["source_segment_ids_json"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

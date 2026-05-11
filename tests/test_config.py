@@ -28,6 +28,16 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
         "BRAIN_SIDECAR_COMPANY_REFS_MIN_CONFIDENCE",
         "BRAIN_SIDECAR_COMPANY_REFS_MAX_LIVE_CARDS",
         "BRAIN_SIDECAR_COMPANY_REFS_DUPLICATE_WINDOW_SECONDS",
+        "BRAIN_SIDECAR_REVIEW_ASR_BACKEND",
+        "BRAIN_SIDECAR_REVIEW_ASR_MODEL",
+        "BRAIN_SIDECAR_REVIEW_ASR_DEVICE",
+        "BRAIN_SIDECAR_REVIEW_ASR_BATCH_SIZE",
+        "BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS",
+        "BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS",
+        "BRAIN_SIDECAR_REVIEW_CORRECTION_BATCH_SIZE",
+        "BRAIN_SIDECAR_REVIEW_CORRECTION_CONCURRENCY",
+        "BRAIN_SIDECAR_SPEAKER_ENROLLMENT_MINIMUM_SECONDS",
+        "BRAIN_SIDECAR_SPEAKER_ENROLLMENT_TARGET_SECONDS",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -55,6 +65,16 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
     assert settings.company_refs_min_confidence == 0.70
     assert settings.company_refs_max_live_cards == 3
     assert settings.company_refs_duplicate_window_seconds == 900.0
+    assert settings.review_asr_backend == "nemo"
+    assert settings.review_asr_model == "stt_en_fastconformer_ctc_xxlarge"
+    assert settings.review_asr_device == "auto"
+    assert settings.review_asr_batch_size == 2
+    assert settings.review_asr_chunk_seconds == 45.0
+    assert settings.review_asr_chunk_overlap_seconds == 3.0
+    assert settings.review_correction_batch_size == 12
+    assert settings.review_correction_concurrency == 2
+    assert settings.speaker_enrollment_minimum_seconds == 60.0
+    assert settings.speaker_enrollment_target_seconds == 120.0
 
 
 def test_load_settings_reads_repo_dotenv_without_overriding_exports(monkeypatch, tmp_path) -> None:
@@ -160,6 +180,40 @@ def test_asr_device_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.asr_backend == "faster_whisper"
     assert settings.asr_device == "cuda"
     assert settings.asr_compute_type == "float16"
+
+
+def test_review_asr_env_overrides(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_BACKEND", "faster_whisper")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_MODEL", "review-large")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_DEVICE", "cpu")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_BATCH_SIZE", "3")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS", "35")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS", "4")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_CORRECTION_BATCH_SIZE", "5")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_CORRECTION_CONCURRENCY", "4")
+
+    settings = load_settings()
+
+    assert settings.review_asr_backend == "faster_whisper"
+    assert settings.review_asr_model == "review-large"
+    assert settings.review_asr_device == "cpu"
+    assert settings.review_asr_batch_size == 3
+    assert settings.review_asr_chunk_seconds == 35.0
+    assert settings.review_asr_chunk_overlap_seconds == 4.0
+    assert settings.review_correction_batch_size == 5
+    assert settings.review_correction_concurrency == 4
+
+
+def test_review_asr_overlap_is_clamped_below_chunk(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS", "10")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS", "99")
+
+    settings = load_settings()
+
+    assert settings.review_asr_chunk_seconds == 10.0
+    assert settings.review_asr_chunk_overlap_seconds == pytest.approx(9.9)
 
 
 def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:

@@ -120,6 +120,14 @@ class Settings:
     asr_log_prob_threshold: float = -1.0
     asr_compression_ratio_threshold: float = 2.4
     asr_min_audio_rms: float = 0.006
+    review_asr_backend: str = "nemo"
+    review_asr_model: str = "stt_en_fastconformer_ctc_xxlarge"
+    review_asr_device: str = "auto"
+    review_asr_batch_size: int = 2
+    review_asr_chunk_seconds: float = 45.0
+    review_asr_chunk_overlap_seconds: float = 3.0
+    review_correction_batch_size: int = 12
+    review_correction_concurrency: int = 2
     partial_transcripts_enabled: bool = False
     partial_window_seconds: float = 2.0
     partial_min_interval_seconds: float = 2.0
@@ -139,6 +147,8 @@ class Settings:
     asr_unload_ollama_on_start: bool = False
     asr_gpu_free_timeout_seconds: float = 10.0
     speaker_enrollment_sample_seconds: float = 8.0
+    speaker_enrollment_minimum_seconds: float = 60.0
+    speaker_enrollment_target_seconds: float = 120.0
     speaker_identity_label: str = "BP"
     speaker_retain_raw_enrollment_audio: bool = False
     disable_live_embeddings: bool = False
@@ -176,6 +186,11 @@ def load_settings() -> Settings:
         max(0.0, float(_env("BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS", "0.8"))),
         max(0.0, transcription_window_seconds - 0.1),
     )
+    review_asr_chunk_seconds = max(5.0, float(_env("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS", "45")))
+    review_asr_chunk_overlap_seconds = min(
+        max(0.0, float(_env("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS", "3"))),
+        max(0.0, review_asr_chunk_seconds - 0.1),
+    )
     return Settings(
         env_path=env_path,
         data_dir=Path(_env("BRAIN_SIDECAR_DATA_DIR", str(cwd_runtime))).expanduser(),
@@ -212,6 +227,14 @@ def load_settings() -> Settings:
         asr_log_prob_threshold=float(_env("BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD", "-1.0")),
         asr_compression_ratio_threshold=float(_env("BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD", "2.4")),
         asr_min_audio_rms=max(0.0, float(_env("BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS", "0.006"))),
+        review_asr_backend=_env_choice("BRAIN_SIDECAR_REVIEW_ASR_BACKEND", "nemo", {"nemo", "faster_whisper"}),
+        review_asr_model=_env("BRAIN_SIDECAR_REVIEW_ASR_MODEL", "stt_en_fastconformer_ctc_xxlarge"),
+        review_asr_device=_env_choice("BRAIN_SIDECAR_REVIEW_ASR_DEVICE", "auto", {"auto", "cuda", "cpu"}),
+        review_asr_batch_size=max(1, int(_env("BRAIN_SIDECAR_REVIEW_ASR_BATCH_SIZE", "2"))),
+        review_asr_chunk_seconds=review_asr_chunk_seconds,
+        review_asr_chunk_overlap_seconds=review_asr_chunk_overlap_seconds,
+        review_correction_batch_size=max(1, int(_env("BRAIN_SIDECAR_REVIEW_CORRECTION_BATCH_SIZE", "12"))),
+        review_correction_concurrency=max(1, int(_env("BRAIN_SIDECAR_REVIEW_CORRECTION_CONCURRENCY", "2"))),
         partial_transcripts_enabled=_env_bool("BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED", False),
         partial_window_seconds=min(
             transcription_window_seconds,
@@ -257,6 +280,14 @@ def load_settings() -> Settings:
         speaker_enrollment_sample_seconds=max(
             2.0,
             float(_env("BRAIN_SIDECAR_SPEAKER_ENROLLMENT_SAMPLE_SECONDS", "8.0")),
+        ),
+        speaker_enrollment_minimum_seconds=max(
+            15.0,
+            float(_env("BRAIN_SIDECAR_SPEAKER_ENROLLMENT_MINIMUM_SECONDS", "60.0")),
+        ),
+        speaker_enrollment_target_seconds=max(
+            20.0,
+            float(_env("BRAIN_SIDECAR_SPEAKER_ENROLLMENT_TARGET_SECONDS", "120.0")),
         ),
         speaker_identity_label=_env("BRAIN_SIDECAR_SPEAKER_IDENTITY_LABEL", "BP"),
         speaker_retain_raw_enrollment_audio=_env_bool("BRAIN_SIDECAR_SPEAKER_RETAIN_RAW_ENROLLMENT_AUDIO", False),

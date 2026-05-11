@@ -134,7 +134,7 @@ def test_note_synthesizer_does_not_assign_other_speaker_commitment_to_bp(event_l
             end_s=2.0,
             text="I'll send the rollback checklist after the meeting.",
             speaker_role="other",
-            speaker_label="Speaker 2",
+            speaker_label="Other speaker",
             speaker_confidence=0.0,
         )
     ]

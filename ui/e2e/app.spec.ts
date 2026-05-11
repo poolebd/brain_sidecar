@@ -9,7 +9,9 @@ test.beforeEach(async ({ page }) => {
 
 test("loads mocked device and GPU state", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Conversation" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Meeting Output" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sidecar Intelligence" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Meeting Output" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Sidecar Intelligence" })).not.toContainText("Silent by design");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "midnight");
   await expect(page.getByLabel("Meeting Focus summary")).toContainText("Focus");
   await expect(page.getByLabel("Meeting Focus goal")).toHaveCount(0);
@@ -41,7 +43,7 @@ test("loads mocked device and GPU state", async ({ page }) => {
   await expect(debug.locator("details.debug-diagnostics")).toHaveJSProperty("open", false);
   await expect(page.getByRole("main", { name: "Tools" })).not.toContainText("Transcript Retention");
   await expect(page.getByRole("main", { name: "Tools" })).not.toContainText("Indexes");
-  await page.getByRole("button", { name: "Live" }).click();
+  await page.getByRole("button", { name: "Live", exact: true }).click();
   await expect(page.getByRole("main", { name: "Tools" })).not.toBeVisible();
   await page.getByRole("button", { name: "Tools" }).click();
   await expect(page.getByRole("main", { name: "Tools" })).toBeVisible();
@@ -54,7 +56,7 @@ test("loads mocked device and GPU state", async ({ page }) => {
 
 test("navigates the app shell and browses saved sessions", async ({ page }) => {
   const nav = page.getByRole("navigation", { name: "Primary navigation" });
-  for (const label of ["Live", "Sessions", "Tools", "Models", "References"]) {
+  for (const label of ["Live", "Review", "Sessions", "Tools", "Models", "References"]) {
     await expect(nav.getByRole("button", { name: label })).toBeVisible();
   }
 
@@ -75,30 +77,563 @@ test("navigates the app shell and browses saved sessions", async ({ page }) => {
     title: "Renamed model planning call",
   });
 
-  await nav.getByRole("button", { name: "Live" }).click();
+  await nav.getByRole("button", { name: "Live", exact: true }).click();
   await expect(page.getByRole("main", { name: "Live" })).toBeVisible();
   await expect(page.getByText("Open", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Save Title" })).toHaveCount(0);
-  const createLiveSession = page.waitForRequest((request) => (
-    request.method() === "POST" && request.url().endsWith("/api/sessions")
-  ));
+  await expect(page.getByRole("button", { name: "New Session" })).toHaveCount(0);
+  await expect(page.getByLabel("Live run")).toContainText("Ephemeral");
+  await expect(page.getByLabel("Live retention", { exact: true })).toContainText("Audio temporary until validation");
   await page.getByLabel("Live session title").fill("Live shell check");
-  await page.getByRole("button", { name: "New Session" }).click();
-  expect(JSON.parse((await createLiveSession).postData() ?? "{}")).toMatchObject({
-    title: "Live shell check",
-  });
-
-  const patchLiveTitle = page.waitForRequest((request) => (
-    request.method() === "PATCH" && request.url().endsWith("/api/sessions/session-123")
+  const startLive = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/live/start")
   ));
-  await page.getByLabel("Live session title").fill("Renamed live shell check");
-  await page.getByRole("button", { name: "Save Title" }).click();
-  expect(JSON.parse((await patchLiveTitle).postData() ?? "{}")).toMatchObject({
-    title: "Renamed live shell check",
+  await page.getByRole("button", { name: "Start Live" }).click();
+  expect(JSON.parse((await startLive).postData() ?? "{}")).toMatchObject({
+    title: "Live shell check",
+    audio_source: "server_device",
   });
+  await expect(page.getByLabel("Live retention status")).toContainText("Review handoff armed");
 });
 
-test("shows a saved-session empty state with a Saved-mode CTA", async ({ page }) => {
+test("Review upload creates a job without saving raw results", async ({ page }) => {
+  const review = await openReviewPage(page);
+  await expect(review.getByLabel("Review retention")).toContainText("Manual approval required");
+  await review.getByLabel("Review title").fill("Review Apollo call");
+
+  const requestPromise = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/review/jobs")
+  ));
+  await review.getByLabel("Review audio upload").setInputFiles({
+    name: "apollo-call.webm",
+    mimeType: "audio/webm",
+    buffer: Buffer.from("fake audio"),
+  });
+  const body = (await requestPromise).postData() ?? "";
+  expect(body).not.toContain("name=\"save_result\"");
+
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
+  await expect(review.getByRole("group", { name: "Recorded audio controls" })).toHaveCount(0);
+});
+
+test("completed Review keeps the meeting summary before supporting evidence", async ({ page }) => {
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation" });
+  const review = await openCompletedReview(page);
+
+  const summaryValidation = review.getByRole("region", { name: "Review summary validation" });
+  await expect(summaryValidation).toContainText("Needs validation");
+  await expect(summaryValidation.getByRole("button", { name: "Approve" })).toBeVisible();
+  await expect(summaryValidation.getByRole("button", { name: "Copy brief" })).toBeVisible();
+  await expect(review.getByRole("region", { name: "Review status" })).toHaveCount(0);
+  await expect(review.getByLabel("Review runtime details")).toHaveCount(0);
+  await expect(review.getByRole("progressbar", { name: "Review overall progress" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Review progress" })).toHaveCount(0);
+  await expect(review.getByText("More context")).toHaveCount(0);
+  await expect(review.getByRole("button", { name: "Details" })).toHaveCount(0);
+  await expect(review.getByRole("button", { name: "Evidence" })).toHaveCount(0);
+  await expect(review.getByText(/more thread|more technical/i)).toHaveCount(0);
+  const summaryFirstOrder = await review.evaluate(() => {
+    const summary = document.querySelector('[aria-label="Review summary validation"]');
+    const executive = document.querySelector('[aria-label="Executive Summary"]');
+    const actions = document.querySelector('[aria-label="Actions"]');
+    const decisions = document.querySelector('[aria-label="Decisions"]');
+    const questions = document.querySelector('[aria-label="Open Questions"]');
+    const risks = document.querySelector('[aria-label="Risks / Watch Items"]');
+    const reference = document.querySelector('[aria-label="Reference Context"]');
+    const technical = document.querySelector('[aria-label="Technical Notes"]');
+    const transcriptDetails = document.querySelector('[aria-label="Transcript and sources"]');
+    const cards = document.querySelector('[aria-label="Validation Evidence Cards"]');
+    const cardList = document.querySelector('[aria-label="Validation Evidence Cards"] .review-card-list');
+    const workspace = document.querySelector('[aria-label="Review workspace"]');
+    const briefNodes = [executive, actions, decisions, questions, risks, reference, technical];
+    return {
+      beforeCards: Boolean(summary && cards && (summary.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      briefBeforeCards: briefNodes.every((node) => Boolean(node && cards && (node.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING))),
+      technicalBeforeCards: Boolean(technical && cards && (technical.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      transcriptClosed: transcriptDetails instanceof HTMLDetailsElement ? !transcriptDetails.open : false,
+      cardsOverflow: cardList ? getComputedStyle(cardList).overflowY : "",
+      workspaceColumns: workspace ? getComputedStyle(workspace).gridTemplateColumns.split(" ").filter(Boolean).length : 0,
+    };
+  });
+  expect(summaryFirstOrder).toEqual({
+    beforeCards: true,
+    briefBeforeCards: true,
+    technicalBeforeCards: true,
+    transcriptClosed: true,
+    cardsOverflow: "visible",
+    workspaceColumns: 1,
+  });
+  await expect(review.getByRole("region", { name: "Meeting Summary" })).toContainText("Apollo document handoff");
+  await expect(review.getByRole("region", { name: "Executive Summary" })).toContainText("BP owns sending the RFI log to Greg by Monday");
+  await expect(review.getByRole("region", { name: "Actions" })).toContainText("BP owns sending the RFI log to Greg by Monday");
+  await expect(review.getByRole("region", { name: "Actions" })).toContainText("Owner: BP");
+  await expect(review.getByRole("region", { name: "Actions" })).toContainText("Due: Monday");
+  await expect(review.getByRole("region", { name: "Decisions" })).toContainText("Sunil owns the Siemens document review path");
+  await expect(review.getByRole("region", { name: "Open Questions" })).toContainText("Confirm Greg's preferred handoff format");
+  await expect(review.getByRole("region", { name: "Risks / Watch Items" })).toContainText("current guidance");
+  await expect(review.getByRole("region", { name: "Technical Notes" })).toContainText("EE Index");
+  await expect(review.getByRole("region", { name: "Evidence Quality" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Meeting Follow-up" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Project / Site Threads" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Technical Review" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Review summary validation" })).not.toContainText("...");
+  const referenceContext = review.getByLabel("Reference Context");
+  await expect(referenceContext).toContainText("Reference Context");
+  await expect(referenceContext).toContainText("Energy Lens");
+  await expect(referenceContext).toContainText("EE Index");
+  await expect(referenceContext).toContainText("Current Public Web");
+  await expect(review.getByRole("region", { name: "Clean Transcript" })).toHaveCount(0);
+  await expect(review.getByText("Transcript Evidence")).toBeHidden();
+  await expect(review.getByRole("region", { name: "Validation Evidence Cards" })).toContainText("No separate validation flags");
+  await expect(review.getByRole("region", { name: "Validation Evidence Cards" })).not.toContainText("Send RFI log");
+  await expect(review.getByRole("region", { name: "Validation Evidence Cards" })).not.toContainText("Sunil owns the Siemens document review path.");
+  await review.getByLabel("Transcript and sources").locator("summary").first().click();
+  await expect(review.getByRole("region", { name: "Clean Transcript" })).toContainText("BP will send the RFI log to Greg by Monday.");
+  await expect(review.getByRole("region", { name: "Clean Transcript" })).toContainText("Other speaker");
+});
+
+test("Approve saves a completed Review as a Session and deletes temporary audio", async ({ page }) => {
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation" });
+  const review = await openCompletedReview(page);
+
+  await review.getByRole("button", { name: "Approve" }).click();
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Saved to Sessions");
+  await expect(review.getByRole("region", { name: "Review status" })).toHaveCount(0);
+  await review.getByRole("button", { name: "Open Session" }).click();
+  await expect(page.getByRole("main", { name: "Sessions" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review Apollo call" })).toBeVisible();
+});
+
+test("Discard removes validation actions and never exposes Open Session", async ({ page }) => {
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation" });
+  const review = await openCompletedReview(page);
+
+  await review.getByRole("button", { name: "Discard" }).click();
+  await expect(review.getByRole("button", { name: "Approve" })).toHaveCount(0);
+  await expect(review.getByRole("button", { name: "Discard" })).toHaveCount(0);
+  await expect(review.getByRole("button", { name: "Open Session" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Review status" })).toContainText("Discarded");
+  await expect(review.getByRole("region", { name: "Review status" })).toContainText("Audio deleted");
+  await expect(review.getByRole("button", { name: "Copy brief" })).toBeDisabled();
+});
+
+test("New audio resets the workspace and exposes upload controls", async ({ page }) => {
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation" });
+  const review = await openCompletedReview(page);
+
+  await expect(review.getByRole("button", { name: "New audio" })).toBeVisible();
+  await review.getByRole("button", { name: "New audio" }).click();
+  await expect(review.getByLabel("Review audio upload")).toBeVisible();
+  await expect(review.getByRole("region", { name: "No review loaded" })).toContainText("Upload audio");
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toHaveCount(0);
+});
+
+test("Review action buttons hold disabled states while requests are in flight", async ({ page }) => {
+  const review = await openReviewPage(page);
+  const uploadGate = deferred();
+  const uploadUrl = "http://127.0.0.1:8765/api/review/jobs";
+  await page.route(uploadUrl, async (route) => {
+    await uploadGate.promise;
+    await route.fallback();
+  });
+  const upload = review.getByLabel("Review audio upload").setInputFiles({
+    name: "apollo-call.webm",
+    mimeType: "audio/webm",
+    buffer: Buffer.from("fake audio"),
+  });
+  await expect(review.getByLabel("Review title")).toBeDisabled();
+  await expect(review.getByLabel("Review audio upload")).toBeDisabled();
+  uploadGate.resolve();
+  await upload;
+  await page.unroute(uploadUrl);
+
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation" });
+  const approveReview = await openCompletedReview(page);
+  const approveGate = deferred();
+  const approveUrl = "http://127.0.0.1:8765/api/review/jobs/reviewjob-123/approve";
+  await page.route(approveUrl, async (route) => {
+    await approveGate.promise;
+    await route.fallback();
+  });
+  const approve = approveReview.getByRole("button", { name: "Approve" }).click();
+  await expect(approveReview.getByRole("button", { name: "Approving..." })).toBeDisabled();
+  approveGate.resolve();
+  await approve;
+  await page.unroute(approveUrl);
+
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation" });
+  const discardReview = await openCompletedReview(page);
+  const discardGate = deferred();
+  const discardUrl = "http://127.0.0.1:8765/api/review/jobs/reviewjob-123/discard";
+  await page.route(discardUrl, async (route) => {
+    await discardGate.promise;
+    await route.fallback();
+  });
+  const discard = discardReview.getByRole("button", { name: "Discard" }).click();
+  await expect(discardReview.getByRole("button", { name: "Discarding..." })).toBeDisabled();
+  discardGate.resolve();
+  await discard;
+  await page.unroute(discardUrl);
+
+  await remockApi(page, { latestReviewStatus: "queued" });
+  const cancelReview = await openReviewPage(page);
+  const cancelGate = deferred();
+  const cancelUrl = "http://127.0.0.1:8765/api/review/jobs/reviewjob-123/cancel";
+  await page.route(cancelUrl, async (route) => {
+    await cancelGate.promise;
+    await route.fallback();
+  });
+  const cancel = cancelReview.getByRole("button", { name: "Cancel" }).click();
+  await expect(cancelReview.getByRole("button", { name: "Canceling..." })).toBeDisabled();
+  cancelGate.resolve();
+  await cancel;
+  await page.unroute(cancelUrl);
+});
+
+test("Review queue opens, closes, and selects another job without losing active styling", async ({ page }) => {
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation", reviewQueueScenario: "two_jobs" });
+  const review = await openCompletedReview(page);
+  const queueToggle = review.getByText("Queue (2)");
+
+  await queueToggle.click();
+  const queue = review.getByRole("region", { name: "Review queue" });
+  await expect(queue).toBeVisible();
+  await expect(queue).toContainText("Apollo call");
+  await expect(queue).toContainText("Delta site tariff review");
+  const queueBox = await queue.boundingBox();
+  const viewport = page.viewportSize();
+  expect(queueBox).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(queueBox!.x).toBeGreaterThanOrEqual(0);
+  expect(queueBox!.x + queueBox!.width).toBeLessThanOrEqual(viewport!.width + 1);
+
+  await queue.getByRole("button", { name: /Delta site tariff review/ }).click();
+  await expect(review.getByRole("button", { name: /Delta site tariff review/ })).toHaveClass(/active/);
+  await expect(review.getByRole("region", { name: "Review status" })).toContainText("delta-site-call.webm");
+
+  await queueToggle.click();
+  await expect(review.getByRole("region", { name: "Review queue" })).toHaveCount(0);
+  await queueToggle.click();
+  await queue.getByRole("button", { name: /Apollo call/ }).click();
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
+});
+
+test("Review copy, evidence, and source-jump actions work", async ({ page }) => {
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation", longReviewEvidence: true });
+  await installClipboardStub(page);
+  const review = await openCompletedReview(page);
+
+  await review.getByRole("button", { name: "Copy brief" }).click();
+  const brief = await clipboardText(page);
+  expect(brief).toContain("## Executive Summary");
+  expect(brief).toContain("## Actions");
+  expect(brief).toContain("## Decisions");
+  expect(brief).toContain("## Open Questions");
+  expect(brief).toContain("## Risks / Watch Items");
+  expect(brief).toContain("## Reference Context");
+  expect(brief).toContain("## Technical Notes");
+  expect(brief).toContain("Owner: BP");
+  expect(brief).toContain("Due: Monday");
+  expect(brief).not.toContain("## Project / Site Threads");
+  expect(brief).not.toContain("## Evidence Cards");
+
+  await expect(review.getByRole("region", { name: "Clean Transcript" })).toHaveCount(0);
+  await review.getByLabel("Transcript and sources").locator("summary").first().click();
+  await review.getByRole("button", { name: "Copy transcript" }).click();
+  expect(await clipboardText(page)).toContain("Extended evidence row 30 keeps the Apollo review grounded");
+  await review.getByLabel("Transcript and sources").locator("summary").first().click();
+
+  const validationPanel = review.getByRole("region", { name: "Validation Evidence Cards" });
+  await expect(validationPanel).not.toContainText("Send RFI log");
+  await expect(validationPanel).not.toContainText("Review path owner");
+  const validationCard = review.getByLabel("Watch risk review validation card").filter({ hasText: "Extended review card 3" });
+  await expect(validationCard).toContainText("Extended evidence row 3 keeps the Apollo review grounded.");
+  await expect(validationCard).toContainText("Additional claim");
+  await expect(validationCard).toContainText("72% confidence");
+  await expect(validationCard.getByRole("button", { name: "Details" })).toHaveCount(0);
+  await validationCard.getByRole("button", { name: /Jump to source/ }).click();
+  await expect(review.getByLabel("Transcript and sources")).toHaveJSProperty("open", true);
+  await expect(review.locator('[data-transcript-id="review-seg-3"]')).toHaveClass(/highlight/);
+  await validationCard.getByRole("button", { name: "Copy quote" }).click();
+  expect(await clipboardText(page)).toBe("Extended evidence row 3 keeps the Apollo review grounded.");
+});
+
+test("Review decision toolbar stays visible while transcript sources toggle", async ({ page }) => {
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation" });
+  const review = await openCompletedReview(page);
+
+  await expect(review.getByRole("region", { name: "Review status" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Review progress" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
+  await expect(review.getByText("Status and audio retention")).toHaveCount(0);
+  await expect(review.getByText("Processing details")).toHaveCount(0);
+  await expect(review.getByText("Upload another file")).toHaveCount(0);
+  await expect(review.getByRole("button", { name: "New audio" })).toBeVisible();
+  await expect(review.getByLabel("Review runtime details")).toHaveCount(0);
+  await expect(review.getByRole("button", { name: "Details" })).toHaveCount(0);
+  await expect(review.getByRole("button", { name: "Evidence" })).toHaveCount(0);
+
+  const transcriptDetails = review.getByLabel("Transcript and sources");
+  await expect(transcriptDetails).toHaveJSProperty("open", false);
+  await transcriptDetails.locator("summary").first().click();
+  await expect(transcriptDetails).toHaveJSProperty("open", true);
+  await expect(review.getByRole("region", { name: "Clean Transcript" })).toContainText("BP will send the RFI log to Greg by Monday.");
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
+  await transcriptDetails.locator("summary").first().click();
+  await expect(transcriptDetails).toHaveJSProperty("open", false);
+});
+
+test("Review evidence panels scroll independently and jump-to-source highlights rows", async ({ page }) => {
+  await remockApi(page, { latestReviewStatus: "completed_awaiting_validation", longReviewEvidence: true });
+  const review = await openCompletedReview(page);
+
+  const transcriptDetails = review.getByLabel("Transcript and sources");
+  await expect(transcriptDetails).toHaveJSProperty("open", false);
+  await transcriptDetails.locator("summary").first().click();
+  await expect(transcriptDetails).toHaveJSProperty("open", true);
+
+  const scrollState = await review.evaluate(() => {
+    const transcript = document.querySelector<HTMLElement>(".review-transcript-scroll");
+    const cards = document.querySelector<HTMLElement>(".review-card-list");
+    const pageY = window.scrollY;
+    if (!transcript || !cards) {
+      return { transcriptScrollable: false, cardsScrollable: false, transcriptMoved: false, cardsMoved: false, pageStable: false };
+    }
+    transcript.scrollTop = transcript.scrollHeight;
+    cards.scrollTop = cards.scrollHeight;
+    return {
+      transcriptScrollable: transcript.scrollHeight > transcript.clientHeight,
+      cardsScrollable: cards.scrollHeight > cards.clientHeight,
+      transcriptMoved: transcript.scrollTop > 0,
+      cardsMoved: cards.scrollTop > 0,
+      pageStable: window.scrollY === pageY,
+    };
+  });
+  expect(scrollState).toEqual({
+    transcriptScrollable: true,
+    cardsScrollable: true,
+    transcriptMoved: true,
+    cardsMoved: true,
+    pageStable: true,
+  });
+
+  const transcriptScroll = review.locator(".review-transcript-scroll");
+  await transcriptScroll.evaluate((element) => { element.scrollTop = 0; });
+  const beforeHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+  const lateCard = review.getByLabel("Watch risk review validation card").filter({ hasText: "Extended review card 21" });
+  await lateCard.getByRole("button", { name: /Jump to source/ }).click();
+  await expect(review.locator('[data-transcript-id="review-seg-21"]')).toHaveClass(/highlight/);
+  await expect.poll(() => transcriptScroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  const afterHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+  expect(afterHeight - beforeHeight).toBeLessThan(500);
+  await expect(review.getByRole("region", { name: "Meeting Summary" })).toBeVisible();
+
+  for (const size of [
+    { width: 1440, height: 900 },
+    { width: 1024, height: 760 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(size);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+});
+
+test("Review typography fits and layout flexes across dense content", async ({ page }) => {
+  await remockApi(page, {
+    latestReviewStatus: "completed_awaiting_validation",
+    longReviewEvidence: true,
+    reviewQueueScenario: "two_jobs",
+    reviewTypographyStress: true,
+  });
+  const review = await openCompletedReview(page);
+
+  for (const size of [
+    { width: 1440, height: 900 },
+    { width: 1280, height: 820 },
+    { width: 1024, height: 760 },
+    { width: 900, height: 760 },
+    { width: 768, height: 900 },
+    { width: 480, height: 844 },
+    { width: 390, height: 844 },
+    { width: 320, height: 844 },
+  ]) {
+    await page.setViewportSize(size);
+    const transcriptDetails = review.getByLabel("Transcript and sources");
+    const transcriptIsOpen = await transcriptDetails.evaluate((element) => (
+      element instanceof HTMLDetailsElement ? element.open : false
+    ));
+    if (transcriptIsOpen) {
+      await transcriptDetails.locator("summary").first().click();
+    }
+    await expect(review.getByRole("region", { name: "Review summary validation" })).toBeVisible();
+    await expect(review.getByRole("region", { name: "Meeting Summary" })).toBeVisible();
+    await expect(review.getByRole("region", { name: "Clean Transcript" })).toHaveCount(0);
+
+    const queueMenu = review.getByLabel("Review queue menu");
+    await queueMenu.locator("summary").first().click();
+    await expect(review.getByRole("region", { name: "Review queue" })).toBeVisible();
+    const queuePlacement = await review.evaluate(() => {
+      const queue = document.querySelector('[aria-label="Review queue"]');
+      const summary = document.querySelector('[aria-label="Review summary validation"]');
+      const queueBox = queue?.getBoundingClientRect();
+      const summaryBox = summary?.getBoundingClientRect();
+      return Boolean(queueBox && summaryBox && queueBox.bottom <= summaryBox.top + 1);
+    });
+    expect(queuePlacement).toBe(true);
+    await expectReviewTextFit(page);
+    await expectReviewSummaryTextVisible(page);
+    await expectReviewControlTargetsAndFocus(page);
+    await queueMenu.locator("summary").first().click();
+
+    await expectReviewSummaryHierarchy(page);
+    await expect(review.getByRole("region", { name: "Review summary validation" })).not.toContainText("...");
+
+    await transcriptDetails.locator("summary").first().click();
+    await expect(review.getByRole("region", { name: "Clean Transcript" })).toBeVisible();
+    const independentScroll = await review.evaluate(() => {
+      const transcript = document.querySelector<HTMLElement>(".review-transcript-scroll");
+      const cards = document.querySelector<HTMLElement>(".review-card-list");
+      if (!transcript || !cards) {
+        return { transcriptScrollable: false, cardsScrollable: false };
+      }
+      return {
+        transcriptScrollable: transcript.scrollHeight > transcript.clientHeight,
+        cardsScrollable: cards.scrollHeight > cards.clientHeight,
+      };
+    });
+    expect(independentScroll).toEqual({
+      transcriptScrollable: true,
+      cardsScrollable: true,
+    });
+
+    const heightBeforeInlineEvidence = await page.evaluate(() => document.documentElement.scrollHeight);
+    await expect(review.getByRole("button", { name: "Details" })).toHaveCount(0);
+    await expect(review.getByRole("button", { name: "Evidence" })).toHaveCount(0);
+    await expectReviewTextFit(page);
+    await expectReviewSummaryTextVisible(page);
+    await expectReviewControlTargetsAndFocus(page);
+    const heightAfterInlineEvidence = await page.evaluate(() => document.documentElement.scrollHeight);
+    expect(heightAfterInlineEvidence - heightBeforeInlineEvidence).toBeLessThan(200);
+  }
+
+  await page.addStyleTag({
+    content: `
+      .review-page p,
+      .review-page li,
+      .review-page span,
+      .review-page strong,
+      .review-page small,
+      .review-page button,
+      .review-page h1,
+      .review-page h2,
+      .review-page h3 {
+        letter-spacing: 0.12em !important;
+        line-height: 1.5 !important;
+        word-spacing: 0.16em !important;
+      }
+
+      .review-page p {
+        margin-bottom: 2em !important;
+      }
+    `,
+  });
+
+  for (const size of [
+    { width: 1024, height: 760 },
+    { width: 480, height: 844 },
+    { width: 390, height: 844 },
+    { width: 320, height: 844 },
+  ]) {
+    await page.setViewportSize(size);
+    await expectReviewTextFit(page);
+    await expectReviewTextSpacingFit(page);
+    await expectReviewSummaryTextVisible(page);
+  }
+});
+
+test("queued and running Review jobs show compact progress without completed-summary actions", async ({ page }) => {
+  for (const status of ["queued", "running_asr"]) {
+    await remockApi(page, { latestReviewStatus: status });
+    const review = await openReviewPage(page);
+    await expect(review.getByRole("region", { name: "Review status" })).toBeVisible();
+    await expect(review.getByRole("region", { name: "Review summary validation" })).toHaveCount(0);
+    await expect(review.getByRole("button", { name: "Approve" })).toHaveCount(0);
+    await expect(review.getByRole("button", { name: "Copy brief" })).toHaveCount(0);
+    await expect(review.getByRole("region", { name: "Review progress" })).toBeVisible();
+    await expect(review.getByRole("region", { name: "Clean Transcript" })).toHaveCount(0);
+  }
+});
+
+test("review status calls out low-usefulness summaries before approval", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, {
+    latestReviewStatus: "completed_awaiting_validation",
+    reviewUsefulnessStatus: "low_usefulness",
+    reviewUsefulnessFlags: ["generic_topic_soup", "unsupported_technical_findings"],
+  });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Review" }).click();
+  const review = page.getByRole("main", { name: "Review" });
+  await review.getByText("Queue (1)").click();
+  await review.getByRole("button", { name: /Apollo/ }).click();
+
+  const decisionToolbar = review.getByRole("region", { name: "Review summary validation" });
+  await expect(decisionToolbar).toContainText("Needs manual validation");
+  await expect(decisionToolbar).toContainText("2 usefulness flags");
+  await expect(review.getByRole("region", { name: "Review status" })).toHaveCount(0);
+  await expect(review.getByRole("button", { name: "Approve" })).toBeVisible();
+});
+
+test("review error and cleanup-failed states do not create a Session action", async ({ page }) => {
+  await remockApi(page, {
+    latestReviewStatus: "error",
+    reviewJobError: "Review ASR failed before validation.",
+    reviewCleanupError: "Temporary audio cleanup failed.",
+  });
+  const review = await openReviewPage(page);
+  await review.getByText("Queue (1)").click();
+  await review.getByRole("button", { name: /Apollo call/ }).click();
+
+  await expect(review.getByRole("alert")).toContainText("Review ASR failed before validation.");
+  const status = review.getByRole("region", { name: "Review status" });
+  await expect(status).toContainText("Review blocked");
+  await expect(status).toContainText("Cleanup failed");
+  await expect(status).toContainText("Temporary audio cleanup failed.");
+  await expect(review.getByRole("button", { name: "Open Session" })).toHaveCount(0);
+});
+
+test("review page does not auto-open stale terminal jobs", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, { latestReviewStatus: "discarded" });
+  await page.goto("/");
+
+  const nav = page.getByRole("navigation", { name: "Primary navigation" });
+  await nav.getByRole("button", { name: "Review" }).click();
+  const review = page.getByRole("main", { name: "Review" });
+  await expect(review).toBeVisible();
+  await expect(review.getByRole("region", { name: "No review loaded" })).toContainText("Upload audio");
+  await expect(review.getByLabel("Review audio upload")).toBeVisible();
+  await review.getByText("Queue (1)").click();
+  await expect(review.getByRole("region", { name: "Review queue" })).toContainText("Apollo call");
+  await expect(review.getByRole("region", { name: "Review workspace" })).toHaveCount(0);
+});
+
+test("recovers the latest review job and supports cancel", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, { latestReviewStatus: "queued" });
+  await page.reload();
+  const nav = page.getByRole("navigation", { name: "Primary navigation" });
+  await nav.getByRole("button", { name: "Review" }).click();
+  const review = page.getByRole("main", { name: "Review" });
+
+  await expect(review.getByRole("region", { name: "Review status" })).toContainText("apollo-call.webm");
+  await expect(review.getByRole("region", { name: "Review status" })).toContainText("Queued");
+  await review.getByRole("button", { name: "Cancel" }).click();
+  await expect(review.getByRole("region", { name: "Review status" })).toContainText("Review canceled");
+});
+
+test("shows a saved-session empty state with a Review CTA", async ({ page }) => {
   await page.unroute("http://127.0.0.1:8765/api/**");
   await mockApi(page, { sessionsResponse: [] });
   await page.reload();
@@ -106,14 +641,52 @@ test("shows a saved-session empty state with a Saved-mode CTA", async ({ page })
   await page.getByRole("button", { name: "Sessions" }).click();
   const sessionsPage = page.getByRole("main", { name: "Sessions" });
   await expect(sessionsPage).toContainText("No saved sessions yet");
-  await expect(sessionsPage).toContainText("Use Saved mode on Live");
+  await expect(sessionsPage).toContainText("Approve a completed Review job");
   await expect(sessionsPage.locator(".split-pane")).toHaveCount(0);
-  await sessionsPage.getByRole("button", { name: "Start with Saved" }).click();
-  await expect(page.getByRole("main", { name: "Live" })).toBeVisible();
-  await expect(page.locator('select[aria-label="Session selector"]')).toHaveCount(0);
-  await expect(page.getByLabel("Session selector", { exact: true })).toContainText("New meeting");
-  await expect(page.getByLabel("Session save mode status")).toContainText("Saved transcript");
-  await expect(page.getByRole("banner").getByRole("button", { name: "Start Recording" })).toBeVisible();
+  await sessionsPage.getByRole("button", { name: "Open Review" }).click();
+  await expect(page.getByRole("main", { name: "Review" })).toBeVisible();
+});
+
+test("sessions hide empty temporary runs unless All Sessions is enabled", async ({ page }) => {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, {
+    sessionsResponse: [
+      {
+        id: "temp-empty",
+        title: "Empty temporary run",
+        status: "stopped",
+        started_at: 1_768_000_050,
+        ended_at: 1_768_000_060,
+        save_transcript: false,
+        retention: "temporary",
+        transcript_count: 0,
+        note_count: 0,
+        summary_exists: false,
+        raw_audio_retained: false,
+      },
+      {
+        id: "saved-valuable",
+        title: "Useful saved meeting",
+        status: "stopped",
+        started_at: 1_768_000_070,
+        ended_at: 1_768_000_120,
+        save_transcript: true,
+        retention: "saved",
+        transcript_count: 4,
+        note_count: 1,
+        summary_exists: true,
+        raw_audio_retained: false,
+      },
+    ],
+  });
+  await page.reload();
+  await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("button", { name: "Sessions" }).click();
+
+  const sessions = page.getByRole("main", { name: "Sessions" });
+  await expect(sessions.getByRole("button", { name: "Useful saved meeting" })).toBeVisible();
+  await expect(sessions.getByRole("button", { name: "Empty temporary run" })).toHaveCount(0);
+  await sessions.getByRole("button", { name: "All Sessions" }).click();
+  await expect(sessions.getByRole("button", { name: "Empty temporary run" })).toBeVisible();
 });
 
 test("shows model residency and memory management pages", async ({ page }) => {
@@ -266,9 +839,9 @@ test("restores Meeting Focus controls from localStorage", async ({ page }) => {
   await expect(focus.getByLabel("Meeting Focus summary")).toContainText("Track owners and risk decisions.");
 
   const startRequest = page.waitForRequest((request) => (
-    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
+    request.method() === "POST" && request.url().endsWith("/api/live/start")
   ));
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   const body = JSON.parse((await startRequest).postData() ?? "{}");
   expect(body.meeting_contract).toMatchObject({
     goal: "Track owners and risk decisions.",
@@ -300,7 +873,7 @@ test("shows active USB mic capture as in use instead of missing", async ({ page 
   const drawer = page.getByRole("main", { name: "Tools" });
   await expect(drawer.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone (in use)");
   await expect(drawer.getByLabel("Server microphone")).toContainText("USB mic is in use by active capture");
-  await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeDisabled();
+  await expect(page.getByRole("banner").getByRole("button", { name: "Start Live" })).toBeDisabled();
 });
 
 test("hides recorded audio test controls when test mode is disabled", async ({ page }) => {
@@ -400,7 +973,7 @@ test("runs recorded audio from the Live page Test button", async ({ page }) => {
   });
 
   await expect(page.locator("#transcript")).toContainText("Online Generator Monitoring at T.A. Smith needs validation.");
-  await expect(page.getByRole("region", { name: "Meeting Output" })).toContainText("Validate generator monitoring");
+  await expect(page.getByRole("region", { name: "Sidecar Intelligence" })).toContainText("Validate generator monitoring");
 
   const reportRequest = page.waitForRequest((candidate) => (
     candidate.method() === "POST" && candidate.url().endsWith("/api/test-mode/runs/testrun-123/report")
@@ -509,18 +1082,17 @@ test("auto-stops recorded audio from the Live Test panel when the prepared clip 
   await expect(testPanel.getByLabel("Live recorded audio report")).toContainText("1/1");
 });
 
-test("starts a mocked session and renders SSE updates", async ({ page }) => {
+test("starts ephemeral Live and renders SSE updates", async ({ page }) => {
   const startRequest = page.waitForRequest((request) => (
-    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
+    request.method() === "POST" && request.url().endsWith("/api/live/start")
   ));
 
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   const request = await startRequest;
   const requestBody = JSON.parse(request.postData() ?? "{}");
   expect(requestBody).toMatchObject({
     device_id: null,
     audio_source: "server_device",
-    save_transcript: false,
     mic_tuning: {
       auto_level: true,
       input_gain_db: 0,
@@ -532,17 +1104,20 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
     goal: expect.stringContaining("Offload meeting obligations"),
     reminders: expect.arrayContaining(["Track owners and ownership ambiguity."]),
   });
-  await expect(page.getByLabel("Session save mode status")).toContainText("Listening");
-  await expect(page.getByLabel("Contract active")).toContainText("Contract active");
-  const meetingOutput = page.getByRole("region", { name: "Meeting Output" });
-  await expect(meetingOutput).toContainText("Silent by design");
-  await expect(meetingOutput).toContainText("No grounded cards yet. Unsupported/noisy cards are being suppressed.");
-  await expect(meetingOutput).not.toContainText("No actions yet.");
+  expect(requestBody.save_transcript).toBeUndefined();
+  await expect(page.getByLabel("Live retention status")).toContainText("Review handoff armed");
+  await expect(page.getByLabel("Contract active")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Meeting Output" })).toHaveCount(0);
+  const returnsRail = page.getByRole("region", { name: "Sidecar Intelligence" });
+  await expect(returnsRail).toContainText("Sidecar Intelligence");
+  await expect(returnsRail).not.toContainText("Awaiting grounded returns");
+  await expect(returnsRail).not.toContainText("Ollama");
+  await expect(returnsRail).not.toContainText("Silent by design");
   await expect(page.getByLabel("Live field empty state")).toContainText("Listening... grounded cards will appear when there is enough evidence.");
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
 
   await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
-    "http://127.0.0.1:8765/api/sessions/session-123/events",
+    "http://127.0.0.1:8765/api/live/live-123/events",
   );
   expect(await page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
     "http://127.0.0.1:8765/api/events",
@@ -656,7 +1231,7 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   });
 
   await expect(page.getByLabel("Runtime status")).toContainText("listening");
-  await expect(page.getByText("1 heard").first()).toBeVisible();
+  await expect(page.locator("#transcript")).toContainText("platform team tomorrow");
   await expect(page.locator("#transcript")).not.toContainText("Preview");
   const transcriptItem = page.getByLabel("Mic transcript item").filter({ hasText: "platform team tomorrow" });
   await expect(transcriptItem).toHaveCount(1);
@@ -691,10 +1266,10 @@ test("starts a mocked session and renders SSE updates", async ({ page }) => {
   expect(backendBox!.x).toBeGreaterThan(transcriptBox!.x);
 });
 
-test("renders deterministic Live Signals from transcript and current cards", async ({ page }) => {
-  await page.getByRole("button", { name: "Start Listening" }).click();
+test("keeps transcript echoes out of the Sidecar Intelligence rail", async ({ page }) => {
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
-    "http://127.0.0.1:8765/api/sessions/session-123/events",
+    "http://127.0.0.1:8765/api/live/live-123/events",
   );
 
   await emitSessionEvent(page, {
@@ -709,11 +1284,11 @@ test("renders deterministic Live Signals from transcript and current cards", asy
     },
   });
 
-  const panel = page.getByRole("region", { name: "Live Signals" });
-  await expect(panel.getByRole("button", { name: "Question signal" })).toContainText("Clarification cue");
-  await expect(panel.getByRole("button", { name: "Question signal" })).toContainText("Can we confirm who owns the tariff analysis by Monday?");
-  await expect(panel.getByRole("button", { name: "Action signal" })).toContainText("Action cue");
-  await expect(panel.getByRole("button", { name: "Action signal" })).toContainText("Can we confirm who owns the tariff analysis by Monday?");
+  const intelligenceRail = page.getByRole("region", { name: "Sidecar Intelligence" });
+  await expect(page.getByRole("region", { name: "Live Signals" })).toHaveCount(0);
+  await expect(intelligenceRail).not.toContainText("Clarification cue");
+  await expect(intelligenceRail).not.toContainText("Action cue");
+  await expect(page.locator("#transcript")).toContainText("Can we confirm who owns the tariff analysis by Monday?");
 
   await emitSessionEvent(page, {
     type: "sidecar_card",
@@ -735,16 +1310,16 @@ test("renders deterministic Live Signals from transcript and current cards", asy
     },
   });
 
-  const suggestion = panel.getByRole("button", { name: "Suggestion signal" });
-  await expect(suggestion).toContainText("Tariff inputs");
-  await expect(suggestion).toContainText("Can we get the rate schedule before pricing?");
-  await expect(suggestion).toContainText("tariff analysis by Monday");
+  await expect(intelligenceRail).toContainText("Tariff inputs");
+  await expect(intelligenceRail).toContainText("Can we get the rate schedule before pricing?");
+  await expect(intelligenceRail).toContainText("Current transcript evidence mentioned tariff analysis.");
+  await expect(page.getByRole("region", { name: "Live Signals" })).toHaveCount(0);
 });
 
 test("shows energy lens badge only from supported final transcript evidence", async ({ page }) => {
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
-    "http://127.0.0.1:8765/api/sessions/session-123/events",
+    "http://127.0.0.1:8765/api/live/live-123/events",
   );
 
   await emitSessionEvent(page, {
@@ -807,9 +1382,9 @@ test("shows energy lens badge only from supported final transcript evidence", as
 });
 
 test("renders energy-generated cards with evidence jump", async ({ page }) => {
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
-    "http://127.0.0.1:8765/api/sessions/session-123/events",
+    "http://127.0.0.1:8765/api/live/live-123/events",
   );
 
   await emitSessionEvent(page, {
@@ -863,12 +1438,12 @@ test("renders energy-generated cards with evidence jump", async ({ page }) => {
 
 test("auto-scrolls the live field as transcript and sidecar rows grow", async ({ page }) => {
   await page.setViewportSize({ width: 1000, height: 700 });
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
-    "http://127.0.0.1:8765/api/sessions/session-123/events",
+    "http://127.0.0.1:8765/api/live/live-123/events",
   );
 
-  for (let index = 0; index < 30; index += 1) {
+  for (let index = 0; index < 100; index += 1) {
     await emitSessionEvent(page, {
       type: "transcript_final",
       payload: {
@@ -884,10 +1459,35 @@ test("auto-scrolls the live field as transcript and sidecar rows grow", async ({
   }
 
   const liveField = page.locator("#transcript");
-  await expect(liveField).toContainText("Live auto-scroll test line 29");
+  await expect(liveField).toContainText("Live auto-scroll test line 99");
   await expect.poll(() => liveField.evaluate((element) => (
     element.scrollHeight - element.scrollTop - element.clientHeight
   ))).toBeLessThan(8);
+
+  await liveField.hover();
+  await page.mouse.wheel(0, -2400);
+  await expect.poll(() => liveField.evaluate((element) => (
+    element.scrollHeight - element.scrollTop - element.clientHeight
+  ))).toBeGreaterThan(96);
+  await expect(page.getByRole("button", { name: /Jump to live/ })).toBeVisible();
+
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "scroll-line-100",
+      text: "Live auto-scroll test line 100 should not pull the reader away while history is being reviewed.",
+      start_s: 100,
+      end_s: 100.8,
+      asr_model: "faster-whisper",
+      transcript_retention: "temporary",
+      raw_audio_retained: false,
+    },
+  });
+  await expect(liveField).toContainText("Live auto-scroll test line 100");
+  await expect(page.getByRole("button", { name: /Jump to live/ })).toBeVisible();
+  await expect.poll(() => liveField.evaluate((element) => (
+    element.scrollHeight - element.scrollTop - element.clientHeight
+  ))).toBeGreaterThan(96);
 
   await emitSessionEvent(page, {
     type: "sidecar_card",
@@ -901,23 +1501,25 @@ test("auto-scrolls the live field as transcript and sidecar rows grow", async ({
       why_now: "It belongs to the newest transcript row.",
       priority: "high",
       confidence: 0.88,
-      source_segment_ids: ["scroll-line-29"],
+      source_segment_ids: ["scroll-line-100"],
       source_type: "transcript",
-      evidence_quote: "Live auto-scroll test line 29",
+      evidence_quote: "Live auto-scroll test line 100",
       raw_audio_retained: false,
     },
   });
 
   await expect(liveField).toContainText("Late context card");
+  await expect(page.getByRole("button", { name: /Jump to live/ })).toBeVisible();
+  await page.getByRole("button", { name: /Jump to live/ }).click();
   await expect.poll(() => liveField.evaluate((element) => (
     element.scrollHeight - element.scrollTop - element.clientHeight
   ))).toBeLessThan(8);
 });
 
 test("keeps showing newer ASR previews that overlap older finals", async ({ page }) => {
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect.poll(() => page.evaluate(() => window.__brainSidecarEventSourceUrls)).toContain(
-    "http://127.0.0.1:8765/api/sessions/session-123/events",
+    "http://127.0.0.1:8765/api/live/live-123/events",
   );
 
   await emitSessionEvent(page, {
@@ -983,26 +1585,42 @@ test("keeps showing newer ASR previews that overlap older finals", async ({ page
   await expect(transcript).not.toContainText("newer phrase is arriving");
 });
 
-test("makes saved transcript recording an explicit capture mode", async ({ page }) => {
-  const modeGroup = page.getByRole("group", { name: "Session save mode" });
-  await expect(modeGroup.getByRole("button", { name: /Temporary/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByLabel("Session save mode status")).toContainText("Not saved");
-
-  await modeGroup.getByRole("button", { name: /Saved/ }).click();
-  await expect(modeGroup.getByRole("button", { name: /Saved/ })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByLabel("Session save mode status")).toContainText("Saved transcript");
-  await expect(page.getByRole("banner").getByRole("button", { name: "Start Recording" })).toBeVisible();
+test("keeps normal Live ephemeral and queues Review on stop", async ({ page }) => {
+  await expect(page.getByRole("group", { name: "Session save mode" })).toHaveCount(0);
+  await expect(page.getByLabel("Live retention status")).toContainText("Ephemeral Live");
 
   const startRequest = page.waitForRequest((request) => (
-    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
+    request.method() === "POST" && request.url().endsWith("/api/live/start")
   ));
+  await page.getByRole("banner").getByRole("button", { name: "Start Live" }).click();
+  const body = JSON.parse((await startRequest).postData() ?? "{}");
+  expect(body.save_transcript).toBeUndefined();
+  await expect(page.getByLabel("Live retention status")).toContainText("Review handoff armed");
 
-  await page.getByRole("banner").getByRole("button", { name: "Start Recording" }).click();
-  const request = await startRequest;
-  const body = JSON.parse(request.postData() ?? "{}");
-  expect(body.save_transcript).toBe(true);
-  await expect(page.getByLabel("Session save mode status")).toContainText("Recording");
-  await expect(modeGroup.getByRole("button", { name: /Temporary/ })).toBeDisabled();
+  await emitSessionEvent(page, {
+    type: "transcript_final",
+    payload: {
+      id: "ephemeral-line-1",
+      text: "This live transcript should clear after queueing.",
+      start_s: 0,
+      end_s: 2,
+    },
+  });
+  await expect(page.locator("#transcript")).toContainText("This live transcript should clear after queueing.");
+
+  const stopRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/live/live-123/stop")
+  ));
+  await page.getByRole("banner").getByRole("button", { name: "Stop & Queue" }).click();
+  await stopRequest;
+  await expect(page.locator("#transcript")).not.toContainText("This live transcript should clear after queueing.");
+  await page.getByRole("button", { name: "Review" }).click();
+  const reviewMain = page.getByRole("main", { name: "Review" });
+  const queueToggle = reviewMain.getByText(/^Queue \(\d+\)$/);
+  if (await queueToggle.count()) {
+    await queueToggle.first().click();
+  }
+  await expect(reviewMain.getByRole("region", { name: "Review queue" })).toContainText("Apollo call");
 });
 
 test("shows speaker identity controls instead of legacy ASR voice training", async ({ page }) => {
@@ -1035,7 +1653,7 @@ test("shows speaker identity controls instead of legacy ASR voice training", asy
   await expect(speaker).toBeVisible();
   await expect(speaker).toContainText("not enrolled");
   await expect(speaker).toContainText("0.0s usable");
-  await expect(speaker).toContainText("15.0s needed");
+  await expect(speaker).toContainText("60.0s needed");
   await expect(speaker.getByLabel("Speaker training steps")).toContainText("1 Start");
   await expect(page.getByRole("region", { name: "Voice profile" })).toHaveCount(0);
   await expect(page.getByText("ASR guidance preview")).toHaveCount(0);
@@ -1044,15 +1662,15 @@ test("shows speaker identity controls instead of legacy ASR voice training", asy
   await speaker.getByText("Advanced speaker controls").click();
   await expect(speaker).toContainText("embeddings");
   await expect(speaker.getByRole("button", { name: "Delete Learned Embeddings" })).toBeVisible();
-  await speaker.getByText("Review learned speaker profile").click();
-  await expect(speaker.getByRole("button", { name: "Merge speakers" })).toBeVisible();
-  await expect(speaker.getByRole("button", { name: "Split speaker" })).toBeVisible();
-  await expect(speaker.getByRole("button", { name: "Rename speaker" })).toBeVisible();
+  await expect(speaker.getByText("Review learned speaker profile")).toHaveCount(0);
+  await expect(speaker.getByRole("button", { name: "Merge speakers" })).toHaveCount(0);
+  await expect(speaker.getByRole("button", { name: "Split speaker" })).toHaveCount(0);
+  await expect(speaker.getByRole("button", { name: "Rename speaker" })).toHaveCount(0);
 
   await speaker.getByRole("button", { name: "Set Up BP Label" }).first().click();
   await expect(speaker.getByRole("button", { name: "Record 8s Sample" })).toBeVisible();
   await expect(speaker.getByLabel("Speaker recording prompt")).toContainText("Record only BP");
-  await expect(speaker.getByLabel("Speaker recording prompt")).toContainText("speaker labels");
+  await expect(speaker.getByLabel("Speaker recording prompt")).toContainText("verifies BP");
   await expect(speaker.getByLabel("Suggested speaker training prompts")).toContainText("Say one of these");
   await expect(speaker.getByLabel("Suggested speaker training prompts")).toContainText("normal desk setup");
   await expect(speaker.getByLabel("Suggested speaker training prompts")).toContainText("should not label them as me");
@@ -1074,7 +1692,7 @@ test("shows speaker identity controls instead of legacy ASR voice training", asy
 });
 
 test("renders high-confidence BP speaker labels from transcript events", async ({ page }) => {
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
   await emitSessionEvent(page, {
     type: "transcript_final",
@@ -1105,7 +1723,7 @@ test("supports contribution card copy, pin, and dismiss controls", async ({ page
       },
     });
   });
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
 
   await emitSessionEvent(page, {
@@ -1143,7 +1761,7 @@ test("supports contribution card copy, pin, and dismiss controls", async ({ page
 });
 
 test("shows GPU cleanup and ASR loading progress in capture controls", async ({ page }) => {
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
 
   await emitSessionEvent(page, {
@@ -1180,11 +1798,11 @@ test("shows GPU cleanup and ASR loading progress in capture controls", async ({ 
     type: "audio_status",
     payload: { status: "listening", queue_depth: 0, dropped_windows: 0 },
   });
-  await expect(page.getByRole("banner").getByRole("button", { name: "Listening" })).toBeDisabled();
+  await expect(page.getByRole("banner").getByRole("button", { name: "Live Running" })).toBeDisabled();
 });
 
 test("limits context cards and reveals raw metadata only in debug mode", async ({ page }) => {
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await emitSessionEvent(page, {
     type: "transcript_final",
     payload: {
@@ -1225,7 +1843,7 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
   await page.getByRole("button", { name: "Tools" }).click();
   await openToolSection(page, "Logs & Debug");
   await page.getByLabel("Show debug metadata").check();
-  await page.getByRole("button", { name: "Live" }).click();
+  await page.getByRole("button", { name: "Live", exact: true }).click();
   const refreshedContextSection = page.getByLabel("Reference context");
   await openDetailsByLabel(page, "Reference context");
   await refreshedContextSection.locator(".context-card").first().getByRole("button", { name: "Details" }).click();
@@ -1235,7 +1853,7 @@ test("limits context cards and reveals raw metadata only in debug mode", async (
 });
 
 test("surfaces mocked SSE errors and supports stop", async ({ page }) => {
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
 
   await emitSessionEvent(page, {
@@ -1246,22 +1864,12 @@ test("surfaces mocked SSE errors and supports stop", async ({ page }) => {
   await expect(page.getByRole("alert")).toContainText("Microphone disconnected");
   await expect(page.getByLabel("Runtime status")).toContainText("error");
 
-  await page.getByRole("banner").getByRole("button", { name: "Stop" }).click();
+  await page.getByRole("banner").getByRole("button", { name: "Stop & Queue" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("stopped");
 });
 
-test("shows copyable post-call brief from evidence-backed cards", async ({ page }) => {
-  await page.evaluate(() => {
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: async (text: string) => {
-          (window as unknown as { __copiedBrief?: string }).__copiedBrief = text;
-        },
-      },
-    });
-  });
-  await page.getByRole("button", { name: "Start Listening" }).click();
+test("stop and queue keeps post-call persistence out of Live", async ({ page }) => {
+  await page.getByRole("button", { name: "Start Live" }).click();
 
   await emitSessionEvent(page, {
     type: "transcript_final",
@@ -1308,23 +1916,26 @@ test("shows copyable post-call brief from evidence-backed cards", async ({ page 
     },
   });
 
-  await page.getByRole("banner").getByRole("button", { name: "Stop" }).click();
-  const brief = page.getByLabel("Consulting brief");
-  await expect(brief).toBeVisible();
-  await expect(brief).toContainText("## Meeting Goal");
-  await expect(brief).toContainText("## Contract Reminders");
-  await expect(brief).toContainText("## Suggested Follow-up Language");
-  await expect(brief).toContainText("## Evidence Index");
-  await expect(brief).toContainText("Evidence: \"Send the Siemens comments by Monday.\"");
-  await expect(brief).toContainText("## Technical References / Web Context");
-  await brief.getByRole("button", { name: "Copy Markdown" }).click();
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __copiedBrief?: string }).__copiedBrief)).toContain(
-    "Source segments: brief-line-1",
-  );
+  await expect(page.locator("#transcript")).toContainText("Send the Siemens comments by Monday.");
+  const stopRequest = page.waitForRequest((request) => (
+    request.method() === "POST" && request.url().endsWith("/api/live/live-123/stop")
+  ));
+  await page.getByRole("banner").getByRole("button", { name: "Stop & Queue" }).click();
+  await stopRequest;
+  await expect(page.getByRole("region", { name: "Meeting Output" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Sidecar Intelligence" })).toBeVisible();
+  await expect(page.locator("#transcript")).not.toContainText("Send the Siemens comments by Monday.");
+  await page.getByRole("button", { name: "Review" }).click();
+  const reviewMain = page.getByRole("main", { name: "Review" });
+  const queueToggle = reviewMain.getByText(/^Queue \(\d+\)$/);
+  if (await queueToggle.count()) {
+    await queueToggle.first().click();
+  }
+  await expect(reviewMain.getByRole("region", { name: "Review queue" })).toContainText("Apollo call");
 });
 
 test("renders ephemeral web context notes in the context pane", async ({ page }) => {
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
 
   await emitSessionEvent(page, {
@@ -1416,8 +2027,8 @@ test("prepares recorded audio and starts playback from the GUI", async ({ page }
       queue_depth: 0,
     },
   });
-  await page.getByRole("button", { name: "Live" }).click();
-  await expect(page.getByText("1 heard").first()).toBeVisible();
+  await page.getByRole("button", { name: "Live", exact: true }).click();
+  await expect(page.locator("#transcript")).toContainText("Online Generator Monitoring at T.A. Smith needs validation.");
 
   const reportRequest = page.waitForRequest((candidate) => (
     candidate.method() === "POST" && candidate.url().endsWith("/api/test-mode/runs/testrun-123/report")
@@ -1446,14 +2057,13 @@ test("locks live capture to the auto-selected server microphone", async ({ page 
   await expect(drawer.getByLabel("Browser microphone status")).toHaveCount(0);
 
   const startRequest = page.waitForRequest((request) => (
-    request.method() === "POST" && request.url().endsWith("/api/sessions/session-123/start")
+    request.method() === "POST" && request.url().endsWith("/api/live/start")
   ));
-  await page.getByRole("banner").getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("banner").getByRole("button", { name: "Start Live" }).click();
   const request = await startRequest;
 
   expect(JSON.parse(request.postData() ?? "{}")).toMatchObject({
     device_id: null,
-    fixture_wav: null,
     audio_source: "server_device",
     mic_tuning: {
       auto_level: true,
@@ -1481,8 +2091,8 @@ test("blocks capture and speaker training when no healthy server microphone is a
   await expect(drawer.getByLabel("Server microphone")).toContainText("No healthy server microphone detected");
   await expect(drawer.getByRole("status")).toContainText("No healthy server microphone detected");
   await expect(drawer.getByRole("button", { name: "Test Mic" })).toBeDisabled();
-  await expect(drawer.getByRole("button", { name: "Start Listening" })).toHaveCount(0);
-  await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeDisabled();
+  await expect(drawer.getByRole("button", { name: "Start Live" })).toHaveCount(0);
+  await expect(page.getByRole("banner").getByRole("button", { name: "Start Live" })).toBeDisabled();
   const speaker = await openToolSection(page, "Speaker Identity", "Speaker identity");
   await expect(speaker.getByRole("button", { name: "Set Up BP Label" }).first()).toBeDisabled();
 });
@@ -1500,7 +2110,7 @@ test("uses mocked library and recall APIs", async ({ page }) => {
   await memoryPage.getByLabel("Reference items").getByRole("button", { name: "Reindex References" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText("indexed 42 chunks");
 
-  await page.getByRole("button", { name: "Live" }).click();
+  await page.getByRole("button", { name: "Live", exact: true }).click();
   await page.getByPlaceholder("Ask Sidecar").fill("apollo rollout");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByRole("region", { name: "Manual query source sections" })).toContainText("Prior transcript");
@@ -1518,7 +2128,7 @@ test("uses mocked library and recall APIs", async ({ page }) => {
 
 test("keeps transcript and context readable on a phone viewport", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Start Listening" }).click();
+  await page.getByRole("button", { name: "Start Live" }).click();
   await expect(page.getByLabel("Runtime status")).toContainText(/starting|listening/);
 
   await emitSessionEvent(page, {
@@ -1557,8 +2167,8 @@ test("keeps cockpit pages compact at desktop and laptop widths", async ({ page }
     { width: 1440, height: 900 },
   ]) {
     await page.setViewportSize(size);
-    await page.getByRole("button", { name: "Live" }).click();
-    await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeVisible();
+    await page.getByRole("button", { name: "Live", exact: true }).click();
+    await expect(page.getByRole("banner").getByRole("button", { name: "Start Live" })).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     await page.getByRole("button", { name: "Tools" }).click();
@@ -1598,7 +2208,7 @@ test("keeps core capture controls usable on a phone viewport", async ({ page }) 
   await page.getByRole("button", { name: "Tools" }).click();
   await expect(page.getByLabel("Server microphone")).toContainText("Blue Yeti USB Microphone");
   await expect(page.getByLabel("Guided mic tuning")).toBeVisible();
-  await expect(page.getByRole("banner").getByRole("button", { name: "Start Listening" })).toBeVisible();
+  await expect(page.getByRole("banner").getByRole("button", { name: "Start Live" })).toBeVisible();
 });
 
 async function openToolSection(page: Page, tabName: string, regionName = tabName) {
@@ -1606,6 +2216,452 @@ async function openToolSection(page: Page, tabName: string, regionName = tabName
   const region = page.getByRole("region", { name: regionName });
   await expect(region).toBeVisible();
   return region;
+}
+
+async function openReviewPage(page: Page) {
+  await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("button", { name: "Review" }).click();
+  const review = page.getByRole("main", { name: "Review" });
+  await expect(review).toBeVisible();
+  return review;
+}
+
+async function openCompletedReview(page: Page) {
+  const review = await openReviewPage(page);
+  const queueToggle = review.getByText(/^Queue \(\d+\)$/);
+  if (await queueToggle.count()) {
+    await queueToggle.first().click();
+  }
+  await review.getByRole("button", { name: /Apollo/ }).click();
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
+  const queueMenu = review.getByLabel("Review queue menu");
+  if (await queueMenu.count()) {
+    const queueOpen = await queueMenu.evaluate((element) => (
+      element instanceof HTMLDetailsElement ? element.open : false
+    ));
+    if (queueOpen) {
+      await queueMenu.locator("summary").first().click();
+    }
+  }
+  return review;
+}
+
+async function remockApi(page: Page, options: Parameters<typeof mockApi>[1] = {}) {
+  await page.unroute("http://127.0.0.1:8765/api/**");
+  await mockApi(page, options);
+  await page.goto("/");
+}
+
+async function installClipboardStub(page: Page) {
+  await page.evaluate(() => {
+    type ClipboardWindow = typeof window & { __brainSidecarCopiedText?: string };
+    (window as ClipboardWindow).__brainSidecarCopiedText = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          (window as ClipboardWindow).__brainSidecarCopiedText = text;
+        },
+      },
+    });
+  });
+}
+
+async function clipboardText(page: Page) {
+  return page.evaluate(() => (
+    (window as typeof window & { __brainSidecarCopiedText?: string }).__brainSidecarCopiedText ?? ""
+  ));
+}
+
+async function expectReviewTextFit(page: Page) {
+  const failures = await page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('[aria-label="Review"].review-page');
+    if (!root) {
+      return ["Review page root was not found."];
+    }
+    const result: string[] = [];
+    const tolerance = 2;
+    const describe = (element: Element) => {
+      const selector = element instanceof HTMLElement
+        ? element.className || element.getAttribute("aria-label") || element.tagName.toLowerCase()
+        : element.tagName.toLowerCase();
+      const text = (element.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 90);
+      return `${selector}${text ? `: ${text}` : ""}`;
+    };
+    const isVisible = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      let parent = element.parentElement;
+      while (parent) {
+        if (parent instanceof HTMLDetailsElement && !parent.open) {
+          const summary = parent.querySelector("summary");
+          if (summary !== element && !summary?.contains(element)) {
+            return false;
+          }
+        }
+        parent = parent.parentElement;
+      }
+      return rect.width > 1 && rect.height > 1 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const targets = [
+      ".review-summary-toolbar",
+      ".meeting-summary-brief",
+      ".meeting-summary-brief *",
+      ".meeting-summary-hero",
+      ".meeting-summary-brief-section",
+      ".meeting-summary-brief-item",
+      ".meeting-summary-brief-item-meta span",
+      ".meeting-summary-brief-group h4",
+      ".meeting-summary-metrics span",
+      ".meeting-summary-workstream-list article",
+      ".meeting-summary-technical-list article",
+      ".meeting-summary-context-list article",
+      ".review-queue-panel",
+      ".review-queue-item",
+      ".review-summary-actions button",
+      ".review-status-chips .chip",
+      ".review-output-panel",
+      ".review-output-panel .context-card",
+      ".review-transcript-panel",
+      ".review-transcript-panel .saved-transcript-row",
+      ".review-page button",
+      ".review-page .chip",
+      ".review-page summary",
+      ".file-action span",
+      ".file-action small",
+      ".source-segment-chip",
+    ];
+    const wrapTargets = [
+      ".review-page button",
+      ".review-page .chip",
+      ".review-page summary",
+      ".review-queue-item span",
+      ".review-queue-item strong",
+      ".review-queue-item small",
+      ".meeting-summary-hero h2",
+      ".meeting-summary-hero p",
+      ".meeting-summary-evidence span",
+      ".meeting-summary-brief-item",
+      ".meeting-summary-brief-item-meta span",
+      ".meeting-summary-brief-group h4",
+      ".meeting-summary-metrics span",
+      ".meeting-summary-keypoints span",
+      ".meeting-summary-row-head strong",
+      ".meeting-summary-row-note",
+      ".meeting-summary-mini-list li",
+      ".meeting-summary-context-list strong",
+      ".context-card h3",
+      ".context-card p",
+      ".file-action span",
+      ".file-action small",
+      ".saved-transcript-row p",
+      ".source-segment-chip",
+    ];
+    const fontTargets = [
+      ".review-summary-toolbar",
+      ".meeting-summary-brief",
+      ".meeting-summary-brief-section",
+      ".meeting-summary-brief-item",
+      ".meeting-summary-workstream-list article",
+      ".meeting-summary-technical-list article",
+      ".review-queue-item",
+      ".context-card",
+      ".saved-transcript-row",
+      ".review-page button",
+      ".review-page .chip",
+      ".review-page summary",
+    ];
+    if (document.documentElement.scrollWidth > window.innerWidth + tolerance) {
+      result.push(`Document overflow ${document.documentElement.scrollWidth}px > ${window.innerWidth}px`);
+    }
+    for (const selector of targets) {
+      for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector)).filter(isVisible)) {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        if (element.scrollWidth > element.clientWidth + tolerance && !["auto", "scroll"].includes(style.overflowX)) {
+          result.push(`Horizontal text overflow in ${selector} (${element.scrollWidth}px > ${element.clientWidth}px): ${describe(element)}`);
+        }
+        if (rect.left < -tolerance || rect.right > window.innerWidth + tolerance) {
+          result.push(`Element escapes viewport in ${selector} (${Math.round(rect.left)}..${Math.round(rect.right)} of ${window.innerWidth}): ${describe(element)}`);
+        }
+      }
+    }
+    for (const selector of wrapTargets) {
+      for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector)).filter(isVisible)) {
+        const style = window.getComputedStyle(element);
+        const wrapsWords = ["anywhere", "break-word"].includes(style.overflowWrap) || ["break-word", "break-all"].includes(style.wordBreak);
+        if (style.whiteSpace === "nowrap") {
+          result.push(`No wrapping allowed in ${selector}: ${describe(element)}`);
+        }
+        if (!wrapsWords) {
+          result.push(`Long-word wrapping is not enabled in ${selector}: ${describe(element)}`);
+        }
+      }
+    }
+    for (const selector of fontTargets) {
+      for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector)).filter(isVisible)) {
+        const style = window.getComputedStyle(element);
+        const fontSize = Number.parseFloat(style.fontSize);
+        const lineHeight = style.lineHeight === "normal" ? fontSize * 1.2 : Number.parseFloat(style.lineHeight);
+        if (fontSize < 10) {
+          result.push(`Font too small in ${selector} (${style.fontSize}): ${describe(element)}`);
+        }
+        if (Number.isFinite(lineHeight) && lineHeight < fontSize * 1.05) {
+          result.push(`Line height too tight in ${selector} (${style.lineHeight} for ${style.fontSize}): ${describe(element)}`);
+        }
+      }
+    }
+    return result;
+  });
+  expect(failures).toEqual([]);
+}
+
+async function expectReviewSummaryHierarchy(page: Page) {
+  const result = await page.evaluate(() => {
+    const summaryPrimary = document.querySelector('[aria-label="Review summary validation"]');
+    const cards = document.querySelector('[aria-label="Validation Evidence Cards"], [aria-label="Supporting Meeting Cards"]');
+    const transcriptDetails = document.querySelector('[aria-label="Transcript and sources"]');
+    const transcript = document.querySelector('[aria-label="Clean Transcript"]');
+    const hierarchyLabels = ["Meeting Summary", "Executive Summary", "Actions", "Decisions", "Open Questions", "Risks / Watch Items", "Reference Context", "Technical Notes"];
+    const hierarchyNodes = hierarchyLabels.map((label) => document.querySelector(`[aria-label="${label}"]`));
+    const hierarchyIndexes = hierarchyNodes.map((node) => node ? Array.from(document.querySelectorAll("[aria-label]")).indexOf(node) : -1);
+    const summaryBox = summaryPrimary?.getBoundingClientRect();
+    const cardsBox = cards?.getBoundingClientRect();
+    const transcriptBox = transcript?.getBoundingClientRect();
+    const transcriptOpen = transcriptDetails instanceof HTMLDetailsElement ? transcriptDetails.open : false;
+    return {
+      hierarchyPresent: hierarchyIndexes.every((index) => index >= 0),
+      hierarchyInOrder: hierarchyIndexes.every((index, itemIndex, indexes) => itemIndex === 0 || indexes[itemIndex - 1] < index),
+      summaryBeforeCards: Boolean(summaryPrimary && cards && (summaryPrimary.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      hierarchyBeforeCards: hierarchyNodes.every((node) => Boolean(node && cards && (node.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING))),
+      transcriptHiddenByDefault: !transcriptOpen,
+      hierarchyBeforeTranscriptWhenOpen: !transcriptOpen || hierarchyNodes.every((node) => Boolean(node && transcript && (node.compareDocumentPosition(transcript) & Node.DOCUMENT_POSITION_FOLLOWING))),
+      visuallyBeforeEvidence: Boolean(summaryBox && cardsBox && summaryBox.top <= (transcriptOpen && transcriptBox ? Math.min(cardsBox.top, transcriptBox.top) : cardsBox.top)),
+    };
+  });
+  expect(result).toEqual({
+    hierarchyPresent: true,
+    hierarchyInOrder: true,
+    summaryBeforeCards: true,
+    hierarchyBeforeCards: true,
+    transcriptHiddenByDefault: true,
+    hierarchyBeforeTranscriptWhenOpen: true,
+    visuallyBeforeEvidence: true,
+  });
+}
+
+async function expectReviewSummaryTextVisible(page: Page) {
+  const failures = await page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('[aria-label="Review"].review-page');
+    if (!root) {
+      return ["Review page root was not found."];
+    }
+    const result: string[] = [];
+    const tolerance = 2;
+    const describe = (element: Element) => {
+      const selector = element instanceof HTMLElement
+        ? element.className || element.getAttribute("aria-label") || element.tagName.toLowerCase()
+        : element.tagName.toLowerCase();
+      const text = (element.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 90);
+      return `${selector}${text ? `: ${text}` : ""}`;
+    };
+    const isVisible = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      let parent = element.parentElement;
+      while (parent) {
+        if (parent instanceof HTMLDetailsElement && !parent.open) {
+          const summary = parent.querySelector("summary");
+          if (summary !== element && !summary?.contains(element)) {
+            return false;
+          }
+        }
+        parent = parent.parentElement;
+      }
+      return rect.width > 1 && rect.height > 1 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const selectors = [
+      ".review-summary-toolbar h2",
+      ".review-summary-toolbar span",
+      ".meeting-summary-hero h2",
+      ".meeting-summary-hero p",
+      ".meeting-summary-evidence span",
+      ".meeting-summary-rollup *",
+      ".meeting-summary-workstreams *",
+      ".meeting-summary-technical *",
+      ".meeting-summary-metrics span",
+      ".meeting-summary-keypoints span",
+    ];
+    for (const selector of selectors) {
+      for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector)).filter(isVisible)) {
+        const style = window.getComputedStyle(element);
+        if (["hidden", "clip"].includes(style.overflowX) && element.scrollWidth > element.clientWidth + tolerance) {
+          result.push(`Summary text clips horizontally in ${selector}: ${describe(element)}`);
+        }
+        if (["hidden", "clip"].includes(style.overflowY) && element.scrollHeight > element.clientHeight + tolerance) {
+          result.push(`Summary text clips vertically in ${selector}: ${describe(element)}`);
+        }
+      }
+    }
+    return result;
+  });
+  expect(failures).toEqual([]);
+}
+
+async function expectReviewControlTargetsAndFocus(page: Page) {
+  const failures = await page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('[aria-label="Review"].review-page');
+    if (!root) {
+      return ["Review page root was not found."];
+    }
+    const result: string[] = [];
+    const tolerance = 2;
+    const minimumTarget = 24;
+    const originalWindowScroll = { x: window.scrollX, y: window.scrollY };
+    const originalRootScroll = root.scrollTop;
+    const describe = (element: Element) => {
+      const selector = element instanceof HTMLElement
+        ? element.className || element.getAttribute("aria-label") || element.tagName.toLowerCase()
+        : element.tagName.toLowerCase();
+      const text = (element.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 90);
+      return `${selector}${text ? `: ${text}` : ""}`;
+    };
+    const isVisible = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      let parent = element.parentElement;
+      while (parent) {
+        if (parent instanceof HTMLDetailsElement && !parent.open) {
+          const summary = parent.querySelector("summary");
+          if (summary !== element && !summary?.contains(element)) {
+            return false;
+          }
+        }
+        parent = parent.parentElement;
+      }
+      return rect.width > 1 && rect.height > 1 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const targetControls = Array.from(root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, .file-action'
+    )).filter(isVisible);
+    for (const element of targetControls) {
+      const targetBox = element.classList.contains("file-picker-native")
+        ? element.closest<HTMLElement>(".file-action")?.getBoundingClientRect()
+        : element.getBoundingClientRect();
+      if (!targetBox) {
+        continue;
+      }
+      if (targetBox.width + tolerance < minimumTarget || targetBox.height + tolerance < minimumTarget) {
+        result.push(`Review control target is below ${minimumTarget}px (${Math.round(targetBox.width)}x${Math.round(targetBox.height)}): ${describe(element)}`);
+      }
+    }
+
+    const focusableControls = Array.from(root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+    )).filter(isVisible);
+    for (const element of focusableControls) {
+      element.focus({ preventScroll: false });
+      const focusBoxElement = element.classList.contains("file-picker-native")
+        ? element.closest<HTMLElement>(".file-action") ?? element
+        : element;
+      focusBoxElement.scrollIntoView({ block: "nearest", inline: "nearest" });
+      const rect = focusBoxElement.getBoundingClientRect();
+      if (rect.top < -tolerance || rect.left < -tolerance || rect.bottom > window.innerHeight + tolerance || rect.right > window.innerWidth + tolerance) {
+        result.push(`Focused Review control is not fully visible (${Math.round(rect.left)},${Math.round(rect.top)} ${Math.round(rect.width)}x${Math.round(rect.height)}): ${describe(element)}`);
+        continue;
+      }
+      const pointX = Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
+      const pointY = Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
+      const topElement = document.elementFromPoint(pointX, pointY);
+      const focusVisible = Boolean(topElement && (
+        element === topElement
+        || element.contains(topElement)
+        || topElement.contains(element)
+        || focusBoxElement === topElement
+        || focusBoxElement.contains(topElement)
+        || topElement.contains(focusBoxElement)
+      ));
+      if (!focusVisible) {
+        result.push(`Focused Review control is obscured by ${topElement ? describe(topElement) : "nothing"}: ${describe(element)}`);
+      }
+    }
+    root.scrollTop = originalRootScroll;
+    window.scrollTo(originalWindowScroll.x, originalWindowScroll.y);
+    return result.slice(0, 30);
+  });
+  expect(failures).toEqual([]);
+}
+
+async function expectReviewTextSpacingFit(page: Page) {
+  const failures = await page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('[aria-label="Review"].review-page');
+    if (!root) {
+      return ["Review page root was not found."];
+    }
+    const result: string[] = [];
+    const tolerance = 2;
+    const describe = (element: Element) => {
+      const selector = element instanceof HTMLElement
+        ? element.className || element.getAttribute("aria-label") || element.tagName.toLowerCase()
+        : element.tagName.toLowerCase();
+      const text = (element.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 90);
+      return `${selector}${text ? `: ${text}` : ""}`;
+    };
+    const isVisible = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      let parent = element.parentElement;
+      while (parent) {
+        if (parent instanceof HTMLDetailsElement && !parent.open) {
+          const summary = parent.querySelector("summary");
+          if (summary !== element && !summary?.contains(element)) {
+            return false;
+          }
+        }
+        parent = parent.parentElement;
+      }
+      return rect.width > 1 && rect.height > 1 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const selectors = [
+      ".review-summary-toolbar h2",
+      ".review-summary-toolbar span",
+      ".meeting-summary-hero h2",
+      ".meeting-summary-hero p",
+      ".meeting-summary-keypoints span",
+      ".meeting-summary-metrics span",
+      ".meeting-summary-evidence span",
+      ".meeting-summary-mini-list li",
+      ".meeting-summary-row-note",
+      ".meeting-summary-context-list strong",
+      ".review-step small",
+      ".context-card h3",
+      ".context-card p",
+      ".saved-transcript-row p",
+      ".source-segment-chip",
+    ];
+    for (const selector of selectors) {
+      for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector)).filter(isVisible)) {
+        const style = window.getComputedStyle(element);
+        const hidesX = ["hidden", "clip"].includes(style.overflowX);
+        const hidesY = ["hidden", "clip"].includes(style.overflowY);
+        if (hidesX && element.scrollWidth > element.clientWidth + tolerance) {
+          result.push(`Text spacing clips horizontally in ${selector}: ${describe(element)}`);
+        }
+        if (hidesY && element.scrollHeight > element.clientHeight + tolerance) {
+          result.push(`Text spacing clips vertically in ${selector}: ${describe(element)}`);
+        }
+      }
+    }
+    return result;
+  });
+  expect(failures).toEqual([]);
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 async function openDetailsByLabel(page: Page, name: string) {

@@ -17,8 +17,8 @@ from brain_sidecar.core.storage import Storage
 SELF_PROFILE_ID = "self_bp"
 SELF_DISPLAY_NAME = "BP"
 SPEECH_SAMPLE_RATE = 16_000
-MIN_ENROLLMENT_SPEECH_SECONDS = 15.0
-TARGET_ENROLLMENT_SPEECH_SECONDS = 20.0
+MIN_ENROLLMENT_SPEECH_SECONDS = 60.0
+TARGET_ENROLLMENT_SPEECH_SECONDS = 120.0
 MIN_RUNTIME_MATCH_SECONDS = 0.8
 DEFAULT_SELF_THRESHOLD = 0.82
 DEFAULT_CLUSTER_THRESHOLD = 0.72
@@ -507,7 +507,9 @@ class SpeakerIdentityService:
         total_speech = sum(float(row.get("duration_seconds") or 0.0) for row in embeddings)
         same_scores = pairwise_scores([row["vector"] for row in embeddings])
         threshold = float(profile.get("threshold") or DEFAULT_SELF_THRESHOLD)
-        ready = bool(profile["active"]) and centroid_row is not None and total_speech >= MIN_ENROLLMENT_SPEECH_SECONDS
+        minimum_speech = self.minimum_speech_seconds
+        target_speech = self.target_speech_seconds
+        ready = bool(profile["active"]) and centroid_row is not None and total_speech >= minimum_speech
         needs_recalibration = len(embeddings) >= 2 and same_scores and min(same_scores) < max(0.55, threshold - 0.18)
         enrollment_status = (
             "ready"
@@ -535,8 +537,8 @@ class SpeakerIdentityService:
             "ready": ready and not needs_recalibration,
             "needs_recalibration": needs_recalibration,
             "usable_speech_seconds": round(total_speech, 3),
-            "target_speech_seconds": TARGET_ENROLLMENT_SPEECH_SECONDS,
-            "minimum_speech_seconds": MIN_ENROLLMENT_SPEECH_SECONDS,
+            "target_speech_seconds": target_speech,
+            "minimum_speech_seconds": minimum_speech,
             "embedding_count": len(embeddings),
             "centroid_vector_dim": len(centroid_row["vector"]) if centroid_row else None,
             "same_speaker_scores": {
@@ -623,17 +625,18 @@ class SpeakerIdentityService:
         if not enrollment_embeddings:
             raise ValueError("Record at least two single-speaker samples before finalizing.")
         total_recorded_speech = sum(float(row.get("duration_seconds") or 0.0) for row in enrollment_embeddings)
-        if total_recorded_speech < MIN_ENROLLMENT_SPEECH_SECONDS:
+        minimum_speech = self.minimum_speech_seconds
+        if total_recorded_speech < minimum_speech:
             raise ValueError(
-                f"Need at least {MIN_ENROLLMENT_SPEECH_SECONDS:.0f}s of usable single-speaker speech; "
+                f"Need at least {minimum_speech:.0f}s of usable single-speaker speech; "
                 f"currently have {total_recorded_speech:.1f}s."
             )
         embeddings, ignored_embedding_ids = consistent_enrollment_subset(enrollment_embeddings)
         total_speech = sum(float(row.get("duration_seconds") or 0.0) for row in embeddings)
-        if len(embeddings) < 2 or total_speech < MIN_ENROLLMENT_SPEECH_SECONDS:
+        if len(embeddings) < 2 or total_speech < minimum_speech:
             raise ValueError(
                 "Enrollment samples are inconsistent; run Mic Check, then record clean single-speaker samples "
-                f"until at least {MIN_ENROLLMENT_SPEECH_SECONDS:.0f}s of consistent speech is available. "
+                f"until at least {minimum_speech:.0f}s of consistent speech is available. "
                 f"Best consistent speech: {total_speech:.1f}s of {total_recorded_speech:.1f}s."
             )
         vectors = [row["vector"] for row in embeddings]
@@ -767,7 +770,7 @@ class SpeakerIdentityService:
         if not status["ready"] or centroid_row is None or not backend_status.available:
             result = SpeakerLabelResult(
                 diarization_speaker_id=None,
-                display_speaker_label=None,
+                display_speaker_label="Unknown speaker",
                 matched_profile_id=None,
                 match_confidence=None,
                 match_score=None,
@@ -829,7 +832,7 @@ class SpeakerIdentityService:
         cluster = self._anonymous_cluster(session_id, vector, quality.usable_speech_seconds, start_ms)
         result = SpeakerLabelResult(
             diarization_speaker_id=cluster.cluster_id,
-            display_speaker_label=cluster.display_label,
+            display_speaker_label="Other speaker",
             matched_profile_id=None,
             match_confidence=0.0,
             match_score=round(self_score, 4),
@@ -867,21 +870,29 @@ class SpeakerIdentityService:
         next_index = len(clusters) + 1
         cluster = _SpeakerCluster(
             cluster_id=f"SPEAKER_{next_index - 1:02d}",
-            display_label=f"Speaker {next_index}",
+            display_label="Other speaker",
             centroid=l2_normalize(vector),
             speech_seconds=speech_seconds,
             first_seen_ms=first_seen_ms,
         )
         clusters.append(cluster)
         clusters.sort(key=lambda item: item.first_seen_ms)
-        for index, item in enumerate(clusters, start=1):
-            item.display_label = f"Speaker {index}"
+        for item in clusters:
+            item.display_label = "Other speaker"
         return cluster
 
     @property
     def self_display_name(self) -> str:
         value = getattr(self.settings, "speaker_identity_label", SELF_DISPLAY_NAME)
         return value.strip() or SELF_DISPLAY_NAME
+
+    @property
+    def minimum_speech_seconds(self) -> float:
+        return max(15.0, float(getattr(self.settings, "speaker_enrollment_minimum_seconds", MIN_ENROLLMENT_SPEECH_SECONDS)))
+
+    @property
+    def target_speech_seconds(self) -> float:
+        return max(self.minimum_speech_seconds, float(getattr(self.settings, "speaker_enrollment_target_seconds", TARGET_ENROLLMENT_SPEECH_SECONDS)))
 
     def _persist_label(
         self,
@@ -935,7 +946,7 @@ class SpeakerIdentityService:
     ) -> float:
         if not embeddings:
             return 0.0
-        duration_score = min(1.0, total_speech / TARGET_ENROLLMENT_SPEECH_SECONDS)
+        duration_score = min(1.0, total_speech / self.target_speech_seconds)
         sample_quality = sum(float(row.get("quality_score") or 0.0) for row in embeddings) / len(embeddings)
         consistency = 0.7 if not same_scores else max(0.0, min(1.0, (sum(same_scores) / len(same_scores) - 0.45) / 0.5))
         return round((duration_score * 0.35) + (sample_quality * 0.35) + (consistency * 0.3), 4)

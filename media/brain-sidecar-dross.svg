@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Brain Sidecar Dross-inspired app icon</title>
+  <desc id="desc">A purple one-eyed memory orb with sidecar signal accents.</desc>
+  <defs>
+    <radialGradient id="orb" cx="38%" cy="29%" r="70%">
+      <stop offset="0%" stop-color="#d9c7ff"/>
+      <stop offset="32%" stop-color="#8d62ff"/>
+      <stop offset="68%" stop-color="#4d2aa6"/>
+      <stop offset="100%" stop-color="#251046"/>
+    </radialGradient>
+    <radialGradient id="eye" cx="42%" cy="35%" r="68%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="35%" stop-color="#8ff7ff"/>
+      <stop offset="74%" stop-color="#226dff"/>
+      <stop offset="100%" stop-color="#101b69"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="132" y1="70" x2="394" y2="438" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#f4e9ff"/>
+      <stop offset="45%" stop-color="#8763ff"/>
+      <stop offset="100%" stop-color="#180c32"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="18" result="blur"/>
+      <feOffset in="blur" dx="0" dy="18" result="offsetBlur"/>
+      <feFlood flood-color="#080415" flood-opacity="0.42" result="shadowColor"/>
+      <feComposite in="shadowColor" in2="offsetBlur" operator="in" result="shadow"/>
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="96" fill="#11091f"/>
+  <path d="M256 54c108 0 194 84 194 190 0 112-86 202-194 202S62 356 62 244C62 138 148 54 256 54Z" fill="#1a0d33"/>
+
+  <g filter="url(#softShadow)">
+    <path d="M97 264c-24-11-37-32-31-52 6-21 29-31 54-23l37 12-18 77-42-14Z" fill="#5a35bd"/>
+    <path d="M415 264c24-11 37-32 31-52-6-21-29-31-54-23l-37 12 18 77 42-14Z" fill="#5a35bd"/>
+    <circle cx="256" cy="246" r="164" fill="url(#orb)" stroke="url(#rim)" stroke-width="18"/>
+  </g>
+
+  <path d="M157 167c26-43 68-68 116-72" fill="none" stroke="#f1e8ff" stroke-width="15" stroke-linecap="round" opacity="0.38"/>
+  <path d="M148 329c26 44 72 70 123 72" fill="none" stroke="#0f0621" stroke-width="16" stroke-linecap="round" opacity="0.42"/>
+
+  <g fill="#2c155e" opacity="0.55">
+    <circle cx="170" cy="231" r="13"/>
+    <circle cx="207" cy="138" r="10"/>
+    <circle cx="313" cy="139" r="12"/>
+    <circle cx="349" cy="227" r="9"/>
+    <circle cx="201" cy="347" r="11"/>
+    <circle cx="318" cy="349" r="13"/>
+  </g>
+  <g fill="#d6c5ff" opacity="0.26">
+    <circle cx="184" cy="193" r="7"/>
+    <circle cx="340" cy="184" r="6"/>
+    <circle cx="158" cy="284" r="6"/>
+    <circle cx="356" cy="304" r="8"/>
+    <circle cx="251" cy="379" r="5"/>
+  </g>
+
+  <circle cx="256" cy="239" r="82" fill="#15082d" opacity="0.95"/>
+  <circle cx="256" cy="239" r="66" fill="url(#eye)" stroke="#e8fbff" stroke-width="10"/>
+  <circle cx="235" cy="217" r="18" fill="#ffffff"/>
+  <circle cx="280" cy="260" r="20" fill="#07104d" opacity="0.7"/>
+  <path d="M199 300c30 28 84 31 116 0" fill="none" stroke="#f3eaff" stroke-width="12" stroke-linecap="round" opacity="0.55"/>
+
+  <g fill="none" stroke="#82f7ff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M348 92c31 14 53 36 68 66"/>
+    <path d="M372 81c29 9 53 28 72 56"/>
+    <circle cx="348" cy="92" r="5" fill="#82f7ff" stroke="none"/>
+    <circle cx="416" cy="158" r="5" fill="#82f7ff" stroke="none"/>
+  </g>
+</svg>

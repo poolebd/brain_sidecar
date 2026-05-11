@@ -406,7 +406,7 @@ def identity_claim_unsupported(output_text: str, evidence_text: str, speaker_ide
     if not IDENTITY_CLAIM_RE.search(output_text):
         return False
     ready = bool(speaker_identity_status.get("ready"))
-    enrolled = speaker_identity_status.get("enrollment_status") == "enrolled"
+    enrolled = speaker_identity_status.get("enrollment_status") in {"ready", "enrolled"}
     if ready and enrolled:
         return False
     return IDENTITY_EVIDENCE_RE.search(evidence_text) is None

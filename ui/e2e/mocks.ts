@@ -66,6 +66,15 @@ type MockApiOptions = {
   devicesResponse?: MockDeviceResponse;
   gpuHealthResponse?: Record<string, unknown>;
   sessionsResponse?: Record<string, unknown>[];
+  latestReviewStatus?: string;
+  reviewUsefulnessStatus?: string;
+  reviewUsefulnessScore?: number;
+  reviewUsefulnessFlags?: string[];
+  reviewQueueScenario?: "single" | "two_jobs";
+  reviewJobError?: string;
+  reviewCleanupError?: string;
+  longReviewEvidence?: boolean;
+  reviewTypographyStress?: boolean;
 };
 
 export const mockDevices: MockDevice[] = [
@@ -139,7 +148,7 @@ export async function installMockEventSource(page: Page) {
       value: (type: string, payload: Record<string, unknown>) => {
         const source = [...MockEventSource.instances]
           .reverse()
-          .find((candidate) => candidate.url.includes("/api/sessions/"))
+          .find((candidate) => candidate.url.includes("/api/live/") || candidate.url.includes("/api/sessions/"))
           ?? MockEventSource.instances.at(-1);
         if (!source) {
           throw new Error("No mock EventSource instance is available.");
@@ -183,8 +192,8 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     ready: false,
     needs_recalibration: false,
     usable_speech_seconds: 0,
-    target_speech_seconds: 20,
-    minimum_speech_seconds: 15,
+    target_speech_seconds: 120,
+    minimum_speech_seconds: 60,
     embedding_count: 0,
     centroid_vector_dim: null,
     same_speaker_scores: { count: 0, min: null, mean: null },
@@ -205,6 +214,19 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     summary_exists: true,
     raw_audio_retained: false,
   };
+  const reviewSavedSession = {
+    id: "session-review-1",
+    title: "Review Apollo call",
+    status: "stopped",
+    started_at: 1_768_000_090,
+    ended_at: 1_768_000_130,
+    save_transcript: true,
+    retention: "saved",
+    transcript_count: 2,
+    note_count: 2,
+    summary_exists: true,
+    raw_audio_retained: false,
+  };
   let ollamaChatModel = String(options.gpuHealthResponse?.ollama_chat_model ?? "qwen3.5:397b-cloud");
   const ollamaModels = [
     { name: "qwen3.5:397b-cloud", size: null, cloud: true, current: true },
@@ -213,6 +235,393 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
     { name: "qwen3.5:9b", size: 6_600_000_000, cloud: false, current: false },
   ];
   let createdSessionCount = 0;
+  let reviewPollCount = 0;
+  let reviewJobCreated = Boolean(options.latestReviewStatus);
+  let reviewApproved = false;
+  let reviewDiscarded = false;
+  let reviewCanceled = false;
+  const reviewJobPayload = (status: string) => {
+    const stressCopy = options.reviewTypographyStress;
+    const stressTerm = "InterconnectionTariffSensitivityReviewPacketAlphaBravoCharlieDelta";
+    const usefulnessStatus = options.reviewUsefulnessStatus ?? "passed";
+    const usefulnessFlags = options.reviewUsefulnessFlags ?? [];
+    const usefulnessScore = options.reviewUsefulnessScore ?? (usefulnessStatus === "low_usefulness" || usefulnessStatus === "needs_repair" ? 0.42 : usefulnessStatus === "repaired" ? 0.78 : 0.91);
+    const normalizedStatus = status === "completed"
+      ? "completed_awaiting_validation"
+      : status === "transcribing"
+        ? "running_asr"
+        : status;
+    const completed = ["completed_awaiting_validation", "approved", "discarded"].includes(normalizedStatus);
+    const ready = completed || normalizedStatus === "approved";
+    const transcribing = normalizedStatus === "running_asr";
+    const queued = normalizedStatus === "queued";
+    const canceled = normalizedStatus === "canceled";
+    const approved = normalizedStatus === "approved";
+    const discarded = normalizedStatus === "discarded";
+    const steps = [
+      {
+        key: "conditioning",
+        label: "Conditioning",
+        status: queued ? "pending" : completed || transcribing || approved || discarded || canceled ? "completed" : "running",
+        message: queued ? "" : completed || transcribing || approved || discarded || canceled ? "Audio conditioned for ASR." : "Converting audio for transcription.",
+        progress: queued ? 0 : completed || transcribing || approved || discarded || canceled ? 100 : 35,
+      },
+      {
+        key: "transcribing",
+        label: "High-accuracy ASR",
+        status: completed || approved || discarded ? "completed" : canceled ? "canceled" : transcribing ? "running" : "pending",
+        message: completed || approved || discarded ? "2 transcript segments." : canceled ? "Canceled." : transcribing ? "Transcribing chunks 1-2/4." : "",
+        progress: completed || approved || discarded ? 100 : transcribing || canceled ? 58 : 0,
+        current: transcribing ? 2 : undefined,
+        total: transcribing ? 4 : undefined,
+        unit: transcribing ? "chunk" : undefined,
+        elapsed_seconds: transcribing ? 4.5 : undefined,
+      },
+      {
+        key: "reviewing",
+        label: "Segment review",
+        status: completed || approved || discarded ? "completed" : "pending",
+        message: completed || approved || discarded ? "2 clean segments." : "",
+        progress: completed || approved || discarded ? 100 : 0,
+      },
+      {
+        key: "evaluating",
+        label: "Meeting output",
+        status: completed || approved || discarded ? "completed" : "pending",
+        message: completed || approved || discarded ? "2 meeting cards." : "",
+        progress: completed || approved || discarded ? 100 : 0,
+      },
+      {
+        key: "completed",
+        label: "Done",
+        status: completed || approved || discarded ? "completed" : "pending",
+        message: completed || approved || discarded ? "Review output ready for validation." : "",
+        progress: completed || approved || discarded ? 100 : 0,
+      },
+    ];
+    const cleanSegments = ready ? [
+      {
+          id: "review-seg-1",
+        session_id: approved ? "session-review-1" : "reviewjob-123",
+        start_s: 0,
+        end_s: 7.2,
+          text: stressCopy
+            ? `BP will send the RFI log to Greg by Monday after reconciling ${stressTerm} against the utility-bill baseline.`
+            : "BP will send the RFI log to Greg by Monday.",
+        is_final: true,
+        created_at: 1_768_000_100,
+        speaker_role: "user",
+        speaker_label: "BP",
+        speaker_confidence: 0.96,
+        speaker_match_score: 0.94,
+        diarization_speaker_id: "SELF",
+        source_segment_ids: ["review-seg-1"],
+      },
+      {
+        id: "review-seg-2",
+        session_id: approved ? "session-review-1" : "reviewjob-123",
+        start_s: 7.4,
+        end_s: 14.1,
+          text: stressCopy
+            ? `Sunil owns the Siemens document review path for generator-metering-retrofit-study-${stressTerm}.`
+            : "Sunil owns the Siemens document review path.",
+        is_final: true,
+        created_at: 1_768_000_110,
+        speaker_role: "other",
+        speaker_label: "Other speaker",
+        speaker_confidence: 0,
+        speaker_match_score: 0.12,
+        speaker_match_reason: "below_self_threshold",
+        diarization_speaker_id: "SPEAKER_00",
+        source_segment_ids: ["review-seg-2"],
+      },
+    ] : [];
+    if (ready && options.longReviewEvidence) {
+      cleanSegments.push(...Array.from({ length: 28 }, (_, index) => {
+        const segmentNumber = index + 3;
+        return {
+          id: `review-seg-${segmentNumber}`,
+          session_id: approved ? "session-review-1" : "reviewjob-123",
+          start_s: 14.5 + index * 5,
+          end_s: 18.5 + index * 5,
+          text: stressCopy
+            ? `Extended evidence row ${segmentNumber} keeps Apollo ${stressTerm}-${segmentNumber} grounded in owner, risk, tariff follow-up, metering, controls, commissioning, and procurement details.`
+            : `Extended evidence row ${segmentNumber} keeps the Apollo review grounded in owner, risk, and tariff follow-up details.`,
+          is_final: true,
+          created_at: 1_768_000_120 + index,
+          speaker_role: index % 2 === 0 ? "user" : "other",
+          speaker_label: index % 2 === 0 ? "BP" : "Other speaker",
+          speaker_confidence: index % 2 === 0 ? 0.92 : 0.2,
+          speaker_match_score: index % 2 === 0 ? 0.9 : 0.18,
+          diarization_speaker_id: index % 2 === 0 ? "SELF" : "SPEAKER_00",
+          source_segment_ids: [`review-seg-${segmentNumber}`],
+        };
+      }));
+    }
+    const meetingCards = ready ? [
+      {
+        id: "review-card-action",
+        session_id: approved ? "session-review-1" : "reviewjob-123",
+        category: "action",
+        title: stressCopy ? `Send RFI log for ${stressTerm}` : "Send RFI log",
+        body: stressCopy
+          ? `BP owns sending the RFI log to Greg by Monday with the ${stressTerm} assumptions attached.`
+          : "BP owns sending the RFI log to Greg by Monday.",
+        why_now: stressCopy
+          ? `The corrected transcript contains an explicit owner, timing, and ${stressTerm} reference.`
+          : "The corrected transcript contains an explicit owner and timing.",
+        suggested_say: stressCopy
+          ? `I will send the RFI log to Greg by Monday with the ${stressTerm} assumptions attached.`
+          : "I will send the RFI log to Greg by Monday.",
+        priority: "high",
+        confidence: 0.88,
+        source_segment_ids: ["review-seg-1"],
+        source_type: "transcript",
+        evidence_quote: stressCopy
+          ? `BP will send the RFI log to Greg by Monday after reconciling ${stressTerm}.`
+          : "BP will send the RFI log to Greg by Monday.",
+        owner: "BP",
+        due_date: "Monday",
+        raw_audio_retained: false,
+      },
+      {
+        id: "review-card-review-path",
+        session_id: approved ? "session-review-1" : "reviewjob-123",
+        category: "decision",
+        title: stressCopy ? `Review path owner for ${stressTerm}` : "Review path owner",
+        body: stressCopy
+          ? `Sunil owns the Siemens document review path for generator-metering-retrofit-study-${stressTerm}.`
+          : "Sunil owns the Siemens document review path.",
+        why_now: stressCopy
+          ? "The corrected transcript identifies the reviewer and the long technical reference path."
+          : "The corrected transcript identifies the reviewer.",
+        priority: "normal",
+        confidence: 0.81,
+        source_segment_ids: ["review-seg-2"],
+        source_type: "transcript",
+        evidence_quote: null,
+        raw_audio_retained: false,
+      },
+    ] : [];
+    if (ready && options.longReviewEvidence) {
+      meetingCards.push(...Array.from({ length: 20 }, (_, index) => {
+        const segmentNumber = index + 3;
+        return {
+          id: `review-card-extra-${segmentNumber}`,
+          session_id: approved ? "session-review-1" : "reviewjob-123",
+          category: index % 3 === 0 ? "risk" : index % 3 === 1 ? "action" : "question",
+          title: stressCopy ? `Extended review card ${segmentNumber} ${stressTerm}` : `Extended review card ${segmentNumber}`,
+          body: stressCopy
+            ? `Track Apollo evidence row ${segmentNumber} and ${stressTerm} without letting dense supporting cards push the primary meeting summary out of view.`
+            : `Track Apollo evidence row ${segmentNumber} without letting supporting cards push the primary meeting summary out of view.`,
+          why_now: "Long evidence coverage is available for scroll behavior validation.",
+          priority: index % 2 === 0 ? "normal" : "high",
+          confidence: 0.72 + (index % 4) * 0.03,
+          source_segment_ids: [`review-seg-${segmentNumber}`],
+          source_type: "transcript",
+          evidence_quote: stressCopy
+            ? `Extended evidence row ${segmentNumber} keeps Apollo ${stressTerm} grounded in owner and tariff evidence.`
+            : `Extended evidence row ${segmentNumber} keeps the Apollo review grounded.`,
+          raw_audio_retained: false,
+        };
+      }));
+    }
+    const jobError = normalizedStatus === "error" ? (options.reviewJobError ?? "Review cleanup failed after transcription.") : null;
+    const cleanupError = options.reviewCleanupError ?? null;
+    return {
+      id: "reviewjob-123",
+      job_id: "reviewjob-123",
+      source: "upload",
+      title: stressCopy ? `Review Apollo ${stressTerm} handoff call` : "Review Apollo call",
+      source_filename: "apollo-call.webm",
+      filename: "apollo-call.webm",
+      status: normalizedStatus,
+      validation_status: approved ? "approved" : discarded ? "discarded" : canceled ? "canceled" : "pending",
+      phase: approved ? "approved" : discarded ? "discarded" : canceled ? "canceled" : completed ? "awaiting_validation" : transcribing ? "transcribing" : "queued",
+      progress_pct: completed || approved || discarded ? 100 : transcribing ? 41 : queued ? 0 : 5,
+      message: approved
+        ? "Approved and saved to Sessions."
+        : discarded
+          ? "Discarded without creating a Session."
+          : canceled
+            ? "Review canceled."
+            : completed
+              ? "Review output ready for validation."
+              : transcribing
+                ? "Transcribing chunks 1-2/4."
+                : "Queued for Review.",
+      queue_position: queued ? 1 : null,
+      error: jobError,
+      save_result: false,
+      session_id: approved ? "session-review-1" : null,
+      duration_seconds: ready ? 18.2 : null,
+      raw_segment_count: cleanSegments.length,
+      corrected_segment_count: cleanSegments.length,
+      progress_percent: completed || approved || discarded ? 100 : transcribing ? 41 : queued ? 0 : 5,
+      asr_backend: "nemo",
+      asr_model: "stt_en_fastconformer_ctc_xxlarge",
+      steps,
+      clean_segments: cleanSegments,
+      meeting_cards: meetingCards,
+      summary: ready ? {
+        session_id: approved ? "session-review-1" : "reviewjob-123",
+        title: stressCopy ? `Apollo ${stressTerm} document handoff` : "Apollo document handoff",
+        summary: stressCopy
+          ? `The review centered on Apollo follow-up for ${stressTerm}: BP owns sending the RFI log to Greg by Monday, and Sunil owns the Siemens document review path across tariff, metering, controls, commissioning, and procurement workstreams.`
+          : "The review centered on Apollo follow-up: BP owns sending the RFI log to Greg by Monday, and Sunil owns the Siemens document review path.",
+        review_standard: "energy_consultant_v1",
+        key_points: stressCopy
+          ? [`BP has the immediate RFI-log sendout for ${stressTerm}.`, "Sunil is the named owner for Siemens document review across tariff and controls references."]
+          : ["BP has the immediate RFI-log sendout.", "Sunil is the named owner for Siemens document review."],
+        topics: stressCopy ? ["review", "siemens", "monday", stressTerm] : ["review", "siemens", "monday"],
+        projects: stressCopy ? [`Apollo ${stressTerm}`, "Siemens document review"] : ["Apollo", "Siemens document review"],
+        portfolio_rollup: {
+          bp_next_actions: stressCopy ? [`BP will send the RFI log to Greg by Monday with ${stressTerm} attached.`] : ["BP will send the RFI log to Greg by Monday."],
+          open_loops: stressCopy ? [`The handoff depends on ${stressTerm} reaching Greg on time without losing tariff assumptions.`] : ["The handoff depends on the RFI log reaching Greg on time."],
+          cross_project_dependencies: stressCopy ? [`Apollo: ${stressTerm} depends on the RFI log reaching Greg on time.`] : ["Apollo: The handoff depends on the RFI log reaching Greg on time."],
+          risk_posture: "watch",
+          source_segment_ids: ["review-seg-1", "review-seg-2"],
+        },
+        review_metrics: {
+          workstream_count: 2,
+          action_count: 1,
+          risk_count: 1,
+          technical_finding_count: 1,
+          source_count: 2,
+          source_coverage: 1,
+          time_span_coverage: 1,
+          context_kinds: ["energy_lens", "ee_reference", "brave_web"],
+        },
+        project_workstreams: [
+          {
+            project: stressCopy ? `Apollo ${stressTerm}` : "Apollo",
+            status: "active",
+            actions: stressCopy ? [`BP will send the RFI log to Greg by Monday with ${stressTerm}.`] : ["BP will send the RFI log to Greg by Monday."],
+            risks: stressCopy ? [`The handoff depends on ${stressTerm} reaching Greg on time.`] : ["The handoff depends on the RFI log reaching Greg on time."],
+            open_questions: ["Confirm Greg's preferred handoff format."],
+            owners: ["BP"],
+            next_checkpoint: stressCopy ? `Monday RFI sendout for ${stressTerm}` : "Monday RFI sendout",
+            source_segment_ids: ["review-seg-1"],
+          },
+          {
+            project: "Siemens document review",
+            status: "decision_made",
+            decisions: ["Sunil owns the Siemens document review path."],
+            owners: ["Sunil"],
+            source_segment_ids: ["review-seg-2"],
+          },
+        ],
+        technical_findings: [
+          {
+            topic: stressCopy ? `Siemens document review path ${stressTerm}` : "Siemens document review path",
+            question: stressCopy ? `Which reference path should guide the Siemens document review for ${stressTerm}?` : "Which reference path should guide the Siemens document review?",
+            assumptions: stressCopy ? [`Breaker coordination, relay timing, tariff schedules, and ${stressTerm} references are relevant to the review path.`] : ["Breaker coordination and relay timing references are relevant to the review path."],
+            methods: stressCopy ? [`Compare Siemens document review needs against EE Index references, current public review practices, and ${stressTerm}.`] : ["Compare Siemens document review needs against EE Index references and current public review practices."],
+            findings: stressCopy ? [`The transcript identifies Sunil as the review owner and preserves ${stressTerm} context for interpretation.`] : ["The transcript identifies Sunil as the review owner and preserves EE reference context for interpretation."],
+            recommendations: stressCopy ? [`Use the EE Index, current public context, and ${stressTerm} while reviewing the Siemens documents.`] : ["Use the EE Index and current public context while reviewing the Siemens documents."],
+            risks: stressCopy ? [`The review could miss current guidance if it ignores ${stressTerm}.`] : ["The review could miss current guidance if it ignores the reference context."],
+            reference_context: stressCopy ? ["DOE Electrical Science Volume 1", "Current public web context", stressTerm] : ["DOE Electrical Science Volume 1", "Current public web context"],
+            confidence: "medium",
+            source_segment_ids: ["review-seg-2"],
+          },
+        ],
+        decisions: ["Sunil owns the Siemens document review path."],
+        actions: stressCopy ? [`BP will send the RFI log to Greg by Monday with ${stressTerm}.`] : ["BP will send the RFI log to Greg by Monday."],
+        unresolved_questions: ["Confirm Greg's preferred handoff format."],
+        risks: stressCopy ? [`The handoff depends on ${stressTerm} reaching Greg on time.`] : ["The handoff depends on the RFI log reaching Greg on time."],
+        entities: ["BP", "Greg", "Sunil", "Siemens"],
+        lessons: [],
+        coverage_notes: stressCopy ? [`Summary uses corrected transcript segments and ${stressTerm} evidence.`] : ["Summary uses both corrected transcript segments."],
+        reference_context: [
+          {
+            kind: "energy_lens",
+            title: stressCopy ? `Energy Lens: operations + market ${stressTerm}` : "Energy Lens: operations + market",
+            body: stressCopy ? `Utility bill analysis, tariff review, and ${stressTerm} were treated as the energy-consulting context for the meeting.` : "Utility bill analysis and tariff review were treated as the energy-consulting context for the meeting.",
+            citation: "",
+            source_segment_ids: ["review-seg-1"],
+          },
+          {
+            kind: "ee_reference",
+            title: "DOE Electrical Science Volume 1",
+            body: "Breaker coordination and relay timing references informed the technical interpretation.",
+            citation: "/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science.pdf",
+            source_segment_ids: ["review-seg-2"],
+          },
+          {
+            kind: "brave_web",
+            title: "Current public web context",
+            body: "Recent public guidance was checked for current review practices.",
+            citation: "https://example.com/current-review-practices",
+            source_segment_ids: ["review-seg-2"],
+          },
+        ],
+        context_diagnostics: {
+          energy_lens: "included",
+          ee_reference_hits: 1,
+          web_context_hits: 1,
+        },
+        diagnostics: {
+          usefulness_status: usefulnessStatus,
+          usefulness_score: usefulnessScore,
+          usefulness_flags: usefulnessFlags,
+        },
+        source_segment_ids: ["review-seg-1", "review-seg-2"],
+        created_at: 1_768_000_120,
+        updated_at: 1_768_000_120,
+      } : null,
+      raw_audio_retained: true,
+      diagnostics: ready ? {
+        speaker_identity: {
+          ready: true,
+          enrollment_status: "ready",
+          profile_label: "BP",
+          backend_available: true,
+          bp_segment_count: 1,
+          other_segment_count: 1,
+          unknown_segment_count: 0,
+          low_confidence_count: 0,
+          match_score_min: 0.12,
+          match_score_mean: 0.53,
+          match_score_max: 0.94,
+        },
+        usefulness_status: usefulnessStatus,
+        usefulness_score: usefulnessScore,
+        usefulness_flags: usefulnessFlags,
+      } : {},
+      temporary_audio_retained: !(approved || discarded || canceled),
+      audio_deleted_at: approved || discarded || canceled ? 1_768_000_140 : null,
+      audio_delete_error: cleanupError,
+      cleanup_status: cleanupError ? "cleanup_failed" : approved || discarded || canceled ? "deleted" : "retained_for_validation",
+      created_at: 1_768_000_090,
+      updated_at: completed || approved || discarded ? 1_768_000_130 : 1_768_000_092,
+      completed_at: completed || approved || discarded ? 1_768_000_130 : null,
+      approved_at: approved ? 1_768_000_140 : null,
+      discarded_at: discarded ? 1_768_000_140 : null,
+      canceled_at: canceled ? 1_768_000_140 : null,
+      elapsed_seconds: completed || approved || discarded ? 40 : transcribing ? 8 : 2,
+      active: !completed && !approved && !discarded && !canceled,
+    };
+  };
+  const currentReviewStatus = () => {
+    if (reviewApproved) return "approved";
+    if (reviewDiscarded) return "discarded";
+    if (reviewCanceled) return "canceled";
+    if (options.latestReviewStatus) return options.latestReviewStatus;
+    if (!reviewJobCreated) return null;
+    return reviewPollCount >= 2 ? "completed_awaiting_validation" : reviewPollCount > 0 ? "running_asr" : "queued";
+  };
+  const secondaryReviewJobPayload = () => ({
+    ...reviewJobPayload("running_asr"),
+    id: "reviewjob-456",
+    job_id: "reviewjob-456",
+    title: "Delta site tariff review",
+    source_filename: "delta-site-call.webm",
+    filename: "delta-site-call.webm",
+    message: "Transcribing tariff review chunks.",
+    queue_position: null,
+    created_at: 1_768_000_080,
+    updated_at: 1_768_000_125,
+  });
 
   await page.route(`${API_ORIGIN}/api/**`, async (route) => {
     const request = route.request();
@@ -277,6 +686,8 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         partial_window_seconds: 2.0,
         partial_min_interval_seconds: 2.0,
         speaker_enrollment_sample_seconds: 8,
+        speaker_enrollment_minimum_seconds: 60,
+        speaker_enrollment_target_seconds: 120,
         speaker_identity_label: "BP",
         speaker_retain_raw_enrollment_audio: false,
         dedupe_similarity_threshold: 0.88,
@@ -406,8 +817,8 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         profile: { ...speakerStatus.profile, active: true, threshold: 0.82 },
         enrollment_status: "ready",
         ready: true,
-        usable_speech_seconds: 20.1,
-        embedding_count: 3,
+        usable_speech_seconds: 65.1,
+        embedding_count: 9,
         quality_score: 0.91,
         centroid_vector_dim: 192,
       };
@@ -461,7 +872,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         await route.abort("failed");
         return;
       }
-      await json(route, { sessions: options.sessionsResponse ?? [savedSession] });
+      await json(route, { sessions: options.sessionsResponse ?? (reviewApproved ? [reviewSavedSession, savedSession] : [savedSession]) });
       return;
     }
 
@@ -473,6 +884,130 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
         title: body.title || "New meeting",
         status: "created",
         started_at: 1_768_000_500,
+      });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/live/start") {
+      const body = JSON.parse(request.postData() ?? "{}") as { title?: string | null };
+      await json(route, {
+        status: "running",
+        live_id: "live-123",
+        title: body.title || "Live meeting",
+        audio_source: "server_device",
+        raw_audio_retained: false,
+        temporary_audio_retained: true,
+        meeting_contract: body.meeting_contract ?? null,
+      });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/live/live-123/stop") {
+      reviewJobCreated = true;
+      reviewApproved = false;
+      reviewDiscarded = false;
+      reviewCanceled = false;
+      reviewPollCount = 0;
+      await json(route, {
+        status: "queued",
+        live_id: "live-123",
+        review_job_id: "reviewjob-123",
+        queue_position: 1,
+        temporary_audio_retained: true,
+        raw_audio_retained: true,
+        message: "Temporary audio queued for Review validation.",
+      });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/review/jobs") {
+      reviewPollCount = 0;
+      reviewJobCreated = true;
+      reviewApproved = false;
+      reviewDiscarded = false;
+      reviewCanceled = false;
+      await json(route, reviewJobPayload("queued"));
+      return;
+    }
+
+    if (method === "GET" && path === "/api/review/jobs") {
+      const status = currentReviewStatus();
+      const jobs = status ? [reviewJobPayload(status)] : [];
+      if (options.reviewQueueScenario === "two_jobs") {
+        jobs.push(secondaryReviewJobPayload());
+      }
+      await json(route, { jobs });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/review/jobs/latest") {
+      if (options.latestReviewStatus) {
+        await json(route, reviewJobPayload(options.latestReviewStatus));
+        return;
+      }
+      const status = currentReviewStatus();
+      if (!status) {
+        await json(route, { detail: "No review jobs have been started." }, 404);
+        return;
+      }
+      await json(route, reviewJobPayload(status));
+      return;
+    }
+
+    if (method === "POST" && path === "/api/review/jobs/reviewjob-123/cancel") {
+      reviewCanceled = true;
+      await json(route, reviewJobPayload("canceled"));
+      return;
+    }
+
+    if (method === "POST" && path === "/api/review/jobs/reviewjob-123/approve") {
+      reviewApproved = true;
+      reviewDiscarded = false;
+      reviewCanceled = false;
+      reviewPollCount = 3;
+      await json(route, reviewJobPayload("approved"));
+      return;
+    }
+
+    if (method === "POST" && path === "/api/review/jobs/reviewjob-123/discard") {
+      reviewApproved = false;
+      reviewDiscarded = true;
+      reviewCanceled = false;
+      reviewPollCount = 3;
+      await json(route, reviewJobPayload("discarded"));
+      return;
+    }
+
+    if (method === "GET" && path === "/api/review/jobs/reviewjob-123") {
+      reviewPollCount += 1;
+      await json(route, reviewJobPayload(currentReviewStatus() ?? "queued"));
+      return;
+    }
+
+    if (method === "GET" && path === "/api/review/jobs/reviewjob-456") {
+      await json(route, secondaryReviewJobPayload());
+      return;
+    }
+
+    if (method === "GET" && path === "/api/sessions/session-review-1") {
+      const completed = reviewJobPayload("approved");
+      await json(route, {
+        ...reviewSavedSession,
+        transcript_segments: completed.clean_segments,
+        note_cards: completed.meeting_cards.map((card) => ({
+          id: card.id,
+          session_id: card.session_id,
+          kind: card.category,
+          title: card.title,
+          body: card.body,
+          source_segment_ids: card.source_segment_ids,
+          evidence_quote: card.evidence_quote,
+          owner: card.owner,
+          due_date: card.due_date,
+          created_at: 1_768_000_130,
+        })),
+        summary: completed.summary,
+        transcript_redacted: false,
       });
       return;
     }
@@ -500,7 +1035,7 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
             text: "Temporary sessions should not persist transcript text.",
             is_final: true,
             created_at: 1_768_000_020,
-            speaker_label: "Speaker 1",
+            speaker_label: "Other speaker",
             source_segment_ids: ["seg-2"],
           },
         ],
