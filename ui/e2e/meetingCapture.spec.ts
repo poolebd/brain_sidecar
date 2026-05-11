@@ -7,8 +7,9 @@ test("builds quick meeting notes without the Meeting Capture taxonomy", () => {
   const notes = buildMeetingSummaryNotesViewModel(reviewJob(), reviewCards());
   const allText = notesText(notes);
 
-  expect(notes.title).toBe("Apollo document handoff");
+  expect(notes.title).toBe("Apollo handoff");
   expect(notes.summaryParagraph).toContain("RFI log");
+  expect(notes.noteGroups).toHaveLength(0);
   expect(notes.decisions.map((item) => item.text)).toContain("Sunil owns the Siemens document review path.");
   expect(notes.actions).toHaveLength(1);
   expect(notes.actions[0].text).toContain("BP will send the RFI log to Greg by Monday");
@@ -24,12 +25,16 @@ test("copies a clean Meeting Summary markdown artifact", () => {
   const markdown = buildMeetingSummaryMarkdown(notes);
 
   expect(markdown).toContain("# Meeting Summary");
+  expect(markdown).toContain("_Apollo handoff_");
   expect(markdown).toContain("## Summary");
-  expect(markdown).toContain("## Key Notes");
+  expect(markdown).not.toContain("## Notes");
+  expect(markdown).not.toContain("### Other notes");
   expect(markdown).toContain("## Decisions");
-  expect(markdown).toContain("## Action Items / Follow-ups");
-  expect(markdown).toContain("## Open Questions");
-  expect(markdown).toContain("## Risks / Concerns");
+  expect(markdown).toContain("## Follow-ups");
+  expect(markdown).toContain("## Open questions");
+  expect(markdown).toContain("## Risks / concerns");
+  expect(markdown).not.toContain("## Key Notes");
+  expect(markdown).not.toContain("## Action Items / Follow-ups");
   expect(markdown).not.toContain("## Technical Findings");
   expect(markdown).not.toContain("## Source Notes");
   expect(markdown).not.toContain("Contract Reminders");
@@ -39,8 +44,18 @@ test("copies a clean Meeting Summary markdown artifact", () => {
 test("normalizes the IETF HTTPBIS fixture and suppresses local context leakage", () => {
   const notes = buildMeetingSummaryNotesViewModel(ietfReviewJob(), []);
   const allText = notesText(notes);
+  const groupTitles = notes.noteGroups.map((group) => group.title);
 
+  expect(notes.title).toBe("IETF 103 HTTPBIS technical meeting (20 min)");
+  expect(notes.summaryParagraph).toContain("The HTTPBIS discussion focused on");
   expect(notes.summaryParagraph).toContain("Cache-Control");
+  expect(groupTitles).toEqual(expect.arrayContaining([
+    "Cache-Control",
+    "DNS / CNAME",
+    "Browser deployment",
+    "GitHub issues",
+    "Jabber relay",
+  ]));
   expect(allText).toContain("Cache-Control");
   expect(allText).toContain("Cache-Control `private`");
   expect(allText).toContain("CNAME");
@@ -58,6 +73,17 @@ test("normalizes the IETF HTTPBIS fixture and suppresses local context leakage",
   expect(notes.risks.some((item) => /browser.*impediments/i.test(item.text))).toBe(true);
   expect(notes.openQuestions.some((item) => /quoted.*Cache-Control/i.test(item.text))).toBe(true);
   expect(notes.openQuestions.some((item) => /technical findings/i.test(item.text))).toBe(false);
+
+  const markdown = buildMeetingSummaryMarkdown(notes);
+  expect(markdown).toContain("### Cache-Control");
+  expect(markdown).toContain("### DNS / CNAME");
+  expect(markdown).toContain("### Browser deployment");
+  expect(markdown).toContain("### GitHub issues");
+  expect(markdown).toContain("### Jabber relay");
+  expect(markdown).toContain("## Follow-ups");
+  expect(markdown).not.toContain("PGE");
+  expect(markdown).not.toContain("Westwood");
+  expect(markdown).not.toContain("Energy Lens");
 });
 
 function reviewJob(): ReviewJobResponse {
@@ -311,6 +337,7 @@ function notesText(notes: ReturnType<typeof buildMeetingSummaryNotesViewModel>):
   return [
     notes.title,
     notes.summaryParagraph,
+    ...notes.noteGroups.flatMap((group) => [group.title, ...group.items.map((item) => item.text)]),
     ...notes.keyNotes.map((item) => item.text),
     ...notes.decisions.map((item) => item.text),
     ...notes.actions.map((item) => item.text),

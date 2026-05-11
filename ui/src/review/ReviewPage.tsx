@@ -444,17 +444,24 @@ function SummaryValidationToolbar({
   const validationTitle = approved
     ? "Saved to Sessions"
     : awaitingValidation
-      ? needsManualValidation ? "Needs manual validation" : "Needs validation"
+      ? "Needs validation"
       : "Summary ready";
   const validationDetail = needsManualValidation
     ? `${usefulness?.flagsLabel || "Usefulness flag"} found. Validate transcript evidence before saving.`
     : "Review the quick meeting notes before saving.";
   return (
     <div className="review-summary-toolbar">
-      <div>
-        <p className="label">Summary</p>
-        <h2>{validationTitle}</h2>
-        <span>{validationDetail}</span>
+      <div className="review-summary-status">
+        <span className={`review-summary-status-chip ${approved ? "good" : awaitingValidation ? "warning" : ""}`}>
+          {validationTitle}
+        </span>
+        <span>{approved ? "Summary saved." : "Review before saving."}</span>
+        {needsManualValidation && (
+          <details className="review-validation-note">
+            <summary>Validation note</summary>
+            <p>{validationDetail}</p>
+          </details>
+        )}
       </div>
       <div className="review-summary-actions" aria-label="Summary validation actions">
         <button className="secondary" type="button" disabled={!reviewReady || (!job.summary && cardsLength === 0)} onClick={onCopyCapture}>Copy summary</button>
@@ -823,14 +830,14 @@ function MeetingSummaryNotesView({
     <section className="meeting-summary-notes" aria-label="Meeting Summary">
       <section className="meeting-summary-notes-hero" aria-label="Summary">
         <div>
-          <p className="label">Summary</p>
           <h2>{formatReviewDisplayText(notes.title || "Meeting Summary")}</h2>
+          {notes.generatedTitle && <p className="meeting-summary-generated-title">{formatReviewDisplayText(notes.generatedTitle)}</p>}
           <p>{formatReviewDisplayText(notes.summaryParagraph || "No concise meeting summary was captured.")}</p>
         </div>
       </section>
-      <SummaryNotesSection
-        title="Key Notes"
-        items={notes.keyNotes}
+      <SummaryNotesGroups
+        title="Notes"
+        groups={notes.noteGroups}
         onJumpToEvidence={onJumpToEvidence}
       />
       <SummaryNotesSection
@@ -839,19 +846,17 @@ function MeetingSummaryNotesView({
         onJumpToEvidence={onJumpToEvidence}
       />
       <SummaryNotesSection
-        title="Action Items / Follow-ups"
+        title="Follow-ups"
         items={notes.actions}
-        empty="No action items found."
-        showEmptyLine
         onJumpToEvidence={onJumpToEvidence}
       />
       <SummaryNotesSection
-        title="Open Questions"
+        title="Open questions"
         items={notes.openQuestions}
         onJumpToEvidence={onJumpToEvidence}
       />
       <SummaryNotesSection
-        title="Risks / Concerns"
+        title="Risks / concerns"
         items={notes.risks}
         onJumpToEvidence={onJumpToEvidence}
       />
@@ -859,48 +864,78 @@ function MeetingSummaryNotesView({
   );
 }
 
+function SummaryNotesGroups({
+  title,
+  groups,
+  onJumpToEvidence,
+}: {
+  title: string;
+  groups: MeetingSummaryNotesViewModel["noteGroups"];
+  onJumpToEvidence: (ids: string[]) => void;
+}) {
+  if (groups.length === 0) {
+    return null;
+  }
+  return (
+    <section className="meeting-summary-notes-section meeting-summary-topic-section" aria-label={title}>
+      <h3>{title}</h3>
+      <div className="meeting-summary-topic-groups">
+        {groups.map((group) => (
+          <section key={group.id} className="meeting-summary-topic-group" aria-label={group.title}>
+            <h4>{group.title}</h4>
+            <SummaryNotesList items={group.items} onJumpToEvidence={onJumpToEvidence} />
+          </section>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function SummaryNotesSection({
   title,
   items,
-  empty = "None found.",
-  showEmptyLine = false,
   onJumpToEvidence,
 }: {
   title: string;
   items: SummaryNoteItem[];
-  empty?: string;
-  showEmptyLine?: boolean;
   onJumpToEvidence: (ids: string[]) => void;
 }) {
-  if (items.length === 0 && !showEmptyLine) {
+  if (items.length === 0) {
     return null;
   }
   return (
     <section className="meeting-summary-notes-section" aria-label={title}>
-      <div className="section-heading-row">
-        <h3>{title}</h3>
-      </div>
-      {items.length === 0 ? (
-        <p className="meeting-summary-empty-line">{empty}</p>
-      ) : (
-        <ul className="meeting-summary-notes-list">
-          {items.map((item) => (
-            <li key={item.id} className="meeting-summary-note-item">
-              <span>{formatReviewDisplayText(item.text)}</span>
-              {item.sourceSegmentIds.length > 0 && (
-                <button
-                  className="secondary meeting-summary-source-link"
-                  type="button"
-                  onClick={() => onJumpToEvidence(item.sourceSegmentIds)}
-                >
-                  source
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
+      <h3>{title}</h3>
+      <SummaryNotesList items={items} onJumpToEvidence={onJumpToEvidence} />
     </section>
+  );
+}
+
+function SummaryNotesList({
+  items,
+  onJumpToEvidence,
+}: {
+  items: SummaryNoteItem[];
+  onJumpToEvidence: (ids: string[]) => void;
+}) {
+  return (
+    <ul className="meeting-summary-notes-list">
+      {items.map((item) => (
+        <li key={item.id} className="meeting-summary-note-item">
+          <span className="meeting-summary-note-text">{formatReviewDisplayText(item.text)}</span>
+          {item.sourceSegmentIds.length > 0 && (
+            <button
+              className="meeting-summary-source-marker"
+              type="button"
+              aria-label="Show source"
+              onClick={() => onJumpToEvidence(item.sourceSegmentIds)}
+            >
+              source
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1605,7 +1640,9 @@ function displayReviewTitle(title: string): string {
 }
 
 function formatReviewDisplayText(value: string | undefined | null): string {
-  return String(value ?? "").replace(/[A-Za-z][A-Za-z0-9]{23,}/g, (token) => {
+  return String(value ?? "")
+    .replace(/Cache-Control `private`/g, "Cache-Control \"private\"")
+    .replace(/[A-Za-z][A-Za-z0-9]{23,}/g, (token) => {
     if (!/[a-z][A-Z]/.test(token)) {
       return token;
     }

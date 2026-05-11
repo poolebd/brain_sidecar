@@ -135,11 +135,11 @@ test("completed Review presents one Meeting Summary before sources", async ({ pa
     const toolbar = document.querySelector('[aria-label="Review summary validation"]');
     const summary = document.querySelector('[aria-label="Meeting Summary"]');
     const summaryParagraph = document.querySelector('[aria-label="Summary"]');
-    const keyNotes = document.querySelector('[aria-label="Key Notes"]');
-    const actions = document.querySelector('[aria-label="Action Items / Follow-ups"]');
+    const keyNotes = document.querySelector('[aria-label="Notes"]');
+    const actions = document.querySelector('[aria-label="Follow-ups"]');
     const decisions = document.querySelector('[aria-label="Decisions"]');
-    const questions = document.querySelector('[aria-label="Open Questions"]');
-    const risks = document.querySelector('[aria-label="Risks / Concerns"]');
+    const questions = document.querySelector('[aria-label="Open questions"]');
+    const risks = document.querySelector('[aria-label="Risks / concerns"]');
     const technical = document.querySelector('[aria-label="Technical Findings"]');
     const transcriptDetails = document.querySelector('[aria-label="Sources / transcript"]');
     const validationCards = document.querySelector('[aria-label="Validation Evidence Cards"]');
@@ -168,13 +168,13 @@ test("completed Review presents one Meeting Summary before sources", async ({ pa
   });
   await expect(review.getByRole("heading", { name: "Meeting Summary" })).toBeVisible();
   await expect(review.getByRole("heading", { name: "Meeting Capture" })).toHaveCount(0);
-  await expect(review.getByRole("region", { name: "Meeting Summary" })).toContainText("Apollo document handoff");
+  await expect(review.getByRole("region", { name: "Meeting Summary" })).toContainText("Review Apollo call");
   await expect(review.getByRole("region", { name: "Summary", exact: true })).toContainText("RFI log");
-  await expect(review.getByRole("region", { name: "Key Notes" })).not.toContainText("captured");
-  await expect(review.getByRole("region", { name: "Action Items / Follow-ups" })).toContainText("RFI log");
+  await expect(review.getByRole("region", { name: "Notes", exact: true })).not.toContainText("captured");
+  await expect(review.getByRole("region", { name: "Follow-ups" })).toContainText("RFI log");
   await expect(review.getByRole("region", { name: "Decisions" })).toContainText("Sunil owns the Siemens document review path");
-  await expect(review.getByRole("region", { name: "Open Questions" })).toContainText("Confirm Greg's preferred handoff format");
-  await expect(review.getByRole("region", { name: "Risks / Concerns" })).toContainText("handoff depends");
+  await expect(review.getByRole("region", { name: "Open questions" })).toContainText("Confirm Greg's preferred handoff format");
+  await expect(review.getByRole("region", { name: "Risks / concerns" })).toContainText("handoff depends");
   await expect(review.getByRole("region", { name: "Technical Findings" })).toHaveCount(0);
   await expect(review.getByRole("region", { name: "Parking Lot / Low Confidence" })).toHaveCount(0);
   await expect(review.getByText("Validation Evidence")).toHaveCount(0);
@@ -327,11 +327,13 @@ test("Review copy, evidence, and source-jump actions work", async ({ page }) => 
   const brief = await clipboardText(page);
   expect(brief).toContain("# Meeting Summary");
   expect(brief).toContain("## Summary");
-  expect(brief).toContain("## Key Notes");
+  expect(brief).toContain("## Notes");
   expect(brief).toContain("## Decisions");
-  expect(brief).toContain("## Action Items / Follow-ups");
-  expect(brief).toContain("## Open Questions");
-  expect(brief).toContain("## Risks / Concerns");
+  expect(brief).toContain("## Follow-ups");
+  expect(brief).toContain("## Open questions");
+  expect(brief).toContain("## Risks / concerns");
+  expect(brief).not.toContain("## Key Notes");
+  expect(brief).not.toContain("## Action Items / Follow-ups");
   expect(brief).not.toContain("## Executive Summary");
   expect(brief).not.toContain("## Reference Context");
   expect(brief).not.toContain("## Evidence Cards");
@@ -348,7 +350,7 @@ test("Review copy, evidence, and source-jump actions work", async ({ page }) => 
   await review.getByLabel("Sources / transcript").locator("summary").first().click();
 
   await expect(review.getByRole("region", { name: "Validation Evidence Cards" })).toHaveCount(0);
-  await review.getByRole("region", { name: "Action Items / Follow-ups" }).getByRole("button", { name: "source" }).first().click();
+  await review.getByRole("region", { name: "Follow-ups" }).getByRole("button", { name: /source/i }).first().click();
   await expect(review.getByLabel("Sources / transcript")).toHaveJSProperty("open", true);
   await expect(review.locator('[data-transcript-id="review-seg-1"]')).toHaveClass(/highlight/);
 });
@@ -366,7 +368,7 @@ test("Review decision toolbar stays visible while transcript sources toggle", as
   await expect(review.getByRole("button", { name: "New audio" })).toBeVisible();
   await expect(review.getByLabel("Review runtime details")).toHaveCount(0);
   await expect(review.getByRole("button", { name: "Details" })).toHaveCount(0);
-  await expect(review.getByRole("region", { name: "Action Items / Follow-ups" }).getByRole("button", { name: "source" }).first()).toBeVisible();
+  await expect(review.getByRole("region", { name: "Follow-ups" }).getByRole("button", { name: /source/i }).first()).toBeVisible();
 
   const transcriptDetails = review.getByLabel("Sources / transcript");
   await expect(transcriptDetails).toHaveJSProperty("open", false);
@@ -409,7 +411,7 @@ test("Review source panel scrolls and item evidence highlights transcript rows",
   const transcriptScroll = review.locator(".review-transcript-scroll");
   await transcriptScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   const beforeHeight = await page.evaluate(() => document.documentElement.scrollHeight);
-  await review.getByRole("region", { name: "Action Items / Follow-ups" }).getByRole("button", { name: "source" }).first().click();
+  await review.getByRole("region", { name: "Follow-ups" }).getByRole("button", { name: /source/i }).first().click();
   await expect(review.locator('[data-transcript-id="review-seg-1"]')).toHaveClass(/highlight/);
   await expect.poll(() => transcriptScroll.evaluate((element) => element.scrollTop)).toBeLessThan(120);
   const afterHeight = await page.evaluate(() => document.documentElement.scrollHeight);
@@ -493,7 +495,7 @@ test("Review typography fits and layout flexes across dense content", async ({ p
 
     const heightBeforeInlineEvidence = await page.evaluate(() => document.documentElement.scrollHeight);
     await expect(review.getByRole("button", { name: "Details" })).toHaveCount(0);
-    await expect(review.getByRole("region", { name: "Action Items / Follow-ups" }).getByRole("button", { name: "source" }).first()).toBeVisible();
+    await expect(review.getByRole("region", { name: "Follow-ups" }).getByRole("button", { name: /source/i }).first()).toBeVisible();
     await expectReviewTextFit(page);
     await expectReviewSummaryTextVisible(page);
     await expectReviewControlTargetsAndFocus(page);
@@ -564,7 +566,7 @@ test("review status calls out low-usefulness summaries before approval", async (
   await review.getByRole("button", { name: /Apollo/ }).click();
 
   const decisionToolbar = review.getByRole("region", { name: "Review summary validation" });
-  await expect(decisionToolbar).toContainText("Needs manual validation");
+  await expect(decisionToolbar).toContainText("Needs validation");
   await expect(decisionToolbar).toContainText("2 usefulness flags");
   await expect(review.getByRole("region", { name: "Review status" })).toHaveCount(0);
   await expect(review.getByRole("button", { name: "Approve" })).toBeVisible();
@@ -2418,7 +2420,7 @@ async function expectReviewSummaryHierarchy(page: Page) {
     const summaryPrimary = document.querySelector('[aria-label="Review summary validation"]');
     const transcriptDetails = document.querySelector('[aria-label="Sources / transcript"]');
     const transcript = document.querySelector('[aria-label="Clean Transcript"]');
-    const hierarchyLabels = ["Meeting Summary", "Summary", "Key Notes", "Decisions", "Action Items / Follow-ups", "Open Questions", "Risks / Concerns"];
+    const hierarchyLabels = ["Meeting Summary", "Summary", "Notes", "Decisions", "Follow-ups", "Open questions", "Risks / concerns"];
     const hierarchyNodes = hierarchyLabels.map((label) => document.querySelector(`[aria-label="${label}"]`));
     const hierarchyIndexes = hierarchyNodes.map((node) => node ? Array.from(document.querySelectorAll("[aria-label]")).indexOf(node) : -1);
     const summaryBox = summaryPrimary?.getBoundingClientRect();

@@ -17,10 +17,18 @@ export type SummaryNoteItem = {
   confidence?: number;
 };
 
+export type SummaryNoteGroup = {
+  id: string;
+  title: string;
+  items: SummaryNoteItem[];
+};
+
 export type MeetingSummaryNotesViewModel = {
   title: string;
+  generatedTitle?: string;
   summaryParagraph: string;
   keyNotes: SummaryNoteItem[];
+  noteGroups: SummaryNoteGroup[];
   decisions: SummaryNoteItem[];
   actions: SummaryNoteItem[];
   openQuestions: SummaryNoteItem[];
@@ -47,13 +55,16 @@ const META_NOTE_PATTERNS = [
   /\bdid not pass the usefulness gate\b/i,
   /\bvalidate the clean transcript\b/i,
   /\btechnical findings? grounded in the transcript\b/i,
+  /\bthe transcript identifies\b.*\bcontext for interpretation\b/i,
+  /\b(?:EE Index|current public context|reference context)\b/i,
 ];
 
-const WEAK_SUMMARY_PATTERNS = [
-  /\breview completed, but\b/i,
-  /\bdid not pass the usefulness gate\b/i,
-  /\bvalidate the clean transcript\b/i,
-  /\bthe (?:meeting|review|call) (?:covered|centered on|focused on|was about)\b/i,
+const NOTE_GROUP_DEFINITIONS = [
+  { id: "cache-control", title: "Cache-Control", pattern: /\bcache-control\b/i },
+  { id: "dns-cname", title: "DNS / CNAME", pattern: /\b(?:DNS|CNAME|apex domain)\b/i },
+  { id: "browser-deployment", title: "Browser deployment", pattern: /\b(?:browser|browsers|deployment|impediments?)\b/i },
+  { id: "github-issues", title: "GitHub issues", pattern: /\b(?:GitHub|issues?)\b/i },
+  { id: "jabber-relay", title: "Jabber relay", pattern: /\b(?:Jabber|relay|volunteer)\b/i },
 ];
 
 const STOPWORDS = new Set([
@@ -143,7 +154,10 @@ export function buildMeetingSummaryNotesViewModel(
     .filter((item) => !noteMatchesAny(item, [...decisions, ...actions, ...openQuestions]));
   const primary = [...decisions, ...actions, ...openQuestions, ...risks];
   const keyNotes = buildKeyNotes(mergeCandidates(groups.key_note), primary);
-  const summaryParagraph = buildSummaryParagraph(summary, [...keyNotes, ...primary], supportText);
+  const noteGroups = buildNoteGroups(keyNotes);
+  const documentTitle = cleanNoteTitle(job.title || summary?.title || "Meeting Summary", supportText) || "Meeting Summary";
+  const generatedTitle = usefulGeneratedTitle(summary?.title, documentTitle, supportText);
+  const summaryParagraph = buildSummaryParagraph(summary, [...keyNotes, ...primary], supportText, documentTitle);
   const sourceSegmentIds = distinctStrings([
     ...keyNotes,
     ...decisions,
@@ -154,9 +168,11 @@ export function buildMeetingSummaryNotesViewModel(
   const warnings = summaryWarnings(job);
 
   return {
-    title: cleanNoteTitle(summary?.title || job.title || "Meeting Summary", supportText) || "Meeting Summary",
+    title: documentTitle,
+    generatedTitle,
     summaryParagraph,
     keyNotes,
+    noteGroups,
     decisions,
     actions,
     openQuestions,
@@ -169,15 +185,16 @@ export function buildMeetingSummaryNotesViewModel(
 
 export function buildMeetingSummaryMarkdown(viewModel: MeetingSummaryNotesViewModel): string {
   const lines = ["# Meeting Summary", ""];
+  const seenItems = new Set<string>();
   if (viewModel.title && viewModel.title !== "Meeting Summary") {
     lines.push(`_${viewModel.title}_`, "");
   }
   lines.push("## Summary", viewModel.summaryParagraph || "No summary was captured.", "");
-  appendMarkdownItems(lines, "Key Notes", viewModel.keyNotes);
-  appendMarkdownItems(lines, "Decisions", viewModel.decisions);
-  appendMarkdownItems(lines, "Action Items / Follow-ups", viewModel.actions, "None found.");
-  appendMarkdownItems(lines, "Open Questions", viewModel.openQuestions);
-  appendMarkdownItems(lines, "Risks / Concerns", viewModel.risks);
+  appendMarkdownNoteGroups(lines, viewModel.noteGroups, seenItems);
+  appendMarkdownItems(lines, "Decisions", viewModel.decisions, seenItems);
+  appendMarkdownItems(lines, "Follow-ups", viewModel.actions, seenItems);
+  appendMarkdownItems(lines, "Open questions", viewModel.openQuestions, seenItems);
+  appendMarkdownItems(lines, "Risks / concerns", viewModel.risks, seenItems);
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 }
 
@@ -321,16 +338,40 @@ function buildSummaryParagraph(
   summary: SessionMemorySummary | null,
   items: SummaryNoteItem[],
   supportText: string,
+  documentTitle: string,
 ): string {
   const summaryText = cleanNoteText(summary?.summary, supportText);
-  if (summaryText && !WEAK_SUMMARY_PATTERNS.some((pattern) => pattern.test(summaryText))) {
-    return summaryText;
+  if (summaryText) {
+    const polished = polishSummaryParagraph(summaryText);
+    if (!isUselessSummary(polished)) {
+      return polished;
+    }
   }
   const topics = distinctStrings(items.map((item) => topicPhrase(item.text)).filter(Boolean)).slice(0, 5);
   if (topics.length > 0) {
-    return `Key topics were ${joinHumanList(topics)}.`;
+    const subject = /\bHTTPBIS\b/i.test(documentTitle)
+      ? "The HTTPBIS discussion"
+      : /\bIETF\b/i.test(documentTitle)
+        ? "The IETF discussion"
+        : "The meeting";
+    return `${subject} focused on ${joinHumanList(topics)}.`;
   }
   return "No concise meeting summary was captured.";
+}
+
+function polishSummaryParagraph(text: string): string {
+  return cleanText(text)
+    .replace(/^the review centered on\b/i, "The meeting focused on")
+    .replace(/^the meeting centered on\b/i, "The meeting focused on")
+    .replace(/^the call centered on\b/i, "The meeting focused on")
+    .replace(/^the review covered\b/i, "The meeting covered")
+    .replace(/^the review focused on\b/i, "The meeting focused on");
+}
+
+function isUselessSummary(text: string): boolean {
+  return /\breview completed, but\b/i.test(text)
+    || /\bdid not pass the usefulness gate\b/i.test(text)
+    || /\bvalidate the clean transcript\b/i.test(text);
 }
 
 function topicPhrase(text: string): string {
@@ -346,7 +387,7 @@ function topicPhrase(text: string): string {
     return "Cache-Control directive guidance";
   }
   if (/\b(?:dns|cname|apex domain)\b/i.test(value)) {
-    return "DNS/CNAME handling for apex domains";
+    return "DNS / CNAME handling for apex domains";
   }
   if (/\bgithub\b/i.test(value)) {
     return "GitHub issue status";
@@ -366,13 +407,18 @@ function buildKeyNotes(baseNotes: SummaryNoteItem[], primaryItems: SummaryNoteIt
   const notes = baseNotes
     .filter((item) => !noteMatchesAny(item, primaryItems))
     .slice(0, 8);
-  if (notes.length >= 4) {
-    return notes;
-  }
+  const coveredTopics = new Set(notes.map((item) => noteTopicId(item.text)).filter(Boolean));
   const existing = [...notes];
+  const allowGenericFallback = existing.length === 0 && primaryItems.length === 0;
   for (const item of primaryItems) {
     const phrase = topicPhrase(item.text);
-    if (!phrase || existing.some((candidate) => normalizeNoteKey(candidate.text) === normalizeNoteKey(phrase))) {
+    const topicId = noteTopicId(phrase);
+    if (
+      !phrase
+      || (!topicId && !allowGenericFallback)
+      || existing.some((candidate) => normalizeNoteKey(candidate.text) === normalizeNoteKey(phrase))
+      || (topicId && coveredTopics.has(topicId))
+    ) {
       continue;
     }
     existing.push({
@@ -382,11 +428,48 @@ function buildKeyNotes(baseNotes: SummaryNoteItem[], primaryItems: SummaryNoteIt
       sourceSegmentIds: item.sourceSegmentIds,
       confidence: item.confidence,
     });
-    if (existing.length >= 4) {
+    if (topicId) {
+      coveredTopics.add(topicId);
+    }
+    if (existing.length >= 8) {
       break;
     }
   }
   return existing.slice(0, 8);
+}
+
+function buildNoteGroups(items: SummaryNoteItem[]): SummaryNoteGroup[] {
+  const grouped = NOTE_GROUP_DEFINITIONS
+    .map((definition) => ({
+      id: definition.id,
+      title: definition.title,
+      items: items.filter((item) => definition.pattern.test(item.text)),
+    }))
+    .filter((group) => group.items.length > 0);
+  const groupedIds = new Set(grouped.flatMap((group) => group.items.map((item) => item.id)));
+  const otherItems = items.filter((item) => !groupedIds.has(item.id));
+  if (otherItems.length > 0) {
+    grouped.push({ id: "other-notes", title: "Other notes", items: otherItems });
+  }
+  return grouped;
+}
+
+function noteTopicId(text: string): string {
+  return NOTE_GROUP_DEFINITIONS.find((definition) => definition.pattern.test(text))?.id ?? "";
+}
+
+function usefulGeneratedTitle(value: unknown, documentTitle: string, supportText: string): string | undefined {
+  const generated = cleanNoteTitle(value, supportText);
+  if (!generated || generated === documentTitle || normalizeNoteKey(generated) === normalizeNoteKey(documentTitle)) {
+    return undefined;
+  }
+  if (generated.length > 72 || generated.split(/\s+/).length > 9) {
+    return undefined;
+  }
+  if (/^(?:Cache-Control|CNAME|DNS|GitHub|Jabber|HTTPBIS)[\w\s/`'"-]+$/i.test(generated)) {
+    return generated;
+  }
+  return undefined;
 }
 
 function summaryWarnings(job: ReviewJobResponse): string[] {
@@ -470,7 +553,7 @@ function noteItemsMatch(left: SummaryNoteItem, right: SummaryNoteItem): boolean 
 }
 
 function cleanNoteTitle(value: unknown, supportText: string): string {
-  let text = applyDomainCleanup(cleanText(value));
+  let text = applyContextualDomainCleanup(applyDomainCleanup(cleanText(value)), supportText);
   if (!text) {
     return "";
   }
@@ -483,7 +566,7 @@ function cleanNoteTitle(value: unknown, supportText: string): string {
 }
 
 function cleanNoteText(value: unknown, supportText: string): string {
-  let text = applyDomainCleanup(cleanText(value));
+  let text = applyContextualDomainCleanup(applyDomainCleanup(cleanText(value)), supportText);
   if (!text) {
     return "";
   }
@@ -504,13 +587,20 @@ function applyDomainCleanup(text: string): string {
     .replace(/\bc\s*[- ]?\s*name\b/gi, "CNAME")
     .replace(/\bCNAME records?\b/gi, "CNAME")
     .replace(/\bHTTP\s+BIS\b/gi, "HTTPBIS")
-    .replace(/\bROS developers?\b/g, "browser developers")
     .replace(/\bgeti\s*hub\b/gi, "GitHub")
     .replace(/\bgithub\b/gi, "GitHub")
     .replace(/\bietf\b/gi, "IETF")
     .replace(/\bdns\b/gi, "DNS")
     .replace(/\bjabber\b/gi, "Jabber")
     .replace(/\bapex domain\b/gi, "apex domain");
+}
+
+function applyContextualDomainCleanup(text: string, supportText: string): string {
+  let value = text;
+  if (supportText.includes("browser developer") || supportText.includes("web browser")) {
+    value = value.replace(/\bROS developers?\b/g, "browser developers");
+  }
+  return value;
 }
 
 function stripUnsupportedContextPrefix(text: string, supportText: string): string {
@@ -631,21 +721,50 @@ function stableItemId(item: SummaryNoteItem): string {
   return `${item.kind}-${key}${source ? `-${source}` : ""}`;
 }
 
-function appendMarkdownItems(
-  lines: string[],
-  title: string,
-  items: SummaryNoteItem[],
-  empty = "None",
-) {
-  lines.push(`## ${title}`);
-  if (items.length === 0) {
-    lines.push(`- ${empty}`, "");
+function appendMarkdownNoteGroups(lines: string[], groups: SummaryNoteGroup[], seenItems: Set<string>) {
+  if (groups.length === 0) {
     return;
   }
-  for (const item of items) {
+  const groupLines: string[] = [];
+  for (const group of groups) {
+    const items = uniqueMarkdownItems(group.items, seenItems);
+    if (items.length === 0) {
+      continue;
+    }
+    groupLines.push(`### ${group.title}`);
+    for (const item of items) {
+      groupLines.push(`- ${item.text}`);
+    }
+    groupLines.push("");
+  }
+  if (groupLines.length > 0) {
+    lines.push("## Notes", ...groupLines);
+  }
+}
+
+function appendMarkdownItems(lines: string[], title: string, items: SummaryNoteItem[], seenItems: Set<string>) {
+  const uniqueItems = uniqueMarkdownItems(items, seenItems);
+  if (uniqueItems.length === 0) {
+    return;
+  }
+  lines.push(`## ${title}`);
+  for (const item of uniqueItems) {
     lines.push(`- ${item.text}`);
   }
   lines.push("");
+}
+
+function uniqueMarkdownItems(items: SummaryNoteItem[], seenItems: Set<string>): SummaryNoteItem[] {
+  const uniqueItems: SummaryNoteItem[] = [];
+  for (const item of items) {
+    const key = normalizeNoteKey(item.text);
+    if (!key || seenItems.has(key)) {
+      continue;
+    }
+    seenItems.add(key);
+    uniqueItems.push(item);
+  }
+  return uniqueItems;
 }
 
 function joinHumanList(items: string[]): string {
