@@ -54,7 +54,7 @@ test("captures meeting cockpit page screenshots", async ({ page }) => {
 
   await page.getByRole("banner").getByRole("button", { name: "Stop & Queue" }).click();
   await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("button", { name: "Review", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
+  await expect(page.getByRole("region", { name: "Review capture validation" })).toContainText("Needs validation");
   await page.screenshot({ path: path.join(screenshotDir, "review.png"), fullPage: true, animations: "disabled" });
   await page.unroute("http://127.0.0.1:8765/api/**");
   await mockApi(page, {
@@ -69,7 +69,7 @@ test("captures meeting cockpit page screenshots", async ({ page }) => {
   await denseReview.getByText("Queue (2)").click();
   await denseReview.getByRole("button", { name: /Apollo/ }).click();
   await denseReview.getByLabel("Review queue menu").locator("summary").click();
-  await expect(denseReview.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
+  await expect(denseReview.getByRole("region", { name: "Review capture validation" })).toContainText("Needs validation");
   await denseReview.evaluate((element) => {
     element.scrollTop = 0;
   });

@@ -1,6 +1,7 @@
 import { useState, type ChangeEvent, type RefObject } from "react";
-import { buildConsultingBriefMarkdown, type MeetingOutputBucket, type SidecarDisplayCard, type TranscriptEvent } from "../presentation";
+import { type MeetingOutputBucket, type SidecarDisplayCard, type TranscriptEvent } from "../presentation";
 import { FilePickAction } from "../shared/FilePickAction";
+import type { MeetingCaptureItem, MeetingCaptureViewModel } from "./meetingCapture";
 import type {
   ReviewJobResponse,
   ReviewStep,
@@ -29,6 +30,7 @@ type ReviewPageProps = {
   error: string;
   transcriptEvents: TranscriptEvent[];
   cards: SidecarDisplayCard[];
+  capture: MeetingCaptureViewModel | null;
   groups: Record<MeetingOutputBucket, SidecarDisplayCard[]>;
   expandedCards: Set<string>;
   highlightedSourceIds: Set<string>;
@@ -44,9 +46,10 @@ type ReviewPageProps = {
   onSelectJob: (job: ReviewJobResponse) => void;
   onToggleCard: (id: string) => void;
   onJumpToEvidence: (card: SidecarDisplayCard) => void;
+  onJumpToEvidenceIds: (ids: string[]) => void;
   onCopyCard: (card: SidecarDisplayCard) => void;
   onCopyTranscript: () => void;
-  onCopyBrief: () => void;
+  onCopyCapture: () => void;
   onOpenSession: () => void;
 };
 
@@ -58,6 +61,7 @@ export function ReviewPage({
   error,
   transcriptEvents,
   cards,
+  capture,
   groups,
   expandedCards,
   highlightedSourceIds,
@@ -73,9 +77,10 @@ export function ReviewPage({
   onSelectJob,
   onToggleCard,
   onJumpToEvidence,
+  onJumpToEvidenceIds,
   onCopyCard,
   onCopyTranscript,
-  onCopyBrief,
+  onCopyCapture,
   onOpenSession,
 }: ReviewPageProps) {
   const completed = job?.status === "completed";
@@ -86,9 +91,9 @@ export function ReviewPage({
   const summaryPrimary = Boolean(job?.summary && reviewReady);
   const hasReviewEvidence = Boolean(transcriptEvents.length > 0 || cards.length > 0 || reviewReady);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
-  const revealTranscriptAndJump = (card: SidecarDisplayCard) => {
+  const revealTranscriptAndJumpIds = (ids: string[]) => {
     setTranscriptOpen(true);
-    window.setTimeout(() => onJumpToEvidence(card), 0);
+    window.setTimeout(() => onJumpToEvidenceIds(ids), 0);
   };
 
   return (
@@ -127,14 +132,14 @@ export function ReviewPage({
           />
           <section className="empty-state review-empty-state" aria-label="No review loaded">
             <h2>{busy === "loading-latest" ? "Looking for the latest review" : "No review loaded"}</h2>
-            <p>{busy === "loading-latest" ? "Checking whether a review is already in flight." : "Upload audio to generate a clean transcript and meeting summary."}</p>
+            <p>{busy === "loading-latest" ? "Checking whether a review is already in flight." : "Upload audio to generate a clean transcript and meeting capture."}</p>
           </section>
         </>
       )}
 
       {job && summaryPrimary && (
         <section className="review-summary-workbench" aria-label="Review workspace">
-          <section className="review-summary-primary" aria-label="Review summary validation">
+          <section className="review-summary-primary" aria-label="Review capture validation">
             <SummaryValidationToolbar
               job={job}
               busy={busy}
@@ -142,22 +147,24 @@ export function ReviewPage({
               awaitingValidation={awaitingValidation}
               approved={approved}
               cardsLength={cards.length}
-              onCopyBrief={onCopyBrief}
+              onCopyCapture={onCopyCapture}
               onApprove={onApprove}
               onDiscard={onDiscard}
               onOpenSession={onOpenSession}
             />
-            <MeetingSummaryBrief summary={job.summary!} cards={cards} />
-          </section>
-
-          <aside className="review-completed-controls" aria-label="Review status and source tools">
+            {capture && (
+              <MeetingCaptureView
+                capture={capture}
+                onJumpToEvidence={revealTranscriptAndJumpIds}
+              />
+            )}
             <details
-              className="review-ops-details review-transcript-details"
+              className="review-ops-details review-transcript-details meeting-capture-sources"
               aria-label="Transcript and sources"
               open={transcriptOpen}
               onToggle={(event) => setTranscriptOpen(event.currentTarget.open)}
             >
-              <summary>Transcript & sources</summary>
+              <summary>Sources</summary>
               <TranscriptEvidencePanel
                 job={job}
                 running={running}
@@ -168,21 +175,13 @@ export function ReviewPage({
                 onCopyTranscript={onCopyTranscript}
               />
             </details>
-          </aside>
-
-          <SupportingCardsPanel
-            job={job}
-            groups={groups}
-            cards={cards}
-            expandedCards={expandedCards}
-            showDebugMetadata={showDebugMetadata}
-            reviewReady={reviewReady}
-            summaryPrimary={summaryPrimary}
-            onToggleCard={onToggleCard}
-            onJumpToEvidence={revealTranscriptAndJump}
-            onCopyCard={onCopyCard}
-            onCopyBrief={onCopyBrief}
-          />
+            {showDebugMetadata && (
+              <details className="review-ops-details review-debug-details" aria-label="Review runtime details">
+                <summary>Debug runtime</summary>
+                <ReviewValidationUtilityStrip job={job} busy={busy} error={error} showDebugMetadata />
+              </details>
+            )}
+          </section>
         </section>
       )}
 
@@ -206,7 +205,7 @@ export function ReviewPage({
                 onToggleCard={onToggleCard}
                 onJumpToEvidence={onJumpToEvidence}
                 onCopyCard={onCopyCard}
-                onCopyBrief={onCopyBrief}
+                onCopyBrief={onCopyCapture}
               />
               <TranscriptEvidencePanel
                 job={job}
@@ -276,8 +275,8 @@ function ReviewHeader({
     <header className="page-header review-page-header">
       <div>
         <p className="label">Review</p>
-        <h1>Meeting Summary</h1>
-        <span>Turn audio into a validated summary, then save it into Sessions.</span>
+        <h1>Meeting Capture</h1>
+        <span>Review the captured actions, decisions, questions, risks, and facts before saving.</span>
       </div>
       <div className="page-header-actions">
         <ReviewQueueMenu open={queueOpen} jobs={jobs} onOpenChange={setQueueOpen} />
@@ -425,7 +424,7 @@ function SummaryValidationToolbar({
   awaitingValidation,
   approved,
   cardsLength,
-  onCopyBrief,
+  onCopyCapture,
   onApprove,
   onDiscard,
   onOpenSession,
@@ -436,7 +435,7 @@ function SummaryValidationToolbar({
   awaitingValidation: boolean;
   approved: boolean;
   cardsLength: number;
-  onCopyBrief: () => void;
+  onCopyCapture: () => void;
   onApprove: () => void;
   onDiscard: () => void;
   onOpenSession: () => void;
@@ -447,19 +446,19 @@ function SummaryValidationToolbar({
     ? "Saved to Sessions"
     : awaitingValidation
       ? needsManualValidation ? "Needs manual validation" : "Needs validation"
-      : "Summary ready";
+      : "Capture ready";
   const validationDetail = needsManualValidation
     ? `${usefulness?.flagsLabel || "Usefulness flag"} found. Validate transcript evidence before saving.`
-    : "Check the summary and evidence before saving.";
+    : "Review the captured actions, decisions, questions, risks, and facts before saving.";
   return (
     <div className="review-summary-toolbar">
       <div>
-        <p className="label">Decision</p>
+        <p className="label">Capture</p>
         <h2>{validationTitle}</h2>
         <span>{validationDetail}</span>
       </div>
-      <div className="review-summary-actions" aria-label="Summary validation actions">
-        <button className="secondary" type="button" disabled={!reviewReady || (!job.summary && cardsLength === 0)} onClick={onCopyBrief}>Copy brief</button>
+      <div className="review-summary-actions" aria-label="Capture validation actions">
+        <button className="secondary" type="button" disabled={!reviewReady || (!job.summary && cardsLength === 0)} onClick={onCopyCapture}>Copy capture</button>
         {awaitingValidation && (
           <>
             <button className="primary" type="button" onClick={onApprove} disabled={busy === "approving"}>{busy === "approving" ? "Approving..." : "Approve"}</button>
@@ -694,10 +693,10 @@ function ReviewProgressDetails({ job, compact = false }: { job: ReviewJobRespons
 
 function ReviewSummaryPlaceholder({ job, running }: { job: ReviewJobResponse; running: boolean }) {
   return (
-    <section className="review-summary-placeholder" aria-label="Meeting Summary">
-      <p className="label">Meeting Summary</p>
-      <h2>{running ? job.title || "Meeting summary is being generated" : "No meeting summary yet"}</h2>
-      <p>{running ? "Review is still conditioning the transcript and extracting meeting output." : "This review has no summary output yet."}</p>
+    <section className="review-summary-placeholder" aria-label="Meeting Capture">
+      <p className="label">Meeting Capture</p>
+      <h2>{running ? job.title || "Meeting capture is being generated" : "No meeting capture yet"}</h2>
+      <p>{running ? "Review is still conditioning the transcript and extracting meeting output." : "This review has no capture output yet."}</p>
     </section>
   );
 }
@@ -791,7 +790,7 @@ function SupportingCardsPanel({
             {summaryPrimary ? `${validationCards.length} shown${coveredCardCount > 0 ? ` · ${coveredCardCount} covered` : ""}` : `${cards.length} items`}
           </span>
           {!summaryPrimary && (
-            <button className="secondary" type="button" disabled={!reviewReady || (!job.summary && cards.length === 0)} onClick={onCopyBrief}>Copy brief</button>
+            <button className="secondary" type="button" disabled={!reviewReady || (!job.summary && cards.length === 0)} onClick={onCopyBrief}>Copy capture</button>
           )}
         </div>
       </div>
@@ -843,6 +842,156 @@ function SupportingCardsPanel({
         ))}
       </div>
     </section>
+  );
+}
+
+function MeetingCaptureView({
+  capture,
+  onJumpToEvidence,
+}: {
+  capture: MeetingCaptureViewModel;
+  onJumpToEvidence: (ids: string[]) => void;
+}) {
+  return (
+    <section className="meeting-capture-view" aria-label="Meeting Capture">
+      <section className="meeting-capture-hero" aria-label="Snapshot">
+        <div>
+          <p className="label">Snapshot</p>
+          <h2>{formatReviewDisplayText(capture.title || "Meeting Capture")}</h2>
+        </div>
+        <ul className="meeting-capture-snapshot-list">
+          {capture.snapshot.length === 0 ? (
+            <li>No high-signal snapshot was captured.</li>
+          ) : capture.snapshot.map((item) => (
+            <li key={item}>{formatReviewDisplayText(item)}</li>
+          ))}
+        </ul>
+      </section>
+
+      <MeetingCaptureSection
+        title="Follow-ups / Actions"
+        items={capture.actions}
+        empty="No follow-ups captured."
+        actionLayout
+        onJumpToEvidence={onJumpToEvidence}
+      />
+      <MeetingCaptureSection
+        title="Decisions"
+        items={capture.decisions}
+        onJumpToEvidence={onJumpToEvidence}
+      />
+      <MeetingCaptureSection
+        title="Open Questions / Unknowns"
+        items={capture.openQuestions}
+        onJumpToEvidence={onJumpToEvidence}
+      />
+      <MeetingCaptureSection
+        title="Risks / Blockers"
+        items={capture.risks}
+        onJumpToEvidence={onJumpToEvidence}
+      />
+      <MeetingCaptureSection
+        title="Important Facts / Context"
+        items={capture.facts}
+        onJumpToEvidence={onJumpToEvidence}
+      />
+      <MeetingCaptureSection
+        title="Technical Findings"
+        items={capture.technicalFindings}
+        onJumpToEvidence={onJumpToEvidence}
+      />
+      {capture.parkingLot.length > 0 && (
+        <details className="meeting-capture-details" aria-label="Parking Lot / Low Confidence">
+          <summary>
+            <span>Parking Lot / Low Confidence</span>
+            <small>{capture.parkingLot.length}</small>
+          </summary>
+          <MeetingCaptureItemList
+            items={capture.parkingLot}
+            actionLayout={false}
+            onJumpToEvidence={onJumpToEvidence}
+          />
+        </details>
+      )}
+    </section>
+  );
+}
+
+function MeetingCaptureSection({
+  title,
+  items,
+  empty = "None captured.",
+  actionLayout = false,
+  onJumpToEvidence,
+}: {
+  title: string;
+  items: MeetingCaptureItem[];
+  empty?: string;
+  actionLayout?: boolean;
+  onJumpToEvidence: (ids: string[]) => void;
+}) {
+  if (items.length === 0 && title !== "Follow-ups / Actions") {
+    return null;
+  }
+  return (
+    <section className="meeting-capture-section" aria-label={title}>
+      <div className="section-heading-row">
+        <h3>{title}</h3>
+        <span>{items.length}</span>
+      </div>
+      {items.length === 0 ? (
+        <p className="empty-note">{empty}</p>
+      ) : (
+        <MeetingCaptureItemList
+          items={items}
+          actionLayout={actionLayout}
+          onJumpToEvidence={onJumpToEvidence}
+        />
+      )}
+    </section>
+  );
+}
+
+function MeetingCaptureItemList({
+  items,
+  actionLayout,
+  onJumpToEvidence,
+}: {
+  items: MeetingCaptureItem[];
+  actionLayout: boolean;
+  onJumpToEvidence: (ids: string[]) => void;
+}) {
+  return (
+    <div className={`meeting-capture-list ${actionLayout ? "actions" : ""}`}>
+      {items.map((item) => (
+        <article key={item.id} className={`meeting-capture-item ${item.lowConfidence ? "low-confidence" : ""}`}>
+          <div className="meeting-capture-item-main">
+            <strong>{formatReviewDisplayText(item.title)}</strong>
+            {item.body && item.body !== item.title && <p>{formatReviewDisplayText(item.body)}</p>}
+            <div className="meeting-capture-meta">
+              {item.owner && <span>Owner: {formatReviewDisplayText(item.owner)}</span>}
+              {item.dueDate && <span>Due: {formatReviewDisplayText(item.dueDate)}</span>}
+              {item.project && <span>Project: {formatReviewDisplayText(item.project)}</span>}
+              {typeof item.confidence === "number" && <span>{formatPercent(item.confidence)} confidence</span>}
+              {item.lowConfidence && <span>Needs confirmation</span>}
+              {item.reason && <span>{formatReviewDisplayText(item.reason)}</span>}
+            </div>
+          </div>
+          <div className="meeting-capture-item-tools">
+            {item.evidenceQuote && <p className="meeting-capture-evidence-quote">"{formatReviewDisplayText(item.evidenceQuote)}"</p>}
+            {item.sourceSegmentIds.length > 0 && (
+              <button
+                className="secondary"
+                type="button"
+                onClick={() => onJumpToEvidence(item.sourceSegmentIds)}
+              >
+                Evidence
+              </button>
+            )}
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -2072,43 +2221,6 @@ function referenceContextKindLabel(kind: string | undefined): string {
     default:
       return "Reference";
   }
-}
-
-export function buildReviewBriefMarkdown(summary: SessionMemorySummary | null, cards: SidecarDisplayCard[]): string {
-  if (!summary) {
-    return buildConsultingBriefMarkdown(cards, "Review Brief");
-  }
-  const brief = buildReviewBriefModel(summary, cards);
-  const sections: string[] = [`# ${brief.title || "Review Brief"}`, "", "## Executive Summary", "", brief.executiveSummary];
-  const appendItems = (title: string, items: ReviewBriefItem[]) => {
-    if (items.length === 0) {
-      return;
-    }
-    sections.push("", `## ${title}`);
-    for (const item of items) {
-      const metadata = [
-        item.project,
-        item.owner ? `Owner: ${item.owner}` : "",
-        item.dueDate ? `Due: ${item.dueDate}` : "",
-        item.context,
-      ].filter(Boolean);
-      sections.push(`- ${item.text}${metadata.length > 0 ? ` (${metadata.join("; ")})` : ""}`);
-    }
-  };
-  appendItems("Actions", brief.actions);
-  appendItems("Decisions", brief.decisions);
-  appendItems("Open Questions", brief.openQuestions);
-  appendItems("Risks / Watch Items", brief.risks);
-  if (brief.referenceContext.length > 0) {
-    sections.push("", "## Reference Context");
-    for (const item of brief.referenceContext) {
-      const body = item.body ? `: ${item.body}` : "";
-      const citation = item.citation ? ` (${item.citation})` : "";
-      sections.push(`- ${referenceContextKindLabel(item.kind)} - ${item.title}${body}${citation}`);
-    }
-  }
-  appendItems("Technical Notes", brief.technicalNotes);
-  return `${sections.join("\n").trim()}\n`;
 }
 
 function reviewOverallProgress(job: ReviewJobResponse | null, busy: string): number {

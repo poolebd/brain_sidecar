@@ -109,6 +109,8 @@
   .review-summary-workbench,
   .review-summary-toolbar,
   .review-evidence-grid,
+  .meeting-capture-item,
+  .meeting-capture-list.actions .meeting-capture-item,
   .meeting-summary-hero {
     grid-template-columns: 1fr;
   }
@@ -141,6 +143,8 @@
   .review-summary-workbench,
   .review-summary-toolbar,
   .review-evidence-grid,
+  .meeting-capture-item,
+  .meeting-capture-list.actions .meeting-capture-item,
   .meeting-summary-hero,
   .query-bar,
   .test-mode-grid,

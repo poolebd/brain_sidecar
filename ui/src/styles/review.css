@@ -27,6 +27,11 @@
 .review-page .source-segment-chip,
 .review-page .saved-transcript-row,
 .review-page .meeting-summary-row-note,
+.review-page .meeting-capture-snapshot-list li,
+.review-page .meeting-capture-item-main strong,
+.review-page .meeting-capture-item-main p,
+.review-page .meeting-capture-meta span,
+.review-page .meeting-capture-evidence-quote,
 .review-page .meeting-summary-brief-item,
 .review-page .meeting-summary-brief-item-meta span,
 .review-page .meeting-summary-brief-group h4,
@@ -57,6 +62,7 @@
 .review-page .chip,
 .review-page .quality-chip,
 .review-page .source-segment-chip,
+.review-page .meeting-capture-meta span,
 .review-page .review-step-pill,
 .review-page summary,
 .review-page .meeting-summary-metrics span,
@@ -518,6 +524,181 @@
   border-color: var(--review-accent-border);
   box-shadow: none;
   grid-column: auto;
+}
+
+.meeting-capture-view {
+  background: color-mix(in srgb, var(--surface) 82%, var(--bg));
+  border: 1px solid var(--review-accent-border);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.72rem;
+  min-width: 0;
+  padding: 0.9rem;
+}
+
+.meeting-capture-hero {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.meeting-capture-hero h2 {
+  font-size: 1.25rem;
+  line-height: 1.2;
+  margin: 0.12rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.meeting-capture-snapshot-list {
+  display: grid;
+  gap: 0.34rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.meeting-capture-snapshot-list li {
+  background: var(--review-panel-muted);
+  border: 1px solid var(--review-border-quiet);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  padding: 0.48rem 0.58rem;
+}
+
+.meeting-capture-section {
+  border-top: 1px solid var(--review-border-quiet);
+  display: grid;
+  gap: 0.52rem;
+  padding-top: 0.62rem;
+}
+
+.meeting-capture-section h3,
+.meeting-capture-details summary span {
+  color: var(--text-subtle);
+  font-size: 0.74rem;
+  letter-spacing: 0;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.meeting-capture-list {
+  display: grid;
+  gap: 0;
+}
+
+.meeting-capture-item {
+  border-top: 1px solid var(--review-border-quiet);
+  display: grid;
+  gap: 0.58rem;
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, auto);
+  padding: 0.58rem 0.08rem;
+}
+
+.meeting-capture-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.meeting-capture-list.actions .meeting-capture-item {
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, 0.28fr);
+}
+
+.meeting-capture-item.low-confidence {
+  opacity: 0.86;
+}
+
+.meeting-capture-item-main {
+  display: grid;
+  gap: 0.32rem;
+  min-width: 0;
+}
+
+.meeting-capture-item-main strong {
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.32;
+  overflow-wrap: anywhere;
+}
+
+.meeting-capture-item-main p,
+.meeting-capture-evidence-quote {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.meeting-capture-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+}
+
+.meeting-capture-meta span {
+  background: var(--review-panel-muted);
+  border: 1px solid var(--review-border-quiet);
+  border-radius: 999px;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.18;
+  min-height: 1.42rem;
+  overflow-wrap: anywhere;
+  padding: 0.22rem 0.48rem;
+}
+
+.meeting-capture-item-tools {
+  align-content: start;
+  display: grid;
+  gap: 0.35rem;
+  justify-items: end;
+  min-width: 0;
+}
+
+.meeting-capture-item-tools button {
+  min-width: 6.25rem;
+}
+
+.meeting-capture-details,
+.meeting-capture-sources,
+.review-debug-details {
+  background: var(--review-panel);
+  border: 1px solid var(--review-border-quiet);
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.meeting-capture-details summary,
+.meeting-capture-sources summary,
+.review-debug-details summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  min-height: 2.35rem;
+  padding: 0.54rem 0.7rem;
+}
+
+.meeting-capture-details summary small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.meeting-capture-details[open],
+.meeting-capture-sources[open],
+.review-debug-details[open] {
+  padding-bottom: 0.65rem;
+}
+
+.meeting-capture-details > .meeting-capture-list,
+.meeting-capture-sources > .review-transcript-panel,
+.review-debug-details > .review-validation-strip {
+  margin: 0 0.7rem;
 }
 
 .review-completed-controls {
@@ -1625,6 +1806,7 @@
   }
 
   .review-summary-toolbar,
+  .meeting-capture-view,
   .meeting-summary-brief,
   .review-transcript-panel,
   .review-output-panel {
@@ -1652,8 +1834,14 @@
   }
 
   .review-page .meeting-summary-technical-list article,
-  .review-page .meeting-summary-details > div {
+  .review-page .meeting-summary-details > div,
+  .review-page .meeting-capture-item,
+  .review-page .meeting-capture-list.actions .meeting-capture-item {
     grid-template-columns: 1fr;
+  }
+
+  .meeting-capture-item-tools {
+    justify-items: stretch;
   }
 
   .meeting-summary-row-head {
@@ -1705,6 +1893,7 @@
   }
 
   .review-summary-toolbar h2,
+  .meeting-capture-hero h2,
   .meeting-summary-hero h2 {
     font-size: 1.02rem;
   }
