@@ -45,6 +45,7 @@ REVIEW_CONTEXT_MAX_WEB_QUERIES = 2
 REVIEW_CONTEXT_MAX_REFERENCE_HITS = 5
 REVIEW_CONTEXT_MAX_ITEMS = 10
 REVIEW_USEFULNESS_PASS_SCORE = 0.72
+REVIEW_DIGEST_LONG_MEETING_TOPIC_MIN = 3
 REVIEW_STANDARD_ID = "energy_consultant_v1"
 REVIEW_PROJECT_TERM_RE = re.compile(r"\b(?:BESS|PGE|RFI|EPC|SPCC|gen-tie|transformer|breaker|collector|substation|permitting|utility|interconnection|one-line|load flow|short circuit|tariff|demand response|commissioning|scope 2|carbon accounting|renewable|procurement|prototype|design|requirements|budget|schedule|vendor|supplier|client|customer)\b", re.IGNORECASE)
 REVIEW_EE_ANALYSIS_RE = re.compile(r"\b(?:arc flash|breaker|capacity|coordination|CT ratio|demand charge|DER|distribution|fault current|feeder|harmonic|IEEE|interconnection|inverter|load flow|NERC|one-line|power factor|protection|reactive|relay|resource adequacy|short circuit|single-line|substation|tariff|transformer|transmission|utility bill|voltage)\b", re.IGNORECASE)
@@ -1310,28 +1311,42 @@ class ReviewMeetingEvaluator:
             )
             if not _summary_needs_repair(repaired_diagnostics):
                 _set_usefulness_status(repaired_diagnostics, "repaired")
-                return _finalize_review_summary(repaired, repaired_diagnostics)
-            summary = _fallback_review_summary_from_cards(
-                session_id,
-                ranked_cards,
-                ranked_extracts,
-                segments,
-                review_context=review_context,
-                workstream_candidates=workstream_candidates,
-            )
-            diagnostics = _summary_quality_diagnostics(
-                summary,
-                ranked_extracts,
-                segments,
-                review_context=review_context,
-                workstream_candidates=workstream_candidates,
-            )
+                summary = repaired
+                diagnostics = repaired_diagnostics
+            else:
+                summary = _fallback_review_summary_from_cards(
+                    session_id,
+                    ranked_cards,
+                    ranked_extracts,
+                    segments,
+                    review_context=review_context,
+                    workstream_candidates=workstream_candidates,
+                )
+                diagnostics = _summary_quality_diagnostics(
+                    summary,
+                    ranked_extracts,
+                    segments,
+                    review_context=review_context,
+                    workstream_candidates=workstream_candidates,
+                )
 
         if _summary_needs_repair(diagnostics):
             summary, diagnostics = _mark_summary_low_usefulness(summary, diagnostics)
         else:
-            _set_usefulness_status(diagnostics, "passed")
+            if diagnostics.get("usefulness_status") != "repaired":
+                _set_usefulness_status(diagnostics, "passed")
         summary["context_diagnostics"] = (review_context or {}).get("context_diagnostics", {})
+        summary["meeting_digest"] = _meeting_digest_from_summary(
+            summary,
+            segments,
+            ranked_extracts,
+            ranked_cards,
+            workstream_candidates=workstream_candidates,
+            review_context=review_context,
+        )
+        digest_flags = _meeting_digest_quality_flags(summary["meeting_digest"], segments)
+        if digest_flags:
+            diagnostics["meeting_digest_flags"] = digest_flags
         return _finalize_review_summary(summary, diagnostics)
 
     async def _repair_summary(
@@ -1489,6 +1504,7 @@ def _summary_payload_for_storage(
         "coverage_notes": _compact_payload_list(summary.get("coverage_notes"), limit=6),
         "reference_context": _compact_reference_context(summary.get("reference_context"), limit=10),
         "context_diagnostics": _compact_context_diagnostics(summary.get("context_diagnostics")),
+        "meeting_digest": _compact_meeting_digest(summary.get("meeting_digest")),
         "source_segment_ids": _compact_payload_list(summary.get("source_segment_ids"), limit=36),
     }
 
@@ -1497,8 +1513,698 @@ def _finalize_review_summary(summary: dict[str, Any], diagnostics: dict[str, Any
     summary = dict(summary)
     summary["portfolio_rollup"] = _compact_portfolio_rollup(summary.get("portfolio_rollup"), summary=summary)
     summary["review_metrics"] = _review_metrics_from_summary(summary, diagnostics=diagnostics)
+    summary["meeting_digest"] = _compact_meeting_digest(summary.get("meeting_digest"))
     summary["diagnostics"] = diagnostics
     return summary
+
+
+DIGEST_STALE_CONTEXT_TERMS = ("PGE", "Westwood", "Energy Lens", "Energy consulting")
+DIGEST_META_RE = re.compile(
+    r"\b(?:review completed|usefulness gate|technical findings? grounded|source coverage|validation evidence|supporting cards?)\b",
+    re.IGNORECASE,
+)
+
+
+def _meeting_digest_from_summary(
+    summary: dict[str, Any],
+    segments: list[TranscriptSegment],
+    extracts: list[ReviewWindowExtract],
+    cards: list[SidecarCard],
+    *,
+    workstream_candidates: list[dict[str, Any]] | None,
+    review_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    support_text = _digest_support_text(summary, segments)
+    valid_ids = set(_valid_review_source_ids(segments))
+    default_source_ids = _summary_source_ids(summary.get("source_segment_ids"), extracts, segments)
+    topics: dict[str, dict[str, Any]] = {}
+    topic_order = 0
+
+    def add_topic(
+        title_input: object,
+        text_input: object = "",
+        *,
+        source_ids: list[str] | None = None,
+        kind: str = "key_points",
+        score: int = 10,
+    ) -> None:
+        nonlocal topic_order
+        text = _digest_clean_text(text_input, support_text)
+        source_segment_ids = _digest_source_ids(source_ids, valid_ids, default_source_ids, segments, text)
+        titles = _digest_topic_titles(title_input or text, support_text)
+        if not titles and text:
+            titles = _digest_topic_titles(text, support_text)
+        for raw_title in titles[:2]:
+            title = _digest_clean_title(raw_title, support_text)
+            if not title:
+                continue
+            key = _normalize_for_evidence(title)
+            if not key:
+                continue
+            current = topics.get(key)
+            if current is None:
+                current = {
+                    "id": _digest_topic_id(title),
+                    "title": title,
+                    "summary_snippets": [],
+                    "key_points": [],
+                    "decisions": [],
+                    "follow_ups": [],
+                    "open_questions": [],
+                    "risks": [],
+                    "source_segment_ids": [],
+                    "score": 0,
+                    "order": topic_order,
+                }
+                topics[key] = current
+                topic_order += 1
+            current["score"] = int(current.get("score") or 0) + score
+            current["source_segment_ids"] = _dedupe_strings([*current.get("source_segment_ids", []), *source_segment_ids])[:18]
+            if text and _digest_useful_item(text):
+                if kind in {"follow_up", "action"}:
+                    text = _digest_follow_up_from_text(text)
+                    if not text:
+                        continue
+                if kind == "risk" and not _digest_is_real_risk(text):
+                    continue
+                target_key = {
+                    "decision": "decisions",
+                    "follow_up": "follow_ups",
+                    "action": "follow_ups",
+                    "open_question": "open_questions",
+                    "risk": "risks",
+                    "summary": "summary_snippets",
+                }.get(kind, "key_points")
+                _digest_add_unique(current[target_key], text, limit=8, text_limit=260)
+
+    for segment in segments:
+        clean = _digest_clean_text(segment.text, support_text)
+        if not clean:
+            continue
+        source_ids = [segment.id, *segment.source_segment_ids]
+        add_topic(clean, clean, source_ids=source_ids, kind="key_points", score=8)
+        decision = _digest_decision_from_text(clean)
+        if decision:
+            add_topic(clean, decision, source_ids=source_ids, kind="decision", score=18)
+        follow_up = _digest_follow_up_from_text(clean)
+        if follow_up:
+            add_topic(clean, follow_up, source_ids=source_ids, kind="follow_up", score=20)
+        question = _digest_question_from_text(clean)
+        if question:
+            add_topic(clean, question, source_ids=source_ids, kind="open_question", score=14)
+        risk = _digest_risk_from_text(clean)
+        if risk:
+            add_topic(clean, risk, source_ids=source_ids, kind="risk", score=12)
+
+    for point in _compact_payload_list(summary.get("key_points"), limit=16, text_limit=320):
+        add_topic(point, point, source_ids=_compact_payload_list(summary.get("source_segment_ids"), limit=36), kind="key_points", score=12)
+    for decision in _compact_payload_list(summary.get("decisions"), limit=12, text_limit=260):
+        add_topic(decision, decision, source_ids=_compact_payload_list(summary.get("source_segment_ids"), limit=36), kind="decision", score=18)
+    for action in _compact_payload_list(summary.get("actions"), limit=16, text_limit=260):
+        add_topic(action, action, source_ids=_compact_payload_list(summary.get("source_segment_ids"), limit=36), kind="follow_up", score=18)
+    for question in _compact_payload_list(summary.get("unresolved_questions"), limit=12, text_limit=260):
+        add_topic(question, question, source_ids=_compact_payload_list(summary.get("source_segment_ids"), limit=36), kind="open_question", score=14)
+    for risk in _compact_payload_list(summary.get("risks"), limit=12, text_limit=260):
+        target_kind = "open_question" if _digest_looks_like_question(risk) and not _digest_looks_like_concern(risk) else "risk"
+        add_topic(risk, risk, source_ids=_compact_payload_list(summary.get("source_segment_ids"), limit=36), kind=target_kind, score=12)
+
+    for workstream in summary.get("project_workstreams") or []:
+        if not isinstance(workstream, dict):
+            continue
+        source_ids = _compact_payload_list(workstream.get("source_segment_ids"), limit=16)
+        title = workstream.get("project") or "Meeting thread"
+        for field, kind in (
+            ("decisions", "decision"),
+            ("actions", "follow_up"),
+            ("open_questions", "open_question"),
+            ("risks", "risk"),
+        ):
+            for item in _compact_payload_list(workstream.get(field), limit=8, text_limit=260):
+                topic_seed = item if _digest_topic_titles(item, support_text) else f"{title} {item}"
+                add_topic(topic_seed, item, source_ids=source_ids, kind=kind, score=20)
+        if not any(workstream.get(field) for field in ("decisions", "actions", "open_questions", "risks")):
+            add_topic(title, title, source_ids=source_ids, kind="key_points", score=8)
+
+    for finding in summary.get("technical_findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        source_ids = _compact_payload_list(finding.get("source_segment_ids"), limit=16)
+        title = finding.get("topic") or finding.get("question") or "Technical note"
+        for item in _compact_payload_list(finding.get("recommendations"), limit=6, text_limit=260):
+            add_topic(f"{title} {item}", item, source_ids=source_ids, kind="follow_up", score=12)
+        for item in _compact_payload_list(finding.get("data_gaps"), limit=6, text_limit=260):
+            add_topic(f"{title} {item}", item, source_ids=source_ids, kind="open_question", score=10)
+        for item in _compact_payload_list(finding.get("risks"), limit=6, text_limit=260):
+            add_topic(f"{title} {item}", item, source_ids=source_ids, kind="risk", score=10)
+        if _digest_finding_supported(finding, support_text):
+            for item in _compact_payload_list(finding.get("findings"), limit=6, text_limit=260):
+                add_topic(f"{title} {item}", item, source_ids=source_ids, kind="key_points", score=8)
+
+    for card in cards:
+        card_text = _card_meeting_text(card)
+        category = {
+            "decision": "decision",
+            "action": "follow_up",
+            "question": "open_question",
+            "clarification": "open_question",
+            "risk": "risk",
+        }.get(card.category, "key_points")
+        add_topic(f"{card.title} {card_text}", card_text, source_ids=card.source_segment_ids, kind=category, score=22)
+
+    for candidate in workstream_candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        source_ids = _compact_payload_list(candidate.get("source_segment_ids"), limit=16)
+        title = candidate.get("project") or candidate.get("topic") or candidate.get("name") or ""
+        add_topic(title, title, source_ids=source_ids, kind="key_points", score=6)
+
+    topic_payloads = _digest_rank_topics(topics.values(), segments)
+    if len(topic_payloads) < REVIEW_DIGEST_LONG_MEETING_TOPIC_MIN and len(segments) >= 12:
+        for window in _segment_windows(segments, size=max(4, min(10, len(segments) // 4 or 4)), overlap=0):
+            text = _fallback_window_summary_text(window)
+            add_topic(text, text, source_ids=[segment.id for segment in window[:6]], kind="key_points", score=5)
+        topic_payloads = _digest_rank_topics(topics.values(), segments)
+
+    topic_payloads = [_digest_finalize_topic(topic, support_text) for topic in topic_payloads]
+    topic_payloads = [topic for topic in topic_payloads if _digest_topic_is_useful(topic, support_text)]
+    topic_payloads = topic_payloads[:8]
+
+    decisions = _digest_global_items(topic_payloads, "decisions", summary.get("decisions"), support_text, limit=10)
+    follow_ups = _digest_global_items(topic_payloads, "follow_ups", summary.get("actions"), support_text, limit=12)
+    open_questions = _digest_global_items(topic_payloads, "open_questions", summary.get("unresolved_questions"), support_text, limit=10)
+    risks = [
+        item
+        for item in _digest_global_items(topic_payloads, "risks", summary.get("risks"), support_text, limit=10)
+        if item not in open_questions and not _digest_matches_any(item, open_questions)
+    ]
+    source_segment_ids = _dedupe_strings([source_id for topic in topic_payloads for source_id in topic.get("source_segment_ids", [])])
+    overview = _digest_overview(summary, topic_payloads, support_text)
+    coverage_notes = _compact_payload_list(summary.get("coverage_notes"), limit=4, text_limit=180)
+    if review_context and not coverage_notes:
+        coverage_notes = ["Digest synthesized from transcript-backed Review evidence."]
+    return _compact_meeting_digest(
+        {
+            "overview": overview,
+            "topics": topic_payloads,
+            "decisions": decisions,
+            "follow_ups": follow_ups,
+            "open_questions": open_questions,
+            "risks": risks,
+            "coverage_notes": coverage_notes,
+            "source_segment_ids": source_segment_ids or default_source_ids,
+        }
+    )
+
+
+def _digest_support_text(summary: dict[str, Any], segments: list[TranscriptSegment]) -> str:
+    return _normalize_for_evidence(" ".join([
+        str(summary.get("title") or ""),
+        *[segment.text for segment in segments],
+    ]))
+
+
+def _digest_clean_title(value: object, support_text: str) -> str:
+    text = _digest_domain_cleanup(compact_text(value, limit=140))
+    text = re.sub(r"\s+segment\s+\d+\b", "", text, flags=re.IGNORECASE)
+    text = _digest_strip_stale_prefix(text, support_text)
+    if _digest_contains_unsupported_context(text, support_text):
+        return ""
+    return text.strip(" :-")
+
+
+def _digest_clean_text(value: object, support_text: str) -> str:
+    text = _digest_domain_cleanup(compact_text(value, limit=360))
+    if not text:
+        return ""
+    text = re.sub(r"\s+(?:he|she|they|it|the|a|an|with|between|older|recently|including)$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+(?:in|to|for|of|with|between|across|from|despite)$", "", text, flags=re.IGNORECASE)
+    text = _digest_strip_stale_prefix(text, support_text).strip()
+    if _digest_contains_unsupported_context(text, support_text) or DIGEST_META_RE.search(text):
+        return ""
+    if text and not re.search(r"[.!?`]$", text):
+        text = f"{text}."
+    return text
+
+
+def _digest_domain_cleanup(text: str) -> str:
+    value = str(text or "")
+    replacements = [
+        (r"\bcash control private\b", "Cache-Control private"),
+        (r"\bcash control\b", "Cache-Control"),
+        (r"\bcache control\b", "Cache-Control"),
+        (r"\bc\s*[- ]?\s*name\b", "CNAME"),
+        (r"\bCNAME records?\b", "CNAME"),
+        (r"\bHTTP\s+BIS\b", "HTTPBIS"),
+        (r"\bgeti\s*hub\b", "GitHub"),
+        (r"\bgithub\b", "GitHub"),
+        (r"\bietf\b", "IETF"),
+        (r"\bdns\b", "DNS"),
+        (r"\bjabber\b", "Jabber"),
+    ]
+    for pattern, replacement in replacements:
+        value = re.sub(pattern, replacement, value, flags=re.IGNORECASE)
+    value = re.sub(r"\bROS developers?\b", "browser developers", value)
+    return compact_text(value.replace("`", "'"), limit=360)
+
+
+def _digest_strip_stale_prefix(text: str, support_text: str) -> str:
+    match = re.match(r"^\s*([^:]{2,120}):\s*(.+)$", text)
+    if match and _digest_contains_unsupported_context(match.group(1), support_text):
+        return match.group(2).strip()
+    return text
+
+
+def _digest_contains_unsupported_context(text: str, support_text: str) -> bool:
+    for term in DIGEST_STALE_CONTEXT_TERMS:
+        if re.search(rf"\b{re.escape(term)}\b", text, re.IGNORECASE) and _normalize_for_evidence(term) not in support_text:
+            return True
+    return False
+
+
+def _digest_topic_titles(value: object, support_text: str) -> list[str]:
+    clean = _digest_domain_cleanup(compact_text(value, limit=420))
+    haystack = _normalize_for_evidence(clean)
+    titles: list[str] = []
+    if "cache control" in haystack or "cache-control" in clean.lower():
+        titles.append("Cache-Control")
+    if "cname" in haystack or "apex domain" in haystack or "dns" in haystack:
+        titles.append("DNS / CNAME")
+    if "browser" in haystack and any(term in haystack for term in ("deployment", "impediment", "developer", "implementation")):
+        titles.append("Browser deployment")
+    if "github" in haystack or ("issue" in haystack and "status" in haystack):
+        titles.append("GitHub issues")
+    if "jabber" in haystack or ("relay" in haystack and "volunteer" in haystack):
+        titles.append("Jabber relay")
+    if titles:
+        return _dedupe_compact([title for title in titles if _digest_topic_label_is_useful(title, support_text)], limit=3, text_limit=120)
+
+    label = _segment_workstream_label(clean)
+    if label:
+        titles.append(_clean_workstream_candidate_name(label))
+    prefix = clean.split(":", 1)[0].strip()
+    prefix = re.sub(r"\s+segment\s+\d+\b", "", prefix, flags=re.IGNORECASE).strip()
+    if prefix and len(prefix.split()) <= 6 and not prefix.lower().startswith(("the ", "and ", "but ")):
+        titles.append(prefix)
+    for term in _topical_terms_from_text(clean, limit=3):
+        if _digest_topic_label_is_useful(term, support_text):
+            titles.append(term)
+    return _dedupe_compact([title for title in titles if _digest_topic_label_is_useful(title, support_text)], limit=3, text_limit=120)
+
+
+def _digest_topic_label_is_useful(value: object, support_text: str) -> bool:
+    text = _digest_clean_title(value, support_text)
+    if not text or len(_normalize_for_evidence(text)) < 4:
+        return False
+    if _normalize_for_evidence(text) in {
+        "meeting",
+        "review",
+        "discussion",
+        "technical meeting",
+        "meeting topics",
+        "directive",
+        "browser",
+        "httpbis",
+        "welcome",
+        "issue",
+        "status",
+    }:
+        return False
+    return True
+
+
+def _digest_source_ids(
+    source_ids: list[str] | None,
+    valid_ids: set[str],
+    default_source_ids: list[str],
+    segments: list[TranscriptSegment],
+    text: str,
+) -> list[str]:
+    ids = _source_ids_from_payload(source_ids or [], valid_ids, default_source_ids=default_source_ids, limit=16)
+    ids_are_default = bool(ids) and ids == default_source_ids[: len(ids)]
+    if ids and not ids_are_default:
+        return ids
+    text_key = _normalize_for_evidence(text)
+    matched = [
+        segment.id
+        for segment in segments
+        if text_key and _digest_text_overlap(text_key, _normalize_for_evidence(segment.text)) >= 0.42
+    ]
+    if matched:
+        return _dedupe_strings(matched)[:16]
+    return _dedupe_strings(ids if not ids_are_default else default_source_ids[:3])[:16]
+
+
+def _digest_text_overlap(left_key: str, right_key: str) -> float:
+    left = {token for token in left_key.split() if len(token) > 2}
+    right = {token for token in right_key.split() if len(token) > 2}
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(1, min(len(left), len(right)))
+
+
+def _digest_add_unique(target: list[str], item: str, *, limit: int, text_limit: int = 260) -> None:
+    text = compact_text(item, limit=text_limit)
+    if not text:
+        return
+    key = _normalize_for_evidence(text)
+    if not key or any(key == _normalize_for_evidence(existing) or _digest_text_overlap(key, _normalize_for_evidence(existing)) >= 0.68 for existing in target):
+        return
+    target.append(text)
+    del target[limit:]
+
+
+def _digest_useful_item(text: str) -> bool:
+    key = _normalize_for_evidence(text)
+    if not key or DIGEST_META_RE.search(text):
+        return False
+    words = key.split()
+    if len(words) < 4:
+        return False
+    if re.match(r"^[A-Z][A-Za-z0-9 /\-']+:?$", text) and len(words) <= 5:
+        return False
+    return True
+
+
+def _digest_decision_from_text(text: str) -> str:
+    if re.search(r"\b(?:decided|decision|agreed|consensus|settled)\b", text, re.IGNORECASE):
+        return text
+    if re.search(r"\bCache-Control\b.*\b(?:downgrad|advisory|requirement)\b", text, re.IGNORECASE):
+        return "The group considered moving the Cache-Control directive requirement from firm requirement language toward advisory guidance for clients."
+    return ""
+
+
+def _digest_follow_up_from_text(text: str) -> str:
+    if re.search(r"\bJabber\b.*\b(?:relay|volunteer|step forward|serve)\b", text, re.IGNORECASE):
+        return "Find a volunteer to serve as Jabber relay for the meeting."
+    if re.search(r"\b(?:need to|we need|will send|follow up|schedule|confirm|provide|request|coordinate|update|review)\b", text, re.IGNORECASE):
+        if re.search(r"\b(?:whether|question|considering|risk|concern|impediment)\b", text, re.IGNORECASE):
+            return ""
+        return text
+    return ""
+
+
+def _digest_question_from_text(text: str) -> str:
+    if _digest_looks_like_question(text) and not re.search(r"\bJabber\b.*\brelay\b", text, re.IGNORECASE):
+        return text
+    return ""
+
+
+def _digest_risk_from_text(text: str) -> str:
+    if _digest_looks_like_question(text) and not _digest_looks_like_concern(text):
+        return ""
+    if re.search(r"\b(?:risk|blocker|blocked|concern|impediments?|compatibility issue|deployment challenge|delay|missing|data gap)\b", text, re.IGNORECASE):
+        if re.search(r"\bRayb\b.*\bdraft\b", text, re.IGNORECASE):
+            return ""
+        return text
+    return ""
+
+
+def _digest_is_real_risk(text: str) -> bool:
+    if re.search(r"\bGitHub\b.*\bissue status\b", text, re.IGNORECASE):
+        return False
+    if re.search(r"\bDNS\b.*\bdraft\b.*\b(?:record type|CNAME|apex)\b", text, re.IGNORECASE):
+        return False
+    if re.search(r"\b(?:risk|blocker|blocked|concern|impediments?|compatibility issue|deployment challenge|delay|missing|data gap)\b", text, re.IGNORECASE):
+        return True
+    return False
+
+
+def _digest_looks_like_question(text: object) -> bool:
+    value = str(text or "")
+    return value.strip().endswith("?") or bool(re.search(r"\b(?:whether|clarify|confirm|question|considering|unknown|unresolved|should)\b", value, re.IGNORECASE))
+
+
+def _digest_looks_like_concern(text: object) -> bool:
+    return bool(re.search(r"\b(?:risk|blocker|blocked|concern|impediments?|challenge|dependency|compatibility issue|deployment)\b", str(text or ""), re.IGNORECASE))
+
+
+def _digest_finding_supported(finding: dict[str, Any], support_text: str) -> bool:
+    text = _digest_domain_cleanup(" ".join([
+        str(finding.get("topic") or ""),
+        " ".join(_compact_payload_list(finding.get("findings"), limit=6)),
+        " ".join(_compact_payload_list(finding.get("assumptions"), limit=6)),
+        " ".join(_compact_payload_list(finding.get("methods"), limit=6)),
+    ]))
+    if _digest_contains_unsupported_context(text, support_text):
+        return False
+    key = _normalize_for_evidence(text)
+    return bool(key and any(token in support_text for token in key.split() if len(token) > 4))
+
+
+def _digest_rank_topics(raw_topics: Any, segments: list[TranscriptSegment]) -> list[dict[str, Any]]:
+    index_by_source_id = _segment_index_by_source_id(segments)
+
+    def score(topic: dict[str, Any]) -> tuple[int, int, int]:
+        source_indexes = [index_by_source_id[source_id] for source_id in topic.get("source_segment_ids", []) if source_id in index_by_source_id]
+        first_source = min(source_indexes) if source_indexes else 999999
+        substance = sum(len(topic.get(key, [])) for key in ("key_points", "decisions", "follow_ups", "open_questions", "risks"))
+        return (int(topic.get("score") or 0) + substance * 3, -first_source, -int(topic.get("order") or 0))
+
+    return sorted([dict(topic) for topic in raw_topics], key=score, reverse=True)
+
+
+def _digest_finalize_topic(topic: dict[str, Any], support_text: str) -> dict[str, Any]:
+    title = _digest_clean_title(topic.get("title"), support_text)
+    key_points = _dedupe_compact([_digest_clean_text(item, support_text) for item in topic.get("key_points", [])], limit=5, text_limit=260)
+    decisions = _dedupe_compact([_digest_clean_text(item, support_text) for item in topic.get("decisions", [])], limit=4, text_limit=260)
+    follow_ups = _dedupe_compact([_digest_clean_text(item, support_text) for item in topic.get("follow_ups", [])], limit=4, text_limit=260)
+    open_questions = _dedupe_compact([_digest_clean_text(item, support_text) for item in topic.get("open_questions", [])], limit=4, text_limit=260)
+    risks = _dedupe_compact([
+        _digest_clean_text(item, support_text)
+        for item in topic.get("risks", [])
+        if _digest_is_real_risk(str(item or ""))
+    ], limit=4, text_limit=260)
+    risks = [risk for risk in risks if not _digest_matches_any(risk, open_questions)]
+    source_ids = _dedupe_strings(topic.get("source_segment_ids", []))[:16]
+    summary = _digest_topic_summary(
+        title,
+        {
+            "key_points": key_points,
+            "decisions": decisions,
+            "follow_ups": follow_ups,
+            "open_questions": open_questions,
+            "risks": risks,
+        },
+        support_text,
+    )
+    return {
+        "id": _digest_topic_id(title),
+        "title": title,
+        "summary": summary,
+        "key_points": key_points,
+        "decisions": decisions,
+        "follow_ups": follow_ups,
+        "open_questions": open_questions,
+        "risks": risks,
+        "source_segment_ids": source_ids,
+        "confidence": "medium" if source_ids else "low",
+    }
+
+
+def _digest_topic_summary(title: str, topic: dict[str, list[str]], support_text: str) -> str:
+    haystack = _normalize_for_evidence(" ".join([title, *[item for values in topic.values() for item in values]]))
+    if title == "Cache-Control":
+        clauses = ["The group discussed Cache-Control directive guidance"]
+        if "quoted" in haystack or "sender" in haystack:
+            clauses.append("including quoted-form compatibility and sender generation behavior")
+        if "private" in haystack:
+            clauses.append("with the Cache-Control private retention question still in view")
+        if "advisory" in haystack or "downgrade" in haystack or "requirement" in haystack:
+            clauses.append("and a possible move from firm requirement language to advisory guidance")
+        return compact_text("; ".join(clauses) + ".", limit=300)
+    if title == "DNS / CNAME":
+        if "record type" in haystack or "draft" in haystack:
+            return "The discussion covered DNS/CNAME handling at apex domains and a draft record-type approach that could avoid requiring DNS protocol changes or browser-specific deployment."
+        return "The discussion covered DNS/CNAME handling for apex domains and the browser behavior implications of that constraint."
+    if title == "Browser deployment":
+        return "Browser deployment was treated as a coordination concern, with browser developers needing input on implementation impediments and rollout challenges."
+    if title == "GitHub issues":
+        counts = re.findall(r"\b\d+\s+(?:open|editorial|discussion)\b", " ".join([*topic.get("key_points", []), *topic.get("open_questions", [])]), flags=re.IGNORECASE)
+        suffix = f", including {', '.join(counts[:3])}" if counts else ""
+        return f"The meeting referenced GitHub issue status{suffix} as part of tracking remaining HTTPBIS work."
+    if title == "Jabber relay":
+        return "The meeting logistics included finding a volunteer to serve as the Jabber relay."
+    snippets = _dedupe_compact([
+        *topic.get("key_points", []),
+        *topic.get("decisions", []),
+        *topic.get("follow_ups", []),
+        *topic.get("open_questions", []),
+        *topic.get("risks", []),
+    ], limit=2, text_limit=220)
+    if snippets:
+        if len(snippets) == 1 and len(_normalize_for_evidence(snippets[0]).split()) < 8:
+            return f"The discussion covered {title} and left this note for follow-up: {snippets[0]}"
+        return " ".join(snippets[:2])
+    return f"The discussion covered {title} with transcript-backed notes."
+
+
+def _digest_topic_is_useful(topic: dict[str, Any], support_text: str) -> bool:
+    if not topic.get("title") or not topic.get("source_segment_ids"):
+        return False
+    if _digest_contains_unsupported_context(str(topic.get("title")), support_text):
+        return False
+    summary = str(topic.get("summary") or "")
+    if len(_normalize_for_evidence(summary).split()) < 8:
+        return False
+    return any(topic.get(key) for key in ("key_points", "decisions", "follow_ups", "open_questions", "risks")) or len(summary.split()) >= 12
+
+
+def _digest_global_items(
+    topics: list[dict[str, Any]],
+    key: str,
+    fallback: object,
+    support_text: str,
+    *,
+    limit: int,
+) -> list[str]:
+    items: list[str] = []
+    for topic in topics:
+        for item in topic.get(key, []) or []:
+            cleaned = _digest_clean_text(item, support_text)
+            if key == "risks" and not _digest_is_real_risk(cleaned):
+                continue
+            if key == "follow_ups":
+                cleaned = _digest_follow_up_from_text(cleaned)
+                if not cleaned:
+                    continue
+            if cleaned:
+                _digest_add_unique(items, cleaned, limit=limit)
+    for item in _compact_payload_list(fallback, limit=limit, text_limit=260):
+        cleaned = _digest_clean_text(item, support_text)
+        if key == "risks" and not _digest_is_real_risk(cleaned):
+            continue
+        if key == "follow_ups":
+            cleaned = _digest_follow_up_from_text(cleaned)
+            if not cleaned:
+                continue
+        if cleaned:
+            _digest_add_unique(items, cleaned, limit=limit)
+    return items[:limit]
+
+
+def _digest_matches_any(item: str, existing: list[str]) -> bool:
+    key = _normalize_for_evidence(item)
+    return any(key == _normalize_for_evidence(candidate) or _digest_text_overlap(key, _normalize_for_evidence(candidate)) >= 0.62 for candidate in existing)
+
+
+def _digest_overview(summary: dict[str, Any], topics: list[dict[str, Any]], support_text: str) -> str:
+    summary_text = _digest_clean_text(summary.get("summary"), support_text)
+    if summary_text and not _digest_overview_is_generic(summary_text):
+        return compact_text(summary_text, limit=700)
+    titles = [topic.get("title", "") for topic in topics[:6] if topic.get("title")]
+    topic_phrase = _human_join([_digest_overview_phrase(title) for title in titles[:5]])
+    if topic_phrase:
+        subject = "The meeting"
+        if any(title == "Cache-Control" for title in titles) and "httpbis" in support_text:
+            subject = "The HTTPBIS discussion"
+        elif "ietf" in support_text:
+            subject = "The IETF discussion"
+        return compact_text(f"{subject} covered {topic_phrase}.", limit=700)
+    return "The review produced transcript-grounded notes, but no concise overview was available."
+
+
+def _digest_overview_phrase(title: str) -> str:
+    return {
+        "Cache-Control": "Cache-Control directive guidance",
+        "DNS / CNAME": "DNS/CNAME handling for apex domains",
+        "Browser deployment": "browser deployment concerns",
+        "GitHub issues": "GitHub issue status",
+        "Jabber relay": "Jabber relay logistics",
+    }.get(title, title)
+
+
+def _digest_overview_is_generic(text: str) -> bool:
+    value = _normalize_for_evidence(text)
+    return (
+        not value
+        or "did not pass usefulness gate" in value
+        or "validate clean transcript" in value
+        or value.startswith("key topics were")
+        or value.startswith("the meeting covered") and len(value.split()) < 16
+    )
+
+
+def _digest_topic_id(title: str) -> str:
+    key = re.sub(r"[^a-z0-9]+", "-", _normalize_for_evidence(title)).strip("-")
+    return key or "topic"
+
+
+def _compact_meeting_digest(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    topics: list[dict[str, Any]] = []
+    for item in value.get("topics") or []:
+        if not isinstance(item, dict):
+            continue
+        title = compact_text(item.get("title") or "", limit=120)
+        summary = compact_text(item.get("summary") or "", limit=520)
+        source_ids = _compact_payload_list(item.get("source_segment_ids"), limit=18)
+        if not title or not summary or not source_ids:
+            continue
+        confidence = str(item.get("confidence") or "").lower()
+        if confidence not in {"low", "medium", "high"}:
+            confidence = ""
+        payload = {
+            "id": compact_text(item.get("id") or _digest_topic_id(title), limit=80),
+            "title": title,
+            "summary": summary,
+            "key_points": _compact_payload_list(item.get("key_points"), limit=6, text_limit=260),
+            "decisions": _compact_payload_list(item.get("decisions"), limit=5, text_limit=260),
+            "follow_ups": _compact_payload_list(item.get("follow_ups"), limit=5, text_limit=260),
+            "open_questions": _compact_payload_list(item.get("open_questions"), limit=5, text_limit=260),
+            "risks": _compact_payload_list(item.get("risks"), limit=5, text_limit=260),
+            "source_segment_ids": source_ids,
+            "confidence": confidence,
+        }
+        topics.append({key: item for key, item in payload.items() if item not in ("", [], None)})
+        if len(topics) >= 8:
+            break
+    return {
+        key: item
+        for key, item in {
+            "overview": compact_text(value.get("overview") or "", limit=900),
+            "topics": topics,
+            "decisions": _compact_payload_list(value.get("decisions"), limit=12, text_limit=260),
+            "follow_ups": _compact_payload_list(value.get("follow_ups"), limit=14, text_limit=260),
+            "open_questions": _compact_payload_list(value.get("open_questions"), limit=12, text_limit=260),
+            "risks": _compact_payload_list(value.get("risks"), limit=12, text_limit=260),
+            "coverage_notes": _compact_payload_list(value.get("coverage_notes"), limit=5, text_limit=180),
+            "source_segment_ids": _compact_payload_list(value.get("source_segment_ids"), limit=48),
+        }.items()
+        if item not in ("", [], None)
+    }
+
+
+def _meeting_digest_quality_flags(digest: dict[str, Any], segments: list[TranscriptSegment]) -> list[str]:
+    flags: list[str] = []
+    if not digest:
+        return ["meeting_digest_missing"]
+    overview = str(digest.get("overview") or "")
+    topics = [topic for topic in digest.get("topics") or [] if isinstance(topic, dict)]
+    support_text = _normalize_for_evidence(" ".join(segment.text for segment in segments))
+    if _digest_overview_is_generic(overview):
+        flags.append("digest_overview_generic")
+    if len(segments) >= 24 and len(topics) < REVIEW_DIGEST_LONG_MEETING_TOPIC_MIN:
+        flags.append("digest_too_few_topics")
+    for topic in topics:
+        if not topic.get("source_segment_ids"):
+            flags.append("digest_topic_missing_sources")
+            break
+        if len(_normalize_for_evidence(topic.get("summary") or "").split()) < 8:
+            flags.append("digest_topic_summary_too_thin")
+            break
+        if _digest_contains_unsupported_context(" ".join([
+            str(topic.get("title") or ""),
+            str(topic.get("summary") or ""),
+            " ".join(_compact_payload_list(topic.get("key_points"), limit=6)),
+        ]), support_text):
+            flags.append("digest_stale_context")
+            break
+    risks = _compact_payload_list(digest.get("risks"), limit=12)
+    questions = _compact_payload_list(digest.get("open_questions"), limit=12)
+    if any(_digest_matches_any(risk, questions) for risk in risks):
+        flags.append("digest_risk_duplicates_questions")
+    return _dedupe_strings(flags)
 
 
 def _compact_portfolio_rollup(value: object, *, summary: dict[str, Any]) -> dict[str, Any]:

@@ -314,6 +314,7 @@ class Storage:
                   coverage_notes_json text not null default '[]',
                   reference_context_json text not null default '[]',
                   context_diagnostics_json text not null default '{}',
+                  meeting_digest_json text not null default '{}',
                   created_at real not null,
                   updated_at real not null
                 );
@@ -404,6 +405,7 @@ class Storage:
         self._ensure_column("session_memory_summaries", "coverage_notes_json", "text not null default '[]'")
         self._ensure_column("session_memory_summaries", "reference_context_json", "text not null default '[]'")
         self._ensure_column("session_memory_summaries", "context_diagnostics_json", "text not null default '{}'")
+        self._ensure_column("session_memory_summaries", "meeting_digest_json", "text not null default '{}'")
         self._record_migration("20260507_session_retention")
         self._record_migration("20260504_transcript_speaker_fields")
         self._record_migration("20260504_session_memory_summaries")
@@ -413,6 +415,7 @@ class Storage:
         self._record_migration("20260510_review_summary_context_fields")
         self._record_migration("20260510_energy_consultant_review_standard")
         self._record_migration("20260510_review_terminal_summary_fields")
+        self._record_migration("20260511_review_meeting_digest")
 
     def _record_migration(self, name: str) -> None:
         self.conn.execute(
@@ -2175,6 +2178,7 @@ class Storage:
         coverage_notes: list[str] | None = None,
         reference_context: list[dict[str, Any]] | None = None,
         context_diagnostics: dict[str, Any] | None = None,
+        meeting_digest: dict[str, Any] | None = None,
     ) -> None:
         now = time.time()
         with self._lock:
@@ -2187,9 +2191,10 @@ class Storage:
                   project_workstreams_json, technical_findings_json, portfolio_rollup_json,
                   review_metrics_json, risks_json,
                   coverage_notes_json, reference_context_json, context_diagnostics_json,
+                  meeting_digest_json,
                   created_at, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(session_id) do update set
                   title = excluded.title,
                   summary = excluded.summary,
@@ -2211,6 +2216,7 @@ class Storage:
                   coverage_notes_json = excluded.coverage_notes_json,
                   reference_context_json = excluded.reference_context_json,
                   context_diagnostics_json = excluded.context_diagnostics_json,
+                  meeting_digest_json = excluded.meeting_digest_json,
                   updated_at = excluded.updated_at
                 """,
                 (
@@ -2235,6 +2241,7 @@ class Storage:
                     json.dumps(coverage_notes or []),
                     json.dumps(reference_context or []),
                     json.dumps(context_diagnostics or {}),
+                    json.dumps(meeting_digest or {}),
                     now,
                     now,
                 ),
@@ -2462,6 +2469,7 @@ class Storage:
             "coverage_notes": json.loads(row["coverage_notes_json"] or "[]"),
             "reference_context": json.loads(row["reference_context_json"] or "[]"),
             "context_diagnostics": json.loads(row["context_diagnostics_json"] or "{}"),
+            "meeting_digest": json.loads(row["meeting_digest_json"] or "{}"),
             "source_segment_ids": json.loads(row["source_segment_ids_json"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

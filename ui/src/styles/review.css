@@ -643,6 +643,15 @@
   margin: 0;
 }
 
+.meeting-summary-topic-summary {
+  color: var(--text);
+  font-size: clamp(0.92rem, 0.98vw, 1rem);
+  line-height: 1.52;
+  margin: 0;
+  max-width: 64rem;
+  overflow-wrap: break-word;
+}
+
 .meeting-summary-notes-list {
   display: grid;
   gap: 0.36rem;
@@ -686,6 +695,33 @@
 .meeting-summary-source-marker:is(:hover, :focus-visible) {
   color: var(--accent);
   opacity: 1;
+}
+
+.meeting-summary-topic-labeled-list {
+  display: grid;
+  gap: 0.32rem;
+  list-style: none;
+  margin: 0.08rem 0 0;
+  padding: 0;
+}
+
+.meeting-summary-topic-labeled-item {
+  align-items: baseline;
+  color: var(--text);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: clamp(0.88rem, 0.94vw, 0.96rem);
+  gap: 0.4rem;
+  line-height: 1.48;
+  min-width: 0;
+}
+
+.meeting-summary-topic-label {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 780;
+  letter-spacing: 0;
 }
 
 .meeting-summary-empty-line {

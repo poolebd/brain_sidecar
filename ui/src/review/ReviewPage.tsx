@@ -883,11 +883,50 @@ function SummaryNotesGroups({
         {groups.map((group) => (
           <section key={group.id} className="meeting-summary-topic-group" aria-label={group.title}>
             <h4>{group.title}</h4>
+            {group.summary && <p className="meeting-summary-topic-summary">{formatReviewDisplayText(group.summary)}</p>}
             <SummaryNotesList items={group.items} onJumpToEvidence={onJumpToEvidence} />
+            <SummaryTopicLabeledItems label="Decision" items={group.decisions ?? []} onJumpToEvidence={onJumpToEvidence} />
+            <SummaryTopicLabeledItems label="Follow-up" items={group.followUps ?? []} onJumpToEvidence={onJumpToEvidence} />
+            <SummaryTopicLabeledItems label="Question" items={group.openQuestions ?? []} onJumpToEvidence={onJumpToEvidence} />
+            <SummaryTopicLabeledItems label="Concern" items={group.risks ?? []} onJumpToEvidence={onJumpToEvidence} />
           </section>
         ))}
       </div>
     </section>
+  );
+}
+
+function SummaryTopicLabeledItems({
+  label,
+  items,
+  onJumpToEvidence,
+}: {
+  label: string;
+  items: SummaryNoteItem[];
+  onJumpToEvidence: (ids: string[]) => void;
+}) {
+  if (items.length === 0) {
+    return null;
+  }
+  return (
+    <ul className="meeting-summary-topic-labeled-list">
+      {items.map((item) => (
+        <li key={`${label}-${item.id}`} className="meeting-summary-topic-labeled-item">
+          <span className="meeting-summary-topic-label">{label}</span>
+          <span className="meeting-summary-note-text">{formatReviewDisplayText(item.text)}</span>
+          {item.sourceSegmentIds.length > 0 && (
+            <button
+              className="meeting-summary-source-marker"
+              type="button"
+              aria-label={`Show source for ${label.toLowerCase()}`}
+              onClick={() => onJumpToEvidence(item.sourceSegmentIds)}
+            >
+              source
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -918,6 +957,9 @@ function SummaryNotesList({
   items: SummaryNoteItem[];
   onJumpToEvidence: (ids: string[]) => void;
 }) {
+  if (items.length === 0) {
+    return null;
+  }
   return (
     <ul className="meeting-summary-notes-list">
       {items.map((item) => (

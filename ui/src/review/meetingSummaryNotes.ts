@@ -1,5 +1,7 @@
 import type { SidecarDisplayCard } from "../presentation";
 import type {
+  MeetingDigest,
+  MeetingDigestTopic,
   ReviewJobResponse,
   SavedTranscriptSegment,
   SessionMemorySummary,
@@ -20,7 +22,14 @@ export type SummaryNoteItem = {
 export type SummaryNoteGroup = {
   id: string;
   title: string;
+  summary?: string;
   items: SummaryNoteItem[];
+  decisions?: SummaryNoteItem[];
+  followUps?: SummaryNoteItem[];
+  openQuestions?: SummaryNoteItem[];
+  risks?: SummaryNoteItem[];
+  sourceSegmentIds?: string[];
+  confidence?: string;
 };
 
 export type MeetingSummaryNotesViewModel = {
@@ -100,6 +109,10 @@ export function buildMeetingSummaryNotesViewModel(
   const summary = job.summary;
   const transcriptSegments = job.clean_segments ?? [];
   const supportText = supportTextForJob(job);
+  const digestNotes = buildDigestNotesViewModel(job, cards, supportText);
+  if (digestNotes) {
+    return digestNotes;
+  }
   const groups: CandidateGroups = {
     key_note: [],
     decision: [],
@@ -196,6 +209,158 @@ export function buildMeetingSummaryMarkdown(viewModel: MeetingSummaryNotesViewMo
   appendMarkdownItems(lines, "Open questions", viewModel.openQuestions, seenItems);
   appendMarkdownItems(lines, "Risks / concerns", viewModel.risks, seenItems);
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+}
+
+function buildDigestNotesViewModel(
+  job: ReviewJobResponse,
+  cards: SidecarDisplayCard[],
+  supportText: string,
+): MeetingSummaryNotesViewModel | null {
+  const summary = job.summary;
+  const digest = usableMeetingDigest(summary?.meeting_digest);
+  if (!summary || !digest) {
+    return null;
+  }
+  const transcriptSegments = job.clean_segments ?? [];
+  const documentTitle = cleanNoteTitle(job.title || summary.title || "Meeting Summary", supportText) || "Meeting Summary";
+  const generatedTitle = usefulGeneratedTitle(summary.title, documentTitle, supportText);
+  const defaultSourceIds = summaryList(digest.source_segment_ids ?? summary.source_segment_ids);
+  const topicSourceIds = (topic: MeetingDigestTopic) => distinctStrings([
+    ...summaryList(topic.source_segment_ids),
+    ...defaultSourceIds,
+  ]).slice(0, 16);
+  const fromList = (
+    kind: SummaryNoteKind,
+    values: unknown,
+    sourceSegmentIds: string[],
+    prefix: string,
+  ): SummaryNoteItem[] => summaryList(values)
+    .map((value, index) => cleanNoteText(value, supportText))
+    .filter((value) => value && !shouldSuppressNote(value))
+    .map((text, index) => ({
+      id: stableItemId({ id: `${prefix}-${index}`, kind, text, sourceSegmentIds }),
+      kind,
+      text,
+      sourceSegmentIds,
+    }));
+
+  const topicDecisionItems = digest.topics.flatMap((topic) => fromList("decision", topic.decisions, topicSourceIds(topic), `${topic.id}-decision`));
+  const topicActionItems = digest.topics.flatMap((topic) => fromList("action", topic.follow_ups, topicSourceIds(topic), `${topic.id}-follow-up`));
+  const topicQuestionItems = digest.topics.flatMap((topic) => fromList("open_question", topic.open_questions, topicSourceIds(topic), `${topic.id}-question`));
+  const topicRiskItems = digest.topics.flatMap((topic) => fromList("risk", topic.risks, topicSourceIds(topic), `${topic.id}-risk`));
+
+  const decisions = mergeCandidatesFromItems([
+    ...fromList("decision", digest.decisions, defaultSourceIds, "digest-decision"),
+    ...topicDecisionItems,
+  ]);
+  const actions = mergeCandidatesFromItems([
+    ...fromList("action", digest.follow_ups, defaultSourceIds, "digest-follow-up"),
+    ...topicActionItems,
+    ...cards.filter((card) => card.category === "action").map((card, index) => ({
+      id: `digest-card-action-${index}`,
+      kind: "action" as const,
+      text: cleanNoteText(card.summary || card.title, supportText),
+      sourceSegmentIds: distinctStrings(card.sourceSegmentIds ?? []),
+      confidence: normalizedConfidence(card.confidence),
+    })).filter((item) => item.text),
+  ]).filter((item) => !noteMatchesAny(item, decisions));
+  const openQuestions = mergeCandidatesFromItems([
+    ...fromList("open_question", digest.open_questions, defaultSourceIds, "digest-question"),
+    ...topicQuestionItems,
+  ]).filter((item) => !noteMatchesAny(item, [...decisions, ...actions]));
+  const risks = mergeCandidatesFromItems([
+    ...fromList("risk", digest.risks, defaultSourceIds, "digest-risk"),
+    ...topicRiskItems,
+  ]).filter((item) => !noteMatchesAny(item, [...decisions, ...actions, ...openQuestions]));
+  const globalItems = [...decisions, ...actions, ...openQuestions, ...risks];
+
+  const noteGroups: SummaryNoteGroup[] = digest.topics
+    .map<SummaryNoteGroup | null>((topic, topicIndex) => {
+      const sourceSegmentIds = topicSourceIds(topic);
+      const title = cleanNoteTitle(topic.title, supportText);
+      const groupSummary = cleanNoteText(topic.summary, supportText);
+      const items = mergeCandidatesFromItems(fromList("key_note", topic.key_points, sourceSegmentIds, `${topic.id || topicIndex}-key`))
+        .filter((item) => !noteMatchesAny(item, globalItems))
+        .slice(0, 6);
+      const groupDecisions = topicDecisionItems
+        .filter((item) => item.sourceSegmentIds.some((id) => sourceSegmentIds.includes(id)))
+        .filter((item) => !noteMatchesAny(item, decisions))
+        .slice(0, 3);
+      const groupFollowUps = topicActionItems
+        .filter((item) => item.sourceSegmentIds.some((id) => sourceSegmentIds.includes(id)))
+        .filter((item) => !noteMatchesAny(item, actions))
+        .slice(0, 3);
+      const groupQuestions = topicQuestionItems
+        .filter((item) => item.sourceSegmentIds.some((id) => sourceSegmentIds.includes(id)))
+        .filter((item) => !noteMatchesAny(item, openQuestions))
+        .slice(0, 3);
+      const groupRisks = topicRiskItems
+        .filter((item) => item.sourceSegmentIds.some((id) => sourceSegmentIds.includes(id)))
+        .filter((item) => !noteMatchesAny(item, risks))
+        .slice(0, 3);
+      if (!title || (!groupSummary && items.length === 0 && groupDecisions.length === 0 && groupFollowUps.length === 0 && groupQuestions.length === 0 && groupRisks.length === 0)) {
+        return null;
+      }
+      return {
+        id: topic.id || stableTextId(title),
+        title,
+        summary: groupSummary,
+        items,
+        decisions: groupDecisions,
+        followUps: groupFollowUps,
+        openQuestions: groupQuestions,
+        risks: groupRisks,
+        sourceSegmentIds,
+        confidence: topic.confidence,
+      };
+    })
+    .filter((group): group is SummaryNoteGroup => Boolean(group));
+
+  const keyNotes = noteGroups.flatMap((group) => group.items).slice(0, 8);
+  const summaryParagraph = cleanNoteText(digest.overview, supportText) || buildSummaryParagraph(summary, [...keyNotes, ...globalItems], supportText, documentTitle);
+  const sourceSegmentIds = distinctStrings([
+    ...defaultSourceIds,
+    ...noteGroups.flatMap((group) => group.sourceSegmentIds ?? []),
+    ...globalItems.flatMap((item) => item.sourceSegmentIds),
+  ]);
+
+  return {
+    title: documentTitle,
+    generatedTitle,
+    summaryParagraph,
+    keyNotes,
+    noteGroups,
+    decisions,
+    actions,
+    openQuestions,
+    risks,
+    sourceSegmentIds,
+    transcriptSegments,
+    warnings: summaryWarnings(job),
+  };
+}
+
+function usableMeetingDigest(value: MeetingDigest | undefined): MeetingDigest | null {
+  if (!value || !Array.isArray(value.topics) || value.topics.length === 0) {
+    return null;
+  }
+  const topics = value.topics.filter((topic): topic is MeetingDigestTopic => (
+    Boolean(topic && typeof topic === "object" && topic.title && topic.summary)
+  ));
+  if (topics.length === 0) {
+    return null;
+  }
+  return { ...value, topics };
+}
+
+function mergeCandidatesFromItems(items: SummaryNoteItem[]): SummaryNoteItem[] {
+  return mergeCandidates(items
+    .filter((item) => item.text && !shouldSuppressNote(item.text))
+    .map((item, order) => ({
+      ...item,
+      order,
+      strength: 60,
+    })));
 }
 
 function addSummaryCandidates(
@@ -721,6 +886,10 @@ function stableItemId(item: SummaryNoteItem): string {
   return `${item.kind}-${key}${source ? `-${source}` : ""}`;
 }
 
+function stableTextId(text: string): string {
+  return normalizeNoteKey(text).slice(0, 80).replace(/\s+/g, "-") || "topic";
+}
+
 function appendMarkdownNoteGroups(lines: string[], groups: SummaryNoteGroup[], seenItems: Set<string>) {
   if (groups.length === 0) {
     return;
@@ -728,17 +897,35 @@ function appendMarkdownNoteGroups(lines: string[], groups: SummaryNoteGroup[], s
   const groupLines: string[] = [];
   for (const group of groups) {
     const items = uniqueMarkdownItems(group.items, seenItems);
-    if (items.length === 0) {
+    const decisions = uniqueMarkdownItems(group.decisions ?? [], seenItems);
+    const followUps = uniqueMarkdownItems(group.followUps ?? [], seenItems);
+    const questions = uniqueMarkdownItems(group.openQuestions ?? [], seenItems);
+    const risks = uniqueMarkdownItems(group.risks ?? [], seenItems);
+    const hasSummary = Boolean(group.summary);
+    if (!hasSummary && items.length === 0 && decisions.length === 0 && followUps.length === 0 && questions.length === 0 && risks.length === 0) {
       continue;
     }
     groupLines.push(`### ${group.title}`);
+    if (group.summary) {
+      groupLines.push(group.summary, "");
+    }
     for (const item of items) {
       groupLines.push(`- ${item.text}`);
     }
+    appendMarkdownLabeledItems(groupLines, "Decision", decisions);
+    appendMarkdownLabeledItems(groupLines, "Follow-up", followUps);
+    appendMarkdownLabeledItems(groupLines, "Question", questions);
+    appendMarkdownLabeledItems(groupLines, "Concern", risks);
     groupLines.push("");
   }
   if (groupLines.length > 0) {
     lines.push("## Notes", ...groupLines);
+  }
+}
+
+function appendMarkdownLabeledItems(lines: string[], label: string, items: SummaryNoteItem[]) {
+  for (const item of items) {
+    lines.push(`- ${label}: ${item.text}`);
   }
 }
 

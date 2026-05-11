@@ -918,6 +918,8 @@ def test_review_job_requires_approval_before_persisting_meeting_output(monkeypat
             "The review covered the gen-tie project portfolio, immediate RFI follow-up, and the Siemens review owner."
         )
         assert "BP will send the RFI log by Monday." in detail["summary"]["actions"]
+        assert detail["summary"]["meeting_digest"]["overview"]
+        assert detail["summary"]["meeting_digest"]["topics"][0]["source_segment_ids"]
 
         job = client.app.state.review_service.jobs[payload["job_id"]]
         assert job["temporary_audio_retained"] is False
@@ -1482,6 +1484,77 @@ def test_fallback_review_summary_keeps_primary_points_compact() -> None:
     assert summary["project_workstreams"]
 
 
+def test_review_summary_builds_transcript_grounded_ietf_digest() -> None:
+    segments = ietf_httpbis_review_segments()
+    extracts = _deterministic_review_extracts(segments)
+
+    summary = asyncio.run(
+        ReviewMeetingEvaluator(FakeNoStructuredReviewOllama())._aggregate_summary(
+            "ietf-httpbis-review",
+            segments,
+            extracts,
+            cards=[],
+        )
+    )
+
+    digest = summary["meeting_digest"]
+    topics = {item["title"]: item for item in digest["topics"]}
+    assert set(topics) >= {"Cache-Control", "DNS / CNAME", "Browser deployment", "GitHub issues", "Jabber relay"}
+    assert "Key topics were" not in digest["overview"]
+    assert "Cache-Control directive guidance" in digest["overview"]
+    assert "DNS/CNAME handling" in digest["overview"]
+    assert "Jabber relay logistics" in digest["overview"]
+    for topic in topics.values():
+        assert topic["source_segment_ids"]
+        assert len(topic["summary"].split()) >= 12
+
+    cache_text = json.dumps(topics["Cache-Control"], ensure_ascii=False)
+    assert "directive" in cache_text
+    assert "quoted-form" in cache_text or "quoted form" in cache_text
+    assert "private" in cache_text
+    assert "advisory guidance" in cache_text
+
+    dns_text = json.dumps(topics["DNS / CNAME"], ensure_ascii=False)
+    assert "CNAME" in dns_text
+    assert "apex" in dns_text
+    assert "record-type" in dns_text or "record type" in dns_text
+    assert "DNS protocol changes" in dns_text or "browser-specific deployment" in dns_text
+
+    github_text = json.dumps(topics["GitHub issues"], ensure_ascii=False)
+    assert "six open issues" in github_text
+    assert "editorial" in github_text
+    assert "discussion item" in github_text
+
+    assert any("Jabber relay" in item for item in digest["follow_ups"])
+    assert all("Jabber" not in item for item in digest.get("risks", []))
+    assert all("GitHub issue status" not in item for item in digest.get("risks", []))
+    assert "PGE" not in json.dumps(digest)
+    assert "Westwood" not in json.dumps(digest)
+    assert "Energy Lens" not in json.dumps(digest)
+
+
+def test_review_digest_uses_generic_transcript_topics_without_ietf_regexes() -> None:
+    segments = open_source_design_review_segments()
+
+    _cards, summary = asyncio.run(
+        ReviewMeetingEvaluator(FakeNoStructuredReviewOllama()).evaluate_existing_transcript(
+            "generic-digest-review",
+            segments,
+            save_result=False,
+        )
+    )
+
+    digest = summary["meeting_digest"]
+    titles = [topic["title"] for topic in digest["topics"]]
+    assert len(titles) >= 3
+    assert not {"Cache-Control", "DNS / CNAME", "Jabber relay"}.intersection(titles)
+    assert any("Remote-control requirements" in title for title in titles)
+    assert any("Prototype testing" in title for title in titles)
+    assert any("Marketing report" in title for title in titles)
+    assert all(topic["source_segment_ids"] for topic in digest["topics"])
+    assert all(len(topic["summary"].split()) >= 10 for topic in digest["topics"][:3])
+
+
 def test_review_summary_rejects_late_generic_summary_for_long_meeting() -> None:
     ollama = FakeWeakLateSummaryOllama()
     segments = open_source_design_review_segments()
@@ -1828,6 +1901,21 @@ def open_source_design_review_segments(*, session_id: str = "review-test") -> li
         texts.append(f"Closing delegation segment {index}: keep BP in the loop before bringing people on board or delegating responsibilities.")
     return [
         review_segment(f"seg_{index:02d}", float(index * 5), text, session_id=session_id)
+        for index, text in enumerate(texts)
+    ]
+
+
+def ietf_httpbis_review_segments(*, session_id: str = "ietf-httpbis-review") -> list[TranscriptSegment]:
+    texts = [
+        "Welcome to IETF HTTPBIS. We need one Jabber relay volunteer for the meeting.",
+        "The group discussed whether senders should be formally restricted from generating Cache-Control directives in quoted form because of compatibility issues with older implementations.",
+        "The private directive retention question remains open while the Cache-Control directive requirement may be downgraded to advisory guidance for clients.",
+        "Browser developers should be consulted about deployment impediments and implementation challenges for the HTTPBIS work.",
+        "The GitHub issue status included six open issues, two editorial issues, and one discussion item.",
+        "The DNS draft handles the CNAME problem at the apex domain with a new record type approach, avoiding DNS protocol changes and browser-specific deployment.",
+    ]
+    return [
+        review_segment(f"ietf_seg_{index + 1}", float(index * 10), text, session_id=session_id)
         for index, text in enumerate(texts)
     ]
 

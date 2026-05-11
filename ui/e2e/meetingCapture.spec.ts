@@ -47,8 +47,9 @@ test("normalizes the IETF HTTPBIS fixture and suppresses local context leakage",
   const groupTitles = notes.noteGroups.map((group) => group.title);
 
   expect(notes.title).toBe("IETF 103 HTTPBIS technical meeting (20 min)");
-  expect(notes.summaryParagraph).toContain("The HTTPBIS discussion focused on");
+  expect(notes.summaryParagraph).toContain("The HTTPBIS discussion covered");
   expect(notes.summaryParagraph).toContain("Cache-Control");
+  expect(notes.summaryParagraph).toContain("DNS/CNAME");
   expect(groupTitles).toEqual(expect.arrayContaining([
     "Cache-Control",
     "DNS / CNAME",
@@ -56,8 +57,10 @@ test("normalizes the IETF HTTPBIS fixture and suppresses local context leakage",
     "GitHub issues",
     "Jabber relay",
   ]));
+  expect(notes.noteGroups.find((group) => group.title === "Cache-Control")?.summary.split(/\s+/).length).toBeGreaterThanOrEqual(12);
+  expect(notes.noteGroups.find((group) => group.title === "DNS / CNAME")?.summary).toContain("apex domains");
   expect(allText).toContain("Cache-Control");
-  expect(allText).toContain("Cache-Control `private`");
+  expect(allText).toContain("Cache-Control private");
   expect(allText).toContain("CNAME");
   expect(allText).toContain("HTTPBIS");
   expect(allText).toContain("IETF");
@@ -76,6 +79,7 @@ test("normalizes the IETF HTTPBIS fixture and suppresses local context leakage",
 
   const markdown = buildMeetingSummaryMarkdown(notes);
   expect(markdown).toContain("### Cache-Control");
+  expect(markdown).toContain("quoted-form compatibility");
   expect(markdown).toContain("### DNS / CNAME");
   expect(markdown).toContain("### Browser deployment");
   expect(markdown).toContain("### GitHub issues");
@@ -84,6 +88,23 @@ test("normalizes the IETF HTTPBIS fixture and suppresses local context leakage",
   expect(markdown).not.toContain("PGE");
   expect(markdown).not.toContain("Westwood");
   expect(markdown).not.toContain("Energy Lens");
+});
+
+test("uses digest topics for non-IETF meetings without hard-coded topic buckets", () => {
+  const notes = buildMeetingSummaryNotesViewModel(genericDigestReviewJob(), []);
+  const markdown = buildMeetingSummaryMarkdown(notes);
+
+  expect(notes.noteGroups.map((group) => group.title)).toEqual([
+    "Requirements review",
+    "Prototype testing",
+    "Marketing report",
+  ]);
+  expect(notes.noteGroups[0].summary).toContain("button layout");
+  expect(notes.summaryParagraph).toContain("remote-control requirements");
+  expect(markdown).toContain("### Requirements review");
+  expect(markdown).toContain("Review the LCD behavior before the next design pass.");
+  expect(markdown).not.toContain("Cache-Control");
+  expect(markdown).not.toContain("Jabber");
 });
 
 function reviewJob(): ReviewJobResponse {
@@ -322,6 +343,63 @@ function ietfReviewJob(): ReviewJobResponse {
         usefulness_flags: ["low_usefulness"],
         quality_flags: ["missing_obvious_actions"],
       },
+      meeting_digest: {
+        overview: "The HTTPBIS discussion covered Cache-Control directive guidance, browser deployment concerns, GitHub issue status, DNS/CNAME handling for apex domains, and Jabber relay logistics.",
+        topics: [
+          {
+            id: "cache-control",
+            title: "Cache-Control",
+            summary: "The group discussed Cache-Control directive guidance, including quoted-form compatibility, sender generation behavior, and whether Cache-Control private should remain in the caching specification.",
+            key_points: [
+              "The group discussed whether senders should be formally restricted from generating Cache-Control directives in quoted form because of compatibility issues with older implementations.",
+              "The Cache-Control private directive retention question remains open.",
+            ],
+            decisions: ["The group considered moving the Cache-Control directive requirement from firm requirement language toward advisory guidance for clients."],
+            open_questions: ["Should senders be formally restricted from generating quoted Cache-Control directives?"],
+            source_segment_ids: ["ietf-seg-2"],
+            confidence: "medium",
+          },
+          {
+            id: "dns-cname",
+            title: "DNS / CNAME",
+            summary: "The discussion covered DNS/CNAME handling at apex domains and a draft record-type approach that could avoid requiring DNS protocol changes or browser-specific deployment.",
+            key_points: ["Rayb drafted a record type to help browsers find content when CNAME cannot be used at the apex domain."],
+            source_segment_ids: ["ietf-seg-3"],
+            confidence: "medium",
+          },
+          {
+            id: "browser-deployment",
+            title: "Browser deployment",
+            summary: "Browser deployment was treated as a coordination concern, with browser developers needing input on implementation impediments and rollout challenges.",
+            key_points: ["Browser developers should be consulted about deployment impediments for the HTTPBIS work."],
+            risks: ["Browser deployment impediments may affect implementation."],
+            source_segment_ids: ["ietf-seg-4"],
+            confidence: "medium",
+          },
+          {
+            id: "github-issues",
+            title: "GitHub issues",
+            summary: "The meeting referenced GitHub issue status as part of tracking remaining HTTPBIS work.",
+            key_points: ["The GitHub issue status was reviewed."],
+            source_segment_ids: ["ietf-seg-3"],
+            confidence: "medium",
+          },
+          {
+            id: "jabber-relay",
+            title: "Jabber relay",
+            summary: "The meeting logistics included finding a volunteer to serve as the Jabber relay.",
+            key_points: ["A volunteer was needed for the meeting Jabber relay."],
+            follow_ups: ["Find a volunteer to serve as Jabber relay for the meeting."],
+            source_segment_ids: ["ietf-seg-1"],
+            confidence: "medium",
+          },
+        ],
+        decisions: ["The group considered moving the Cache-Control directive requirement from firm requirement language toward advisory guidance for clients."],
+        follow_ups: ["Find a volunteer to serve as Jabber relay for the meeting."],
+        open_questions: ["Should senders be formally restricted from generating quoted Cache-Control directives?"],
+        risks: ["Browser deployment impediments may affect implementation."],
+        source_segment_ids: ["ietf-seg-1", "ietf-seg-2", "ietf-seg-3", "ietf-seg-4"],
+      },
       source_segment_ids: ["ietf-seg-1", "ietf-seg-2", "ietf-seg-3", "ietf-seg-4"],
       created_at: 1,
       updated_at: 1,
@@ -333,11 +411,87 @@ function ietfReviewJob(): ReviewJobResponse {
   };
 }
 
+function genericDigestReviewJob(): ReviewJobResponse {
+  const base = reviewJob();
+  return {
+    ...base,
+    id: "reviewjob-generic-digest",
+    job_id: "reviewjob-generic-digest",
+    title: "Remote-control design review",
+    clean_segments: [
+      {
+        id: "generic-seg-1",
+        text: "Review the LCD behavior before the next design pass.",
+        start_s: 0,
+        end_s: 4,
+        source_segment_ids: ["generic-seg-1"],
+      },
+      {
+        id: "generic-seg-2",
+        text: "Run prototype usability checks and confirm battery-life assumptions.",
+        start_s: 4,
+        end_s: 8,
+        source_segment_ids: ["generic-seg-2"],
+      },
+      {
+        id: "generic-seg-3",
+        text: "Add customer preferences and revised pricing assumptions to the marketing report.",
+        start_s: 8,
+        end_s: 12,
+        source_segment_ids: ["generic-seg-3"],
+      },
+    ],
+    summary: {
+      ...base.summary!,
+      session_id: "reviewjob-generic-digest",
+      title: "Remote-control design review",
+      summary: "Generic fallback summary.",
+      meeting_digest: {
+        overview: "The meeting covered remote-control requirements, prototype testing, and marketing-report updates.",
+        topics: [
+          {
+            id: "requirements-review",
+            title: "Requirements review",
+            summary: "The requirements thread focused on button layout and LCD behavior that need review before the next design pass.",
+            key_points: ["Review the LCD behavior before the next design pass."],
+            source_segment_ids: ["generic-seg-1"],
+          },
+          {
+            id: "prototype-testing",
+            title: "Prototype testing",
+            summary: "Prototype testing centered on usability checks plus battery-life assumptions that still need confirmation.",
+            key_points: ["Run prototype usability checks and confirm battery-life assumptions."],
+            source_segment_ids: ["generic-seg-2"],
+          },
+          {
+            id: "marketing-report",
+            title: "Marketing report",
+            summary: "The marketing-report thread needs customer preferences and revised pricing assumptions folded into the next update.",
+            key_points: ["Add customer preferences and revised pricing assumptions to the marketing report."],
+            source_segment_ids: ["generic-seg-3"],
+          },
+        ],
+        follow_ups: ["Review the LCD behavior before the next design pass."],
+        source_segment_ids: ["generic-seg-1", "generic-seg-2", "generic-seg-3"],
+      },
+      source_segment_ids: ["generic-seg-1", "generic-seg-2", "generic-seg-3"],
+    },
+  };
+}
+
 function notesText(notes: ReturnType<typeof buildMeetingSummaryNotesViewModel>): string {
   return [
     notes.title,
     notes.summaryParagraph,
-    ...notes.noteGroups.flatMap((group) => [group.title, ...group.items.map((item) => item.text)]),
+    ...notes.noteGroups.flatMap((group) => [
+      group.title,
+      group.summary ?? "",
+      ...group.items.map((item) => item.text),
+      ...(group.decisions ?? []).map((item) => item.text),
+      ...(group.followUps ?? []).map((item) => item.text),
+      ...(group.openQuestions ?? []).map((item) => item.text),
+      ...(group.risks ?? []).map((item) => item.text),
+    ]),
     ...notes.keyNotes.map((item) => item.text),
     ...notes.decisions.map((item) => item.text),
     ...notes.actions.map((item) => item.text),

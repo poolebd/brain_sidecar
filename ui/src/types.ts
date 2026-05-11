@@ -74,6 +74,30 @@ export type SummaryReviewMetrics = {
   context_kinds?: string[];
 };
 
+export type MeetingDigestTopic = {
+  id: string;
+  title: string;
+  summary: string;
+  key_points?: string[];
+  decisions?: string[];
+  follow_ups?: string[];
+  open_questions?: string[];
+  risks?: string[];
+  source_segment_ids: string[];
+  confidence?: "low" | "medium" | "high" | string;
+};
+
+export type MeetingDigest = {
+  overview: string;
+  topics: MeetingDigestTopic[];
+  decisions?: string[];
+  follow_ups?: string[];
+  open_questions?: string[];
+  risks?: string[];
+  coverage_notes?: string[];
+  source_segment_ids: string[];
+};
+
 export type SessionMemorySummary = {
   session_id: string;
   review_standard?: string;
@@ -95,6 +119,7 @@ export type SessionMemorySummary = {
   coverage_notes?: string[];
   reference_context?: SummaryReferenceContext[];
   context_diagnostics?: Record<string, unknown>;
+  meeting_digest?: MeetingDigest;
   diagnostics?: Record<string, unknown>;
   source_segment_ids: string[];
   created_at: number;

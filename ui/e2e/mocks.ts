@@ -511,6 +511,48 @@ export async function mockApi(page: Page, options: MockApiOptions = {}) {
             source_segment_ids: ["review-seg-2"],
           },
         ],
+        meeting_digest: {
+          overview: stressCopy
+            ? `The Apollo handoff covered BP's RFI-log follow-up for ${stressTerm}, Sunil's Siemens document review ownership, and the handoff format Greg still needs to confirm.`
+            : "The Apollo handoff covered BP's RFI-log follow-up, Sunil's Siemens document review ownership, and the handoff format Greg still needs to confirm.",
+          topics: [
+            {
+              id: "rfi-log-handoff",
+              title: "RFI log handoff",
+              summary: stressCopy
+                ? `BP owns sending the RFI log to Greg by Monday with the ${stressTerm} assumptions attached.`
+                : "BP owns sending the RFI log to Greg by Monday, making the handoff timing the main follow-up.",
+              key_points: stressCopy
+                ? [`The RFI log needs to reach Greg by Monday with ${stressTerm} context.`]
+                : ["The RFI log needs to reach Greg by Monday."],
+              follow_ups: stressCopy
+                ? [`BP will send the RFI log to Greg by Monday with ${stressTerm}.`]
+                : ["BP will send the RFI log to Greg by Monday."],
+              open_questions: ["Confirm Greg's preferred handoff format."],
+              risks: stressCopy
+                ? [`The handoff depends on ${stressTerm} reaching Greg on time.`]
+                : ["The handoff depends on the RFI log reaching Greg on time."],
+              source_segment_ids: ["review-seg-1"],
+              confidence: "high",
+            },
+            {
+              id: "siemens-document-review",
+              title: "Siemens document review",
+              summary: stressCopy
+                ? `Sunil is the named owner for the Siemens document review path across ${stressTerm} and related review references.`
+                : "Sunil is the named owner for the Siemens document review path.",
+              key_points: ["Sunil owns the Siemens document review path."],
+              decisions: ["Sunil owns the Siemens document review path."],
+              source_segment_ids: ["review-seg-2"],
+              confidence: "high",
+            },
+          ],
+          decisions: ["Sunil owns the Siemens document review path."],
+          follow_ups: stressCopy ? [`BP will send the RFI log to Greg by Monday with ${stressTerm}.`] : ["BP will send the RFI log to Greg by Monday."],
+          open_questions: ["Confirm Greg's preferred handoff format."],
+          risks: stressCopy ? [`The handoff depends on ${stressTerm} reaching Greg on time.`] : ["The handoff depends on the RFI log reaching Greg on time."],
+          source_segment_ids: ["review-seg-1", "review-seg-2"],
+        },
         technical_findings: [
           {
             topic: stressCopy ? `Siemens document review path ${stressTerm}` : "Siemens document review path",
