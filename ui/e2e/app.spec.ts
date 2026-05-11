@@ -112,18 +112,18 @@ test("Review upload creates a job without saving raw results", async ({ page }) 
   const body = (await requestPromise).postData() ?? "";
   expect(body).not.toContain("name=\"save_result\"");
 
-  await expect(review.getByRole("region", { name: "Review capture validation" })).toContainText("Needs validation");
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
   await expect(review.getByRole("group", { name: "Recorded audio controls" })).toHaveCount(0);
 });
 
-test("completed Review presents one Meeting Capture before sources", async ({ page }) => {
+test("completed Review presents one Meeting Summary before sources", async ({ page }) => {
   await remockApi(page, { latestReviewStatus: "completed_awaiting_validation" });
   const review = await openCompletedReview(page);
 
-  const summaryValidation = review.getByRole("region", { name: "Review capture validation" });
+  const summaryValidation = review.getByRole("region", { name: "Review summary validation" });
   await expect(summaryValidation).toContainText("Needs validation");
   await expect(summaryValidation.getByRole("button", { name: "Approve" })).toBeVisible();
-  await expect(summaryValidation.getByRole("button", { name: "Copy capture" })).toBeVisible();
+  await expect(summaryValidation.getByRole("button", { name: "Copy summary" })).toBeVisible();
   await expect(review.getByRole("region", { name: "Review status" })).toHaveCount(0);
   await expect(review.getByLabel("Review runtime details")).toHaveCount(0);
   await expect(review.getByRole("progressbar", { name: "Review overall progress" })).toHaveCount(0);
@@ -131,61 +131,63 @@ test("completed Review presents one Meeting Capture before sources", async ({ pa
   await expect(review.getByText("More context")).toHaveCount(0);
   await expect(review.getByRole("button", { name: "Details" })).toHaveCount(0);
   await expect(review.getByText(/more thread|more technical/i)).toHaveCount(0);
-  const captureFirstOrder = await review.evaluate(() => {
-    const toolbar = document.querySelector('[aria-label="Review capture validation"]');
-    const capture = document.querySelector('[aria-label="Meeting Capture"]');
-    const snapshot = document.querySelector('[aria-label="Snapshot"]');
-    const actions = document.querySelector('[aria-label="Follow-ups / Actions"]');
+  const summaryFirstOrder = await review.evaluate(() => {
+    const toolbar = document.querySelector('[aria-label="Review summary validation"]');
+    const summary = document.querySelector('[aria-label="Meeting Summary"]');
+    const summaryParagraph = document.querySelector('[aria-label="Summary"]');
+    const keyNotes = document.querySelector('[aria-label="Key Notes"]');
+    const actions = document.querySelector('[aria-label="Action Items / Follow-ups"]');
     const decisions = document.querySelector('[aria-label="Decisions"]');
-    const questions = document.querySelector('[aria-label="Open Questions / Unknowns"]');
-    const risks = document.querySelector('[aria-label="Risks / Blockers"]');
+    const questions = document.querySelector('[aria-label="Open Questions"]');
+    const risks = document.querySelector('[aria-label="Risks / Concerns"]');
     const technical = document.querySelector('[aria-label="Technical Findings"]');
-    const transcriptDetails = document.querySelector('[aria-label="Transcript and sources"]');
+    const transcriptDetails = document.querySelector('[aria-label="Sources / transcript"]');
     const validationCards = document.querySelector('[aria-label="Validation Evidence Cards"]');
     const workspace = document.querySelector('[aria-label="Review workspace"]');
-    const captureNodes = [capture, snapshot, actions, decisions, questions, risks, technical];
+    const summaryNodes = [summary, summaryParagraph, keyNotes, decisions, actions, questions, risks];
     return {
-      capturePresent: Boolean(capture),
+      summaryPresent: Boolean(summary),
       validationCardsVisible: Boolean(validationCards),
-      toolbarBeforeCapture: Boolean(toolbar && capture && (toolbar.compareDocumentPosition(capture) & Node.DOCUMENT_POSITION_FOLLOWING)),
-      sectionsInOrder: captureNodes.every((node, index, nodes) => (
+      toolbarBeforeSummary: Boolean(toolbar && summary && (toolbar.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      sectionsInOrder: summaryNodes.every((node, index, nodes) => (
         Boolean(node) && (index === 0 || Boolean(nodes[index - 1] && (nodes[index - 1]!.compareDocumentPosition(node!) & Node.DOCUMENT_POSITION_FOLLOWING)))
       )),
+      technicalHidden: !technical,
       transcriptClosed: transcriptDetails instanceof HTMLDetailsElement ? !transcriptDetails.open : false,
       workspaceHasColumns: workspace ? getComputedStyle(workspace).gridTemplateColumns.split(" ").filter(Boolean).length > 0 : false,
     };
   });
-  expect(captureFirstOrder).toEqual({
-    capturePresent: true,
+  expect(summaryFirstOrder).toEqual({
+    summaryPresent: true,
     validationCardsVisible: false,
-    toolbarBeforeCapture: true,
+    toolbarBeforeSummary: true,
     sectionsInOrder: true,
+    technicalHidden: true,
     transcriptClosed: true,
     workspaceHasColumns: true,
   });
-  await expect(review.getByRole("heading", { name: "Meeting Capture" })).toBeVisible();
-  await expect(review.getByRole("heading", { name: "Meeting Summary" })).toHaveCount(0);
-  await expect(review.getByRole("region", { name: "Meeting Capture" })).toContainText("Apollo document handoff");
-  await expect(review.getByRole("region", { name: "Snapshot" })).toContainText("1 follow-up captured");
-  await expect(review.getByRole("region", { name: "Follow-ups / Actions" })).toContainText("Send RFI log");
-  await expect(review.getByRole("region", { name: "Follow-ups / Actions" })).toContainText("Owner: BP");
-  await expect(review.getByRole("region", { name: "Follow-ups / Actions" })).toContainText("Due: Monday");
-  await expect(review.getByRole("region", { name: "Follow-ups / Actions" })).toContainText("Project: Apollo");
+  await expect(review.getByRole("heading", { name: "Meeting Summary" })).toBeVisible();
+  await expect(review.getByRole("heading", { name: "Meeting Capture" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Meeting Summary" })).toContainText("Apollo document handoff");
+  await expect(review.getByRole("region", { name: "Summary", exact: true })).toContainText("RFI log");
+  await expect(review.getByRole("region", { name: "Key Notes" })).not.toContainText("captured");
+  await expect(review.getByRole("region", { name: "Action Items / Follow-ups" })).toContainText("RFI log");
   await expect(review.getByRole("region", { name: "Decisions" })).toContainText("Sunil owns the Siemens document review path");
-  await expect(review.getByRole("region", { name: "Open Questions / Unknowns" })).toContainText("Confirm Greg's preferred handoff format");
-  await expect(review.getByRole("region", { name: "Risks / Blockers" })).toContainText("current guidance");
-  await expect(review.getByRole("region", { name: "Technical Findings" })).toContainText("EE Index");
+  await expect(review.getByRole("region", { name: "Open Questions" })).toContainText("Confirm Greg's preferred handoff format");
+  await expect(review.getByRole("region", { name: "Risks / Concerns" })).toContainText("handoff depends");
+  await expect(review.getByRole("region", { name: "Technical Findings" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Parking Lot / Low Confidence" })).toHaveCount(0);
   await expect(review.getByText("Validation Evidence")).toHaveCount(0);
   await expect(review.getByRole("region", { name: "Evidence Quality" })).toHaveCount(0);
   await expect(review.getByRole("region", { name: "Meeting Follow-up" })).toHaveCount(0);
   await expect(review.getByRole("region", { name: "Project / Site Threads" })).toHaveCount(0);
   await expect(review.getByRole("region", { name: "Technical Review" })).toHaveCount(0);
-  await expect(review.getByRole("region", { name: "Review capture validation" })).not.toContainText("...");
+  await expect(review.getByRole("region", { name: "Review summary validation" })).not.toContainText("...");
   await expect(review.getByLabel("Reference Context")).toHaveCount(0);
   await expect(review.getByRole("region", { name: "Clean Transcript" })).toHaveCount(0);
   await expect(review.getByText("Transcript Evidence")).toBeHidden();
   await expect(review.getByRole("region", { name: "Validation Evidence Cards" })).toHaveCount(0);
-  await review.getByLabel("Transcript and sources").locator("summary").first().click();
+  await review.getByLabel("Sources / transcript").locator("summary").first().click();
   await expect(review.getByRole("region", { name: "Clean Transcript" })).toContainText("BP will send the RFI log to Greg by Monday.");
   await expect(review.getByRole("region", { name: "Clean Transcript" })).toContainText("Other speaker");
 });
@@ -195,7 +197,7 @@ test("Approve saves a completed Review as a Session and deletes temporary audio"
   const review = await openCompletedReview(page);
 
   await review.getByRole("button", { name: "Approve" }).click();
-  await expect(review.getByRole("region", { name: "Review capture validation" })).toContainText("Saved to Sessions");
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Saved to Sessions");
   await expect(review.getByRole("region", { name: "Review status" })).toHaveCount(0);
   await review.getByRole("button", { name: "Open Session" }).click();
   await expect(page.getByRole("main", { name: "Sessions" })).toBeVisible();
@@ -212,7 +214,7 @@ test("Discard removes validation actions and never exposes Open Session", async 
   await expect(review.getByRole("button", { name: "Open Session" })).toHaveCount(0);
   await expect(review.getByRole("region", { name: "Review status" })).toContainText("Discarded");
   await expect(review.getByRole("region", { name: "Review status" })).toContainText("Audio deleted");
-  await expect(review.getByRole("button", { name: "Copy capture" })).toBeDisabled();
+  await expect(review.getByRole("button", { name: "Copy summary" })).toBeDisabled();
 });
 
 test("New audio resets the workspace and exposes upload controls", async ({ page }) => {
@@ -223,7 +225,7 @@ test("New audio resets the workspace and exposes upload controls", async ({ page
   await review.getByRole("button", { name: "New audio" }).click();
   await expect(review.getByLabel("Review audio upload")).toBeVisible();
   await expect(review.getByRole("region", { name: "No review loaded" })).toContainText("Upload audio");
-  await expect(review.getByRole("region", { name: "Review capture validation" })).toHaveCount(0);
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toHaveCount(0);
 });
 
 test("Review action buttons hold disabled states while requests are in flight", async ({ page }) => {
@@ -313,7 +315,7 @@ test("Review queue opens, closes, and selects another job without losing active 
   await expect(review.getByRole("region", { name: "Review queue" })).toHaveCount(0);
   await queueToggle.click();
   await queue.getByRole("button", { name: /Apollo call/ }).click();
-  await expect(review.getByRole("region", { name: "Review capture validation" })).toContainText("Needs validation");
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
 });
 
 test("Review copy, evidence, and source-jump actions work", async ({ page }) => {
@@ -321,33 +323,33 @@ test("Review copy, evidence, and source-jump actions work", async ({ page }) => 
   await installClipboardStub(page);
   const review = await openCompletedReview(page);
 
-  await review.getByRole("button", { name: "Copy capture" }).click();
+  await review.getByRole("button", { name: "Copy summary" }).click();
   const brief = await clipboardText(page);
-  expect(brief).toContain("# Meeting Capture");
-  expect(brief).toContain("## Snapshot");
-  expect(brief).toContain("## Follow-ups / Actions");
+  expect(brief).toContain("# Meeting Summary");
+  expect(brief).toContain("## Summary");
+  expect(brief).toContain("## Key Notes");
   expect(brief).toContain("## Decisions");
-  expect(brief).toContain("## Open Questions / Unknowns");
-  expect(brief).toContain("## Risks / Blockers");
-  expect(brief).toContain("## Important Facts / Context");
-  expect(brief).toContain("## Technical Findings");
-  expect(brief).toContain("## Source Notes");
-  expect(brief).toContain("Owner: BP");
-  expect(brief).toContain("Due: Monday");
+  expect(brief).toContain("## Action Items / Follow-ups");
+  expect(brief).toContain("## Open Questions");
+  expect(brief).toContain("## Risks / Concerns");
   expect(brief).not.toContain("## Executive Summary");
   expect(brief).not.toContain("## Reference Context");
   expect(brief).not.toContain("## Evidence Cards");
-  expect(countOccurrences(brief, "Send RFI log")).toBe(1);
+  expect(brief).not.toContain("## Technical Findings");
+  expect(brief).not.toContain("## Source Notes");
+  const copiedBullets = brief.split("\n").filter((line) => line.startsWith("- "));
+  expect(new Set(copiedBullets).size).toBe(copiedBullets.length);
+  expect(brief).toContain("RFI log");
 
   await expect(review.getByRole("region", { name: "Clean Transcript" })).toHaveCount(0);
-  await review.getByLabel("Transcript and sources").locator("summary").first().click();
+  await review.getByLabel("Sources / transcript").locator("summary").first().click();
   await review.getByRole("button", { name: "Copy transcript" }).click();
   expect(await clipboardText(page)).toContain("Extended evidence row 30 keeps the Apollo review grounded");
-  await review.getByLabel("Transcript and sources").locator("summary").first().click();
+  await review.getByLabel("Sources / transcript").locator("summary").first().click();
 
   await expect(review.getByRole("region", { name: "Validation Evidence Cards" })).toHaveCount(0);
-  await review.getByRole("region", { name: "Follow-ups / Actions" }).getByRole("button", { name: "Evidence" }).click();
-  await expect(review.getByLabel("Transcript and sources")).toHaveJSProperty("open", true);
+  await review.getByRole("region", { name: "Action Items / Follow-ups" }).getByRole("button", { name: "source" }).first().click();
+  await expect(review.getByLabel("Sources / transcript")).toHaveJSProperty("open", true);
   await expect(review.locator('[data-transcript-id="review-seg-1"]')).toHaveClass(/highlight/);
 });
 
@@ -357,21 +359,21 @@ test("Review decision toolbar stays visible while transcript sources toggle", as
 
   await expect(review.getByRole("region", { name: "Review status" })).toHaveCount(0);
   await expect(review.getByRole("region", { name: "Review progress" })).toHaveCount(0);
-  await expect(review.getByRole("region", { name: "Review capture validation" })).toContainText("Needs validation");
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
   await expect(review.getByText("Status and audio retention")).toHaveCount(0);
   await expect(review.getByText("Processing details")).toHaveCount(0);
   await expect(review.getByText("Upload another file")).toHaveCount(0);
   await expect(review.getByRole("button", { name: "New audio" })).toBeVisible();
   await expect(review.getByLabel("Review runtime details")).toHaveCount(0);
   await expect(review.getByRole("button", { name: "Details" })).toHaveCount(0);
-  await expect(review.getByRole("region", { name: "Follow-ups / Actions" }).getByRole("button", { name: "Evidence" })).toBeVisible();
+  await expect(review.getByRole("region", { name: "Action Items / Follow-ups" }).getByRole("button", { name: "source" }).first()).toBeVisible();
 
-  const transcriptDetails = review.getByLabel("Transcript and sources");
+  const transcriptDetails = review.getByLabel("Sources / transcript");
   await expect(transcriptDetails).toHaveJSProperty("open", false);
   await transcriptDetails.locator("summary").first().click();
   await expect(transcriptDetails).toHaveJSProperty("open", true);
   await expect(review.getByRole("region", { name: "Clean Transcript" })).toContainText("BP will send the RFI log to Greg by Monday.");
-  await expect(review.getByRole("region", { name: "Review capture validation" })).toContainText("Needs validation");
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
   await transcriptDetails.locator("summary").first().click();
   await expect(transcriptDetails).toHaveJSProperty("open", false);
 });
@@ -380,7 +382,7 @@ test("Review source panel scrolls and item evidence highlights transcript rows",
   await remockApi(page, { latestReviewStatus: "completed_awaiting_validation", longReviewEvidence: true });
   const review = await openCompletedReview(page);
 
-  const transcriptDetails = review.getByLabel("Transcript and sources");
+  const transcriptDetails = review.getByLabel("Sources / transcript");
   await expect(transcriptDetails).toHaveJSProperty("open", false);
   await transcriptDetails.locator("summary").first().click();
   await expect(transcriptDetails).toHaveJSProperty("open", true);
@@ -407,12 +409,12 @@ test("Review source panel scrolls and item evidence highlights transcript rows",
   const transcriptScroll = review.locator(".review-transcript-scroll");
   await transcriptScroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   const beforeHeight = await page.evaluate(() => document.documentElement.scrollHeight);
-  await review.getByRole("region", { name: "Follow-ups / Actions" }).getByRole("button", { name: "Evidence" }).click();
+  await review.getByRole("region", { name: "Action Items / Follow-ups" }).getByRole("button", { name: "source" }).first().click();
   await expect(review.locator('[data-transcript-id="review-seg-1"]')).toHaveClass(/highlight/);
   await expect.poll(() => transcriptScroll.evaluate((element) => element.scrollTop)).toBeLessThan(120);
   const afterHeight = await page.evaluate(() => document.documentElement.scrollHeight);
   expect(afterHeight - beforeHeight).toBeLessThan(500);
-  await expect(review.getByRole("region", { name: "Meeting Capture" })).toBeVisible();
+  await expect(review.getByRole("region", { name: "Meeting Summary" })).toBeVisible();
 
   for (const size of [
     { width: 1440, height: 900 },
@@ -444,15 +446,15 @@ test("Review typography fits and layout flexes across dense content", async ({ p
     { width: 320, height: 844 },
   ]) {
     await page.setViewportSize(size);
-    const transcriptDetails = review.getByLabel("Transcript and sources");
+    const transcriptDetails = review.getByLabel("Sources / transcript");
     const transcriptIsOpen = await transcriptDetails.evaluate((element) => (
       element instanceof HTMLDetailsElement ? element.open : false
     ));
     if (transcriptIsOpen) {
       await transcriptDetails.locator("summary").first().click();
     }
-    await expect(review.getByRole("region", { name: "Review capture validation" })).toBeVisible();
-    await expect(review.getByRole("region", { name: "Meeting Capture" })).toBeVisible();
+    await expect(review.getByRole("region", { name: "Review summary validation" })).toBeVisible();
+    await expect(review.getByRole("region", { name: "Meeting Summary" })).toBeVisible();
     await expect(review.getByRole("region", { name: "Clean Transcript" })).toHaveCount(0);
 
     const queueMenu = review.getByLabel("Review queue menu");
@@ -460,7 +462,7 @@ test("Review typography fits and layout flexes across dense content", async ({ p
     await expect(review.getByRole("region", { name: "Review queue" })).toBeVisible();
     const queuePlacement = await review.evaluate(() => {
       const queue = document.querySelector('[aria-label="Review queue"]');
-      const summary = document.querySelector('[aria-label="Review capture validation"]');
+      const summary = document.querySelector('[aria-label="Review summary validation"]');
       const queueBox = queue?.getBoundingClientRect();
       const summaryBox = summary?.getBoundingClientRect();
       return Boolean(queueBox && summaryBox && queueBox.bottom <= summaryBox.top + 1);
@@ -472,7 +474,7 @@ test("Review typography fits and layout flexes across dense content", async ({ p
     await queueMenu.locator("summary").first().click();
 
     await expectReviewSummaryHierarchy(page);
-    await expect(review.getByRole("region", { name: "Review capture validation" })).not.toContainText("...");
+    await expect(review.getByRole("region", { name: "Review summary validation" })).not.toContainText("...");
 
     await transcriptDetails.locator("summary").first().click();
     await expect(review.getByRole("region", { name: "Clean Transcript" })).toBeVisible();
@@ -491,7 +493,7 @@ test("Review typography fits and layout flexes across dense content", async ({ p
 
     const heightBeforeInlineEvidence = await page.evaluate(() => document.documentElement.scrollHeight);
     await expect(review.getByRole("button", { name: "Details" })).toHaveCount(0);
-    await expect(review.getByRole("region", { name: "Follow-ups / Actions" }).getByRole("button", { name: "Evidence" })).toBeVisible();
+    await expect(review.getByRole("region", { name: "Action Items / Follow-ups" }).getByRole("button", { name: "source" }).first()).toBeVisible();
     await expectReviewTextFit(page);
     await expectReviewSummaryTextVisible(page);
     await expectReviewControlTargetsAndFocus(page);
@@ -539,9 +541,9 @@ test("queued and running Review jobs show compact progress without completed-sum
     await remockApi(page, { latestReviewStatus: status });
     const review = await openReviewPage(page);
     await expect(review.getByRole("region", { name: "Review status" })).toBeVisible();
-    await expect(review.getByRole("region", { name: "Review capture validation" })).toHaveCount(0);
+    await expect(review.getByRole("region", { name: "Review summary validation" })).toHaveCount(0);
     await expect(review.getByRole("button", { name: "Approve" })).toHaveCount(0);
-    await expect(review.getByRole("button", { name: "Copy capture" })).toHaveCount(0);
+    await expect(review.getByRole("button", { name: "Copy summary" })).toHaveCount(0);
     await expect(review.getByRole("region", { name: "Review progress" })).toBeVisible();
     await expect(review.getByRole("region", { name: "Clean Transcript" })).toHaveCount(0);
   }
@@ -561,7 +563,7 @@ test("review status calls out low-usefulness summaries before approval", async (
   await review.getByText("Queue (1)").click();
   await review.getByRole("button", { name: /Apollo/ }).click();
 
-  const decisionToolbar = review.getByRole("region", { name: "Review capture validation" });
+  const decisionToolbar = review.getByRole("region", { name: "Review summary validation" });
   await expect(decisionToolbar).toContainText("Needs manual validation");
   await expect(decisionToolbar).toContainText("2 usefulness flags");
   await expect(review.getByRole("region", { name: "Review status" })).toHaveCount(0);
@@ -2215,7 +2217,7 @@ async function openCompletedReview(page: Page) {
     await queueToggle.first().click();
   }
   await review.getByRole("button", { name: /Apollo/ }).click();
-  await expect(review.getByRole("region", { name: "Review capture validation" })).toContainText("Needs validation");
+  await expect(review.getByRole("region", { name: "Review summary validation" })).toContainText("Needs validation");
   const queueMenu = review.getByLabel("Review queue menu");
   if (await queueMenu.count()) {
     const queueOpen = await queueMenu.evaluate((element) => (
@@ -2287,10 +2289,9 @@ async function expectReviewTextFit(page: Page) {
     };
     const targets = [
       ".review-summary-toolbar",
-      ".meeting-capture-view",
-      ".meeting-capture-view *",
-      ".meeting-capture-item",
-      ".meeting-capture-meta span",
+      ".meeting-summary-notes",
+      ".meeting-summary-notes *",
+      ".meeting-summary-note-item",
       ".meeting-summary-brief",
       ".meeting-summary-brief *",
       ".meeting-summary-hero",
@@ -2324,12 +2325,10 @@ async function expectReviewTextFit(page: Page) {
       ".review-queue-item span",
       ".review-queue-item strong",
       ".review-queue-item small",
-      ".meeting-capture-hero h2",
-      ".meeting-capture-snapshot-list li",
-      ".meeting-capture-item-main strong",
-      ".meeting-capture-item-main p",
-      ".meeting-capture-meta span",
-      ".meeting-capture-evidence-quote",
+      ".meeting-summary-notes-hero h2",
+      ".meeting-summary-notes-hero p",
+      ".meeting-summary-note-item span",
+      ".meeting-summary-empty-line",
       ".meeting-summary-hero h2",
       ".meeting-summary-hero p",
       ".meeting-summary-evidence span",
@@ -2351,9 +2350,9 @@ async function expectReviewTextFit(page: Page) {
     ];
     const fontTargets = [
       ".review-summary-toolbar",
-      ".meeting-capture-view",
-      ".meeting-capture-section",
-      ".meeting-capture-item",
+      ".meeting-summary-notes",
+      ".meeting-summary-notes-section",
+      ".meeting-summary-note-item",
       ".meeting-summary-brief",
       ".meeting-summary-brief-section",
       ".meeting-summary-brief-item",
@@ -2391,6 +2390,9 @@ async function expectReviewTextFit(page: Page) {
         if (!wrapsWords) {
           result.push(`Long-word wrapping is not enabled in ${selector}: ${describe(element)}`);
         }
+        if (selector.startsWith(".meeting-summary-") && style.overflowWrap === "anywhere") {
+          result.push(`Meeting summary text uses overflow-wrap:anywhere in ${selector}: ${describe(element)}`);
+        }
       }
     }
     for (const selector of fontTargets) {
@@ -2413,10 +2415,10 @@ async function expectReviewTextFit(page: Page) {
 
 async function expectReviewSummaryHierarchy(page: Page) {
   const result = await page.evaluate(() => {
-    const summaryPrimary = document.querySelector('[aria-label="Review capture validation"]');
-    const transcriptDetails = document.querySelector('[aria-label="Transcript and sources"]');
+    const summaryPrimary = document.querySelector('[aria-label="Review summary validation"]');
+    const transcriptDetails = document.querySelector('[aria-label="Sources / transcript"]');
     const transcript = document.querySelector('[aria-label="Clean Transcript"]');
-    const hierarchyLabels = ["Meeting Capture", "Snapshot", "Follow-ups / Actions", "Decisions", "Open Questions / Unknowns", "Risks / Blockers", "Technical Findings"];
+    const hierarchyLabels = ["Meeting Summary", "Summary", "Key Notes", "Decisions", "Action Items / Follow-ups", "Open Questions", "Risks / Concerns"];
     const hierarchyNodes = hierarchyLabels.map((label) => document.querySelector(`[aria-label="${label}"]`));
     const hierarchyIndexes = hierarchyNodes.map((node) => node ? Array.from(document.querySelectorAll("[aria-label]")).indexOf(node) : -1);
     const summaryBox = summaryPrimary?.getBoundingClientRect();
@@ -2479,12 +2481,11 @@ async function expectReviewSummaryTextVisible(page: Page) {
     const selectors = [
       ".review-summary-toolbar h2",
       ".review-summary-toolbar span",
-      ".meeting-capture-hero h2",
-      ".meeting-capture-snapshot-list li",
-      ".meeting-capture-item-main strong",
-      ".meeting-capture-item-main p",
-      ".meeting-capture-meta span",
-      ".meeting-capture-evidence-quote",
+      ".meeting-summary-notes-hero h2",
+      ".meeting-summary-notes-hero p",
+      ".meeting-summary-notes-section h3",
+      ".meeting-summary-note-item span",
+      ".meeting-summary-empty-line",
       ".meeting-summary-hero h2",
       ".meeting-summary-hero p",
       ".meeting-summary-evidence span",
@@ -2502,6 +2503,17 @@ async function expectReviewSummaryTextVisible(page: Page) {
         }
         if (["hidden", "clip"].includes(style.overflowY) && element.scrollHeight > element.clientHeight + tolerance) {
           result.push(`Summary text clips vertically in ${selector}: ${describe(element)}`);
+        }
+        if (selector === ".meeting-summary-note-item span") {
+          const lineHeight = style.lineHeight === "normal" ? Number.parseFloat(style.fontSize) * 1.2 : Number.parseFloat(style.lineHeight);
+          const text = (element.textContent ?? "").trim();
+          const hasUsefulWord = /\b[A-Za-z0-9-]{8,}\b/.test(text);
+          if (hasUsefulWord && element.getBoundingClientRect().width < 120 && element.getBoundingClientRect().height > lineHeight * 3.5) {
+            result.push(`Summary note appears squeezed into narrow vertical wrapping: ${describe(element)}`);
+          }
+          if (style.overflowWrap === "anywhere") {
+            result.push(`Summary note uses overflow-wrap:anywhere: ${describe(element)}`);
+          }
         }
       }
     }
@@ -2627,12 +2639,9 @@ async function expectReviewTextSpacingFit(page: Page) {
     const selectors = [
       ".review-summary-toolbar h2",
       ".review-summary-toolbar span",
-      ".meeting-capture-hero h2",
-      ".meeting-capture-snapshot-list li",
-      ".meeting-capture-item-main strong",
-      ".meeting-capture-item-main p",
-      ".meeting-capture-meta span",
-      ".meeting-capture-evidence-quote",
+      ".meeting-summary-notes-hero h2",
+      ".meeting-summary-notes-hero p",
+      ".meeting-summary-note-item span",
       ".meeting-summary-hero h2",
       ".meeting-summary-hero p",
       ".meeting-summary-keypoints span",

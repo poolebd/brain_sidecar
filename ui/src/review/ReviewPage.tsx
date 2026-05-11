@@ -1,7 +1,7 @@
 import { useState, type ChangeEvent, type RefObject } from "react";
 import { type MeetingOutputBucket, type SidecarDisplayCard, type TranscriptEvent } from "../presentation";
 import { FilePickAction } from "../shared/FilePickAction";
-import type { MeetingCaptureItem, MeetingCaptureViewModel } from "./meetingCapture";
+import type { MeetingSummaryNotesViewModel, SummaryNoteItem } from "./meetingSummaryNotes";
 import type {
   ReviewJobResponse,
   ReviewStep,
@@ -30,7 +30,7 @@ type ReviewPageProps = {
   error: string;
   transcriptEvents: TranscriptEvent[];
   cards: SidecarDisplayCard[];
-  capture: MeetingCaptureViewModel | null;
+  summaryNotes: MeetingSummaryNotesViewModel | null;
   groups: Record<MeetingOutputBucket, SidecarDisplayCard[]>;
   expandedCards: Set<string>;
   highlightedSourceIds: Set<string>;
@@ -61,7 +61,7 @@ export function ReviewPage({
   error,
   transcriptEvents,
   cards,
-  capture,
+  summaryNotes,
   groups,
   expandedCards,
   highlightedSourceIds,
@@ -132,14 +132,14 @@ export function ReviewPage({
           />
           <section className="empty-state review-empty-state" aria-label="No review loaded">
             <h2>{busy === "loading-latest" ? "Looking for the latest review" : "No review loaded"}</h2>
-            <p>{busy === "loading-latest" ? "Checking whether a review is already in flight." : "Upload audio to generate a clean transcript and meeting capture."}</p>
+            <p>{busy === "loading-latest" ? "Checking whether a review is already in flight." : "Upload audio to generate quick meeting notes."}</p>
           </section>
         </>
       )}
 
       {job && summaryPrimary && (
         <section className="review-summary-workbench" aria-label="Review workspace">
-          <section className="review-summary-primary" aria-label="Review capture validation">
+          <section className="review-summary-primary" aria-label="Review summary validation">
             <SummaryValidationToolbar
               job={job}
               busy={busy}
@@ -152,19 +152,19 @@ export function ReviewPage({
               onDiscard={onDiscard}
               onOpenSession={onOpenSession}
             />
-            {capture && (
-              <MeetingCaptureView
-                capture={capture}
+            {summaryNotes && (
+              <MeetingSummaryNotesView
+                notes={summaryNotes}
                 onJumpToEvidence={revealTranscriptAndJumpIds}
               />
             )}
             <details
-              className="review-ops-details review-transcript-details meeting-capture-sources"
-              aria-label="Transcript and sources"
+              className="review-ops-details review-transcript-details meeting-summary-sources"
+              aria-label="Sources / transcript"
               open={transcriptOpen}
               onToggle={(event) => setTranscriptOpen(event.currentTarget.open)}
             >
-              <summary>Sources</summary>
+              <summary>Sources / transcript</summary>
               <TranscriptEvidencePanel
                 job={job}
                 running={running}
@@ -201,7 +201,6 @@ export function ReviewPage({
                 expandedCards={expandedCards}
                 showDebugMetadata={showDebugMetadata}
                 reviewReady={reviewReady}
-                summaryPrimary={summaryPrimary}
                 onToggleCard={onToggleCard}
                 onJumpToEvidence={onJumpToEvidence}
                 onCopyCard={onCopyCard}
@@ -275,8 +274,8 @@ function ReviewHeader({
     <header className="page-header review-page-header">
       <div>
         <p className="label">Review</p>
-        <h1>Meeting Capture</h1>
-        <span>Review the captured actions, decisions, questions, risks, and facts before saving.</span>
+        <h1>Meeting Summary</h1>
+        <span>Quick notes from the reviewed meeting audio.</span>
       </div>
       <div className="page-header-actions">
         <ReviewQueueMenu open={queueOpen} jobs={jobs} onOpenChange={setQueueOpen} />
@@ -446,19 +445,19 @@ function SummaryValidationToolbar({
     ? "Saved to Sessions"
     : awaitingValidation
       ? needsManualValidation ? "Needs manual validation" : "Needs validation"
-      : "Capture ready";
+      : "Summary ready";
   const validationDetail = needsManualValidation
     ? `${usefulness?.flagsLabel || "Usefulness flag"} found. Validate transcript evidence before saving.`
-    : "Review the captured actions, decisions, questions, risks, and facts before saving.";
+    : "Review the quick meeting notes before saving.";
   return (
     <div className="review-summary-toolbar">
       <div>
-        <p className="label">Capture</p>
+        <p className="label">Summary</p>
         <h2>{validationTitle}</h2>
         <span>{validationDetail}</span>
       </div>
-      <div className="review-summary-actions" aria-label="Capture validation actions">
-        <button className="secondary" type="button" disabled={!reviewReady || (!job.summary && cardsLength === 0)} onClick={onCopyCapture}>Copy capture</button>
+      <div className="review-summary-actions" aria-label="Summary validation actions">
+        <button className="secondary" type="button" disabled={!reviewReady || (!job.summary && cardsLength === 0)} onClick={onCopyCapture}>Copy summary</button>
         {awaitingValidation && (
           <>
             <button className="primary" type="button" onClick={onApprove} disabled={busy === "approving"}>{busy === "approving" ? "Approving..." : "Approve"}</button>
@@ -693,10 +692,10 @@ function ReviewProgressDetails({ job, compact = false }: { job: ReviewJobRespons
 
 function ReviewSummaryPlaceholder({ job, running }: { job: ReviewJobResponse; running: boolean }) {
   return (
-    <section className="review-summary-placeholder" aria-label="Meeting Capture">
-      <p className="label">Meeting Capture</p>
-      <h2>{running ? job.title || "Meeting capture is being generated" : "No meeting capture yet"}</h2>
-      <p>{running ? "Review is still conditioning the transcript and extracting meeting output." : "This review has no capture output yet."}</p>
+    <section className="review-summary-placeholder" aria-label="Meeting Summary">
+      <p className="label">Meeting Summary</p>
+      <h2>{running ? job.title || "Meeting summary is being generated" : "No meeting summary yet"}</h2>
+      <p>{running ? "Review is still conditioning the transcript and extracting meeting notes." : "This review has no summary output yet."}</p>
     </section>
   );
 }
@@ -758,7 +757,6 @@ function SupportingCardsPanel({
   expandedCards,
   showDebugMetadata,
   reviewReady,
-  summaryPrimary,
   onToggleCard,
   onJumpToEvidence,
   onCopyCard,
@@ -770,54 +768,23 @@ function SupportingCardsPanel({
   expandedCards: Set<string>;
   showDebugMetadata: boolean;
   reviewReady: boolean;
-  summaryPrimary: boolean;
   onToggleCard: (id: string) => void;
   onJumpToEvidence: (card: SidecarDisplayCard) => void;
   onCopyCard: (card: SidecarDisplayCard) => void;
   onCopyBrief: () => void;
 }) {
   const visibleSections = MEETING_OUTPUT_SECTIONS.filter((section) => (groups[section.bucket] ?? []).length > 0);
-  const validationCards = summaryPrimary ? reviewValidationEvidenceCards(job.summary ?? null, cards) : [];
-  const coveredCardCount = summaryPrimary ? Math.max(0, cards.length - validationCards.length) : 0;
-  const panelLabel = summaryPrimary ? "Validation Evidence Cards" : "Supporting Meeting Cards";
-  const validationEmpty = summaryPrimary && validationCards.length === 0;
   return (
-    <section className={`review-output-panel review-supporting-stack ${validationEmpty ? "review-validation-empty" : ""}`} aria-label={panelLabel}>
+    <section className="review-output-panel review-supporting-stack" aria-label="Supporting Meeting Cards">
       <div className="section-heading-row">
-        <h2>{summaryPrimary ? "Validation Evidence" : "Evidence Cards"}</h2>
+        <h2>Evidence Cards</h2>
         <div className="button-row">
-          <span className="chip">
-            {summaryPrimary ? `${validationCards.length} shown${coveredCardCount > 0 ? ` · ${coveredCardCount} covered` : ""}` : `${cards.length} items`}
-          </span>
-          {!summaryPrimary && (
-            <button className="secondary" type="button" disabled={!reviewReady || (!job.summary && cards.length === 0)} onClick={onCopyBrief}>Copy capture</button>
-          )}
+          <span className="chip">{cards.length} items</span>
+          <button className="secondary" type="button" disabled={!reviewReady || (!job.summary && cards.length === 0)} onClick={onCopyBrief}>Copy summary</button>
         </div>
       </div>
       <div className="review-card-list scroll">
-        {summaryPrimary ? (
-          validationCards.length === 0 ? (
-            <p className="empty-note">
-              {cards.length > 0
-                ? "No separate validation flags; repeated action and decision cards are covered by the summary."
-                : reviewReady ? "No validation evidence cards were produced." : "Validation evidence is pending."}
-            </p>
-          ) : (
-            <div className="review-validation-list">
-              {validationCards.map((item) => (
-                <ReviewValidationEvidenceCard
-                  key={`review-validation-${item.card.id}`}
-                  item={item}
-                  expanded={expandedCards.has(item.card.id)}
-                  showDebugMetadata={showDebugMetadata}
-                  onToggle={() => onToggleCard(item.card.id)}
-                  onJumpToEvidence={() => onJumpToEvidence(item.card)}
-                  onCopy={() => onCopyCard(item.card)}
-                />
-              ))}
-            </div>
-          )
-        ) : visibleSections.length === 0 ? (
+        {visibleSections.length === 0 ? (
           <p className="empty-note">{reviewReady ? "No grounded meeting cards were produced." : "Meeting output is pending."}</p>
         ) : visibleSections.map((section) => (
           <section key={section.bucket} className="work-note-section meeting-output-section" aria-label={`${section.title} review`}>
@@ -845,153 +812,95 @@ function SupportingCardsPanel({
   );
 }
 
-function MeetingCaptureView({
-  capture,
+function MeetingSummaryNotesView({
+  notes,
   onJumpToEvidence,
 }: {
-  capture: MeetingCaptureViewModel;
+  notes: MeetingSummaryNotesViewModel;
   onJumpToEvidence: (ids: string[]) => void;
 }) {
   return (
-    <section className="meeting-capture-view" aria-label="Meeting Capture">
-      <section className="meeting-capture-hero" aria-label="Snapshot">
+    <section className="meeting-summary-notes" aria-label="Meeting Summary">
+      <section className="meeting-summary-notes-hero" aria-label="Summary">
         <div>
-          <p className="label">Snapshot</p>
-          <h2>{formatReviewDisplayText(capture.title || "Meeting Capture")}</h2>
+          <p className="label">Summary</p>
+          <h2>{formatReviewDisplayText(notes.title || "Meeting Summary")}</h2>
+          <p>{formatReviewDisplayText(notes.summaryParagraph || "No concise meeting summary was captured.")}</p>
         </div>
-        <ul className="meeting-capture-snapshot-list">
-          {capture.snapshot.length === 0 ? (
-            <li>No high-signal snapshot was captured.</li>
-          ) : capture.snapshot.map((item) => (
-            <li key={item}>{formatReviewDisplayText(item)}</li>
-          ))}
-        </ul>
       </section>
-
-      <MeetingCaptureSection
-        title="Follow-ups / Actions"
-        items={capture.actions}
-        empty="No follow-ups captured."
-        actionLayout
+      <SummaryNotesSection
+        title="Key Notes"
+        items={notes.keyNotes}
         onJumpToEvidence={onJumpToEvidence}
       />
-      <MeetingCaptureSection
+      <SummaryNotesSection
         title="Decisions"
-        items={capture.decisions}
+        items={notes.decisions}
         onJumpToEvidence={onJumpToEvidence}
       />
-      <MeetingCaptureSection
-        title="Open Questions / Unknowns"
-        items={capture.openQuestions}
+      <SummaryNotesSection
+        title="Action Items / Follow-ups"
+        items={notes.actions}
+        empty="No action items found."
+        showEmptyLine
         onJumpToEvidence={onJumpToEvidence}
       />
-      <MeetingCaptureSection
-        title="Risks / Blockers"
-        items={capture.risks}
+      <SummaryNotesSection
+        title="Open Questions"
+        items={notes.openQuestions}
         onJumpToEvidence={onJumpToEvidence}
       />
-      <MeetingCaptureSection
-        title="Important Facts / Context"
-        items={capture.facts}
+      <SummaryNotesSection
+        title="Risks / Concerns"
+        items={notes.risks}
         onJumpToEvidence={onJumpToEvidence}
       />
-      <MeetingCaptureSection
-        title="Technical Findings"
-        items={capture.technicalFindings}
-        onJumpToEvidence={onJumpToEvidence}
-      />
-      {capture.parkingLot.length > 0 && (
-        <details className="meeting-capture-details" aria-label="Parking Lot / Low Confidence">
-          <summary>
-            <span>Parking Lot / Low Confidence</span>
-            <small>{capture.parkingLot.length}</small>
-          </summary>
-          <MeetingCaptureItemList
-            items={capture.parkingLot}
-            actionLayout={false}
-            onJumpToEvidence={onJumpToEvidence}
-          />
-        </details>
-      )}
     </section>
   );
 }
 
-function MeetingCaptureSection({
+function SummaryNotesSection({
   title,
   items,
-  empty = "None captured.",
-  actionLayout = false,
+  empty = "None found.",
+  showEmptyLine = false,
   onJumpToEvidence,
 }: {
   title: string;
-  items: MeetingCaptureItem[];
+  items: SummaryNoteItem[];
   empty?: string;
-  actionLayout?: boolean;
+  showEmptyLine?: boolean;
   onJumpToEvidence: (ids: string[]) => void;
 }) {
-  if (items.length === 0 && title !== "Follow-ups / Actions") {
+  if (items.length === 0 && !showEmptyLine) {
     return null;
   }
   return (
-    <section className="meeting-capture-section" aria-label={title}>
+    <section className="meeting-summary-notes-section" aria-label={title}>
       <div className="section-heading-row">
         <h3>{title}</h3>
-        <span>{items.length}</span>
       </div>
       {items.length === 0 ? (
-        <p className="empty-note">{empty}</p>
+        <p className="meeting-summary-empty-line">{empty}</p>
       ) : (
-        <MeetingCaptureItemList
-          items={items}
-          actionLayout={actionLayout}
-          onJumpToEvidence={onJumpToEvidence}
-        />
+        <ul className="meeting-summary-notes-list">
+          {items.map((item) => (
+            <li key={item.id} className="meeting-summary-note-item">
+              <span>{formatReviewDisplayText(item.text)}</span>
+              {item.sourceSegmentIds.length > 0 && (
+                <button
+                  className="secondary meeting-summary-source-link"
+                  type="button"
+                  onClick={() => onJumpToEvidence(item.sourceSegmentIds)}
+                >
+                  source
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </section>
-  );
-}
-
-function MeetingCaptureItemList({
-  items,
-  actionLayout,
-  onJumpToEvidence,
-}: {
-  items: MeetingCaptureItem[];
-  actionLayout: boolean;
-  onJumpToEvidence: (ids: string[]) => void;
-}) {
-  return (
-    <div className={`meeting-capture-list ${actionLayout ? "actions" : ""}`}>
-      {items.map((item) => (
-        <article key={item.id} className={`meeting-capture-item ${item.lowConfidence ? "low-confidence" : ""}`}>
-          <div className="meeting-capture-item-main">
-            <strong>{formatReviewDisplayText(item.title)}</strong>
-            {item.body && item.body !== item.title && <p>{formatReviewDisplayText(item.body)}</p>}
-            <div className="meeting-capture-meta">
-              {item.owner && <span>Owner: {formatReviewDisplayText(item.owner)}</span>}
-              {item.dueDate && <span>Due: {formatReviewDisplayText(item.dueDate)}</span>}
-              {item.project && <span>Project: {formatReviewDisplayText(item.project)}</span>}
-              {typeof item.confidence === "number" && <span>{formatPercent(item.confidence)} confidence</span>}
-              {item.lowConfidence && <span>Needs confirmation</span>}
-              {item.reason && <span>{formatReviewDisplayText(item.reason)}</span>}
-            </div>
-          </div>
-          <div className="meeting-capture-item-tools">
-            {item.evidenceQuote && <p className="meeting-capture-evidence-quote">"{formatReviewDisplayText(item.evidenceQuote)}"</p>}
-            {item.sourceSegmentIds.length > 0 && (
-              <button
-                className="secondary"
-                type="button"
-                onClick={() => onJumpToEvidence(item.sourceSegmentIds)}
-              >
-                Evidence
-              </button>
-            )}
-          </div>
-        </article>
-      ))}
-    </div>
   );
 }
 
@@ -1774,299 +1683,8 @@ function reviewMetricChips(metrics: SummaryReviewMetrics): { label: string; valu
   return chips;
 }
 
-type ReviewSummaryEvidenceItem = {
-  text: string;
-  sourceIds: Set<string>;
-};
-
-type ReviewValidationEvidence = {
-  card: SidecarDisplayCard;
-  duplicateOfSummary: boolean;
-  reasons: string[];
-  sourceCount: number;
-};
-
-function ReviewValidationEvidenceCard({
-  item,
-  expanded,
-  showDebugMetadata,
-  onToggle,
-  onJumpToEvidence,
-  onCopy,
-}: {
-  item: ReviewValidationEvidence;
-  expanded: boolean;
-  showDebugMetadata: boolean;
-  onToggle: () => void;
-  onJumpToEvidence: () => void;
-  onCopy: () => void;
-}) {
-  const { card, reasons, sourceCount } = item;
-  const hasEvidence = Boolean(card.evidenceQuote?.trim());
-  const hasSourceSegments = (card.sourceSegmentIds?.length ?? 0) > 0;
-  const hasCopyableText = Boolean(card.evidenceQuote || card.suggestedSay || card.suggestedAsk || card.summary);
-  const hasDebugDetails = showDebugMetadata && Boolean(card.rawText || card.debugMetadata);
-  const confidenceLabel = reviewConfidenceLabel(card);
-  const visibleReasons = reasons.length > 0 ? reasons : [item.duplicateOfSummary ? "Summary check" : "Additional claim"];
-  return (
-    <article className={`context-card field-bubble compact review-validation-card ${confidenceClass(card)} ${card.category}`} aria-label={`${categoryLabel(card.category)} review validation card`}>
-      <div className="context-card-head">
-        <span>{categoryLabel(card.category)}</span>
-        <time>{formatClock(card.at)}</time>
-      </div>
-      <h3>{formatReviewDisplayText(card.title)}</h3>
-      <div className="context-card-meta review-validation-meta">
-        {visibleReasons.slice(0, 3).map((reason) => <span key={reason}>{reason}</span>)}
-        {card.qualityLabel && <span className="quality-chip">{card.qualityLabel}</span>}
-        {confidenceLabel && <span>{confidenceLabel}</span>}
-        <span>{sourceCount} source{sourceCount === 1 ? "" : "s"}</span>
-        {card.owner && <span>Owner: {card.owner}</span>}
-        {card.dueDate && <span>Due: {card.dueDate}</span>}
-      </div>
-      {hasEvidence ? (
-        <blockquote className="evidence-quote review-validation-quote" aria-label={`Evidence for ${card.title}`}>
-          {formatReviewDisplayText(card.evidenceQuote)}
-        </blockquote>
-      ) : (
-        <p className="review-validation-claim">{card.missingInfo ? "Validation needs missing context." : "Validation needs transcript support."}</p>
-      )}
-      {card.missingInfo && <p className="missing-info"><strong>Missing info:</strong> {formatReviewDisplayText(card.missingInfo)}</p>}
-      <div className="card-detail-actions">
-        {hasDebugDetails && (
-          <button className="link-button" type="button" onClick={onToggle}>
-            {expanded ? "Hide debug" : "Debug"}
-          </button>
-        )}
-        {hasSourceSegments && (
-          <button className="link-button" type="button" onClick={onJumpToEvidence}>
-            Jump to source{card.sourceSegmentIds!.length > 1 ? ` (${card.sourceSegmentIds!.length})` : ""}
-          </button>
-        )}
-        {hasCopyableText && (
-          <button className="link-button" type="button" onClick={onCopy}>
-            {hasEvidence ? "Copy quote" : "Copy text"}
-          </button>
-        )}
-      </div>
-      {expanded && hasDebugDetails && (
-        <div className="field-details">
-          {card.summary && <p className="detail-note"><strong>Claim:</strong> {formatReviewDisplayText(card.summary)}</p>}
-          {card.whyRelevant && <p className="context-card-why">{formatReviewDisplayText(card.whyRelevant)}</p>}
-          {hasSourceSegments && (
-            <div className="source-segment-list">
-              {card.sourceSegmentIds!.slice(0, 8).map((segmentId) => (
-                <button key={segmentId} type="button" className="source-segment-chip" onClick={onJumpToEvidence}>
-                  {segmentId}
-                </button>
-              ))}
-            </div>
-          )}
-          {hasDebugDetails && (
-            <details className="debug-details" open>
-              <summary>Debug metadata</summary>
-              <dl>
-                {debugEntries(card).map(([key, value]) => (
-                  <div key={key}>
-                    <dt>{key}</dt>
-                    <dd>{String(value)}</dd>
-                  </div>
-                ))}
-              </dl>
-            </details>
-          )}
-        </div>
-      )}
-    </article>
-  );
-}
-
-function reviewValidationEvidenceCards(summary: SessionMemorySummary | null, cards: SidecarDisplayCard[]): ReviewValidationEvidence[] {
-  const summaryItems = reviewSummaryEvidenceItems(summary);
-  const summaryText = normalizeReviewEvidenceText(summaryItems.map((item) => item.text).join(" "));
-  return cards
-    .map((card) => {
-      const duplicateOfSummary = reviewCardMatchesSummary(card, summaryItems);
-      const sourceCount = distinctList(card.sourceSegmentIds ?? []).length;
-      const confidence = card.confidence ?? card.score;
-      const reasons: string[] = [];
-      if (card.missingInfo) {
-        reasons.push("Missing info");
-      }
-      if (confidence != null && confidence < 0.72) {
-        reasons.push("Low confidence");
-      }
-      if (sourceCount === 0) {
-        reasons.push("Unsupported");
-      }
-      if (card.owner && !summaryText.includes(normalizeReviewEvidenceText(card.owner))) {
-        reasons.push("Owner check");
-      }
-      if (card.dueDate && !summaryText.includes(normalizeReviewEvidenceText(card.dueDate))) {
-        reasons.push("Date check");
-      }
-      if (!duplicateOfSummary) {
-        reasons.push("Additional claim");
-      }
-      return {
-        card,
-        duplicateOfSummary,
-        reasons: distinctList(reasons),
-        sourceCount,
-      };
-    })
-    .filter((item) => item.reasons.length > 0 || !item.duplicateOfSummary)
-    .sort(compareReviewValidationEvidence);
-}
-
-function compareReviewValidationEvidence(left: ReviewValidationEvidence, right: ReviewValidationEvidence): number {
-  const score = (item: ReviewValidationEvidence) => {
-    let value = 0;
-    if (item.reasons.includes("Unsupported")) value += 80;
-    if (item.reasons.includes("Missing info")) value += 70;
-    if (item.reasons.includes("Low confidence")) value += 50;
-    if (item.reasons.includes("Owner check") || item.reasons.includes("Date check")) value += 35;
-    if (item.reasons.includes("Transcript quote")) value += 20;
-    return value;
-  };
-  const scoreDiff = score(right) - score(left);
-  if (scoreDiff !== 0) {
-    return scoreDiff;
-  }
-  return left.card.at - right.card.at;
-}
-
-function reviewCardMatchesSummary(card: SidecarDisplayCard, summaryItems: ReviewSummaryEvidenceItem[]): boolean {
-  if (summaryItems.length === 0) {
-    return false;
-  }
-  const cardTexts = [card.title, card.summary, card.suggestedSay, card.suggestedAsk, card.evidenceQuote]
-    .map((text) => normalizeReviewEvidenceText(text ?? ""))
-    .filter((text) => text.length >= 8);
-  const cardSources = new Set(card.sourceSegmentIds ?? []);
-  for (const item of summaryItems) {
-    const itemText = normalizeReviewEvidenceText(item.text);
-    if (itemText.length < 8) {
-      continue;
-    }
-    const sourceOverlap = cardSources.size > 0
-      && item.sourceIds.size > 0
-      && Array.from(cardSources).some((sourceId) => item.sourceIds.has(sourceId));
-    if (sourceOverlap && cardTexts.some((text) => reviewEvidenceTextMatches(text, itemText, 0.42))) {
-      return true;
-    }
-    if (!sourceOverlap && cardTexts.some((text) => reviewEvidenceTextDirectMatch(text, itemText))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function reviewEvidenceTextDirectMatch(left: string, right: string): boolean {
-  if (left.length < 16 || right.length < 16) {
-    return false;
-  }
-  if (Math.min(reviewEvidenceTokenSet(left).size, reviewEvidenceTokenSet(right).size) < 4) {
-    return false;
-  }
-  return left.includes(right) || right.includes(left);
-}
-
-function reviewEvidenceTextMatches(left: string, right: string, threshold: number): boolean {
-  if (!left || !right) {
-    return false;
-  }
-  if (left.includes(right) || right.includes(left)) {
-    return true;
-  }
-  const leftTokens = reviewEvidenceTokenSet(left);
-  const rightTokens = reviewEvidenceTokenSet(right);
-  if (leftTokens.size === 0 || rightTokens.size === 0) {
-    return false;
-  }
-  const shared = Array.from(leftTokens).filter((token) => rightTokens.has(token)).length;
-  const union = new Set([...leftTokens, ...rightTokens]).size;
-  const minShared = threshold >= 0.7 ? 5 : 2;
-  return shared >= minShared && shared / union >= threshold;
-}
-
 function reviewEvidenceTokenSet(value: string): Set<string> {
   return new Set(value.split(" ").filter((token) => token.length > 2));
-}
-
-function reviewSummaryEvidenceItems(summary: SessionMemorySummary | null): ReviewSummaryEvidenceItem[] {
-  if (!summary) {
-    return [];
-  }
-  const items: ReviewSummaryEvidenceItem[] = [];
-  const push = (text: string | undefined | null, sourceIds: string[] = []) => {
-    const value = String(text ?? "").trim();
-    if (!value) {
-      return;
-    }
-    items.push({ text: value, sourceIds: new Set(sourceIds.filter(Boolean)) });
-  };
-  const summarySourceIds = summaryList(summary.source_segment_ids);
-  push(summary.title, summarySourceIds);
-  push(summary.summary, summarySourceIds);
-  for (const value of [
-    ...summaryList(summary.key_points),
-    ...summaryList(summary.actions),
-    ...summaryList(summary.decisions),
-    ...summaryList(summary.unresolved_questions),
-    ...summaryList(summary.risks),
-    ...summaryList(summary.coverage_notes),
-  ]) {
-    push(value, summarySourceIds);
-  }
-  const rollup = summaryPortfolioRollup(summary.portfolio_rollup, summary);
-  const rollupSourceIds = summaryList(rollup.source_segment_ids);
-  for (const value of [
-    ...summaryList(rollup.bp_next_actions),
-    ...summaryList(rollup.open_loops),
-    ...summaryList(rollup.cross_project_dependencies),
-  ]) {
-    push(value, rollupSourceIds);
-  }
-  for (const item of summaryProjectWorkstreamList(summary.project_workstreams)) {
-    const sourceIds = summaryList(item.source_segment_ids);
-    push(item.project, sourceIds);
-    push(item.client_site, sourceIds);
-    push(item.status, sourceIds);
-    push(item.next_checkpoint, sourceIds);
-    for (const value of [
-      ...summaryList(item.actions),
-      ...summaryList(item.decisions),
-      ...summaryList(item.risks),
-      ...summaryList(item.open_questions),
-      ...summaryList(item.owners),
-    ]) {
-      push(value, sourceIds);
-    }
-  }
-  for (const item of summaryTechnicalFindingList(summary.technical_findings)) {
-    const sourceIds = summaryList(item.source_segment_ids);
-    push(item.topic, sourceIds);
-    push(item.question, sourceIds);
-    push(item.confidence, sourceIds);
-    for (const value of [
-      ...summaryList(item.assumptions),
-      ...summaryList(item.methods),
-      ...summaryList(item.findings),
-      ...summaryList(item.recommendations),
-      ...summaryList(item.risks),
-      ...summaryList(item.data_gaps),
-      ...summaryList(item.reference_context),
-    ]) {
-      push(value, sourceIds);
-    }
-  }
-  for (const item of summaryReferenceContextList(summary.reference_context)) {
-    const sourceIds = summaryList(item.source_segment_ids);
-    push(item.title, sourceIds);
-    push(item.body, sourceIds);
-    push(item.citation, sourceIds);
-  }
-  return items;
 }
 
 function normalizeReviewEvidenceText(value: string): string {

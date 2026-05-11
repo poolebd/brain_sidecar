@@ -22,7 +22,7 @@ import {
 } from "./presentation";
 import { LiveMeetingWorkbench, liveWorkbenchModeLabel, SessionRuntimeStrip, SessionSelectorBar, type LiveWorkbenchMode, type SessionRuntimeItem } from "./live/LiveShell";
 import { compareReviewJobs, isReviewDefaultSelectable, isReviewTerminal, MeetingSummaryBrief, ReviewPage, reviewJobId } from "./review/ReviewPage";
-import { buildMeetingCaptureMarkdown, buildMeetingCaptureViewModel } from "./review/meetingCapture";
+import { buildMeetingSummaryMarkdown, buildMeetingSummaryNotesViewModel } from "./review/meetingSummaryNotes";
 import { FilePickAction } from "./shared/FilePickAction";
 import type { ReviewJobResponse, SavedTranscriptSegment, SessionMemorySummary, TranscriptLine } from "./types";
 
@@ -836,13 +836,13 @@ export function App() {
     [reviewJob],
   );
   const reviewMeetingGroups = useMemo(() => groupMeetingOutputCards(reviewCards), [reviewCards]);
-  const reviewCapture = useMemo(
-    () => reviewJob ? buildMeetingCaptureViewModel(reviewJob, reviewCards) : null,
+  const reviewSummaryNotes = useMemo(
+    () => reviewJob ? buildMeetingSummaryNotesViewModel(reviewJob, reviewCards) : null,
     [reviewCards, reviewJob],
   );
-  const reviewCaptureMarkdown = useMemo(
-    () => reviewCapture ? buildMeetingCaptureMarkdown(reviewCapture) : "",
-    [reviewCapture],
+  const reviewSummaryMarkdown = useMemo(
+    () => reviewSummaryNotes ? buildMeetingSummaryMarkdown(reviewSummaryNotes) : "",
+    [reviewSummaryNotes],
   );
 
   const asrBackendLabel = "Faster-Whisper";
@@ -3033,7 +3033,7 @@ export function App() {
           error={reviewError}
           transcriptEvents={reviewTranscriptEvents}
           cards={reviewCards}
-          capture={reviewCapture}
+          summaryNotes={reviewSummaryNotes}
           groups={reviewMeetingGroups}
           expandedCards={expandedContextCards}
           highlightedSourceIds={highlightedSourceIds}
@@ -3052,7 +3052,7 @@ export function App() {
           onJumpToEvidenceIds={focusReviewEvidenceIds}
           onCopyCard={copyCardSuggestion}
           onCopyTranscript={() => navigator.clipboard?.writeText((reviewJob?.clean_segments ?? []).map((segment) => segment.text).join("\n"))}
-          onCopyCapture={() => navigator.clipboard?.writeText(reviewCaptureMarkdown)}
+          onCopyCapture={() => navigator.clipboard?.writeText(reviewSummaryMarkdown)}
           onOpenSession={() => {
             if (!reviewJob?.session_id) {
               return;
