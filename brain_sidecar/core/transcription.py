@@ -14,7 +14,6 @@ from brain_sidecar.core.gpu import cuda_out_of_memory, prepare_asr_gpu
 
 class FasterWhisperTranscriber:
     backend_name = ASR_BACKEND_FASTER_WHISPER
-    streaming_supported = False
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -30,7 +29,8 @@ class FasterWhisperTranscriber:
         with self._load_lock:
             if self._model is not None:
                 return
-            prepare_asr_gpu(self.settings)
+            if self._uses_cuda():
+                prepare_asr_gpu(self.settings)
             try:
                 from faster_whisper import WhisperModel
             except Exception as exc:
@@ -42,7 +42,7 @@ class FasterWhisperTranscriber:
                 if self._model is not None:
                     return
                 errors.extend(attempt_errors)
-                if attempt == 0 and any(cuda_out_of_memory(error) for error in attempt_errors):
+                if self._uses_cuda() and attempt == 0 and any(cuda_out_of_memory(error) for error in attempt_errors):
                     try:
                         prepare_asr_gpu(self.settings, force_unload=True)
                     except RuntimeError as exc:
@@ -54,8 +54,8 @@ class FasterWhisperTranscriber:
             joined = "; ".join(errors)
             self.last_error = joined
             raise RuntimeError(
-                "Could not load a CUDA Faster-Whisper model. "
-                f"Tried primary and fallback, unloading GPU-resident Ollama models when needed: {joined}"
+                f"Could not load a {self._device()} Faster-Whisper model. "
+                f"Tried primary and fallback models: {joined}"
             )
 
     def _try_load_models(self, whisper_model_class) -> list[str]:
@@ -64,8 +64,8 @@ class FasterWhisperTranscriber:
             try:
                 self._model = whisper_model_class(
                     model_size,
-                    device="cuda",
-                    compute_type=self.settings.asr_compute_type,
+                    device=self._device(),
+                    compute_type=self._compute_type(),
                 )
                 self.model_size = model_size
                 self.last_error = None
@@ -74,6 +74,18 @@ class FasterWhisperTranscriber:
                 self.last_error = str(exc)
                 errors.append(f"{model_size}: {exc}")
         return errors
+
+    def _device(self) -> str:
+        return getattr(self.settings, "asr_device", "cuda")
+
+    def _uses_cuda(self) -> bool:
+        return self._device() == "cuda"
+
+    def _compute_type(self) -> str:
+        compute_type = self.settings.asr_compute_type
+        if self._device() == "cpu" and compute_type in {"float16", "int8_float16"}:
+            return "int8"
+        return compute_type
 
     async def transcribe_pcm16(
         self,

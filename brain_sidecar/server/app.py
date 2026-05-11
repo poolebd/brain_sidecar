@@ -9,15 +9,17 @@ from uuid import uuid4
 from typing import Annotated, Any, Literal
 
 import uvicorn
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile, WebSocket
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from brain_sidecar.config import load_settings
+from brain_sidecar.config import load_settings, update_dotenv_value
+from brain_sidecar.core.audio_spool import AudioSpoolWriter
 from brain_sidecar.core.devices import list_audio_devices
 from brain_sidecar.core.gpu import read_gpu_status
 from brain_sidecar.core.meeting_contract import normalize_meeting_contract
+from brain_sidecar.core.review import ReviewService
 from brain_sidecar.core.session import SessionManager
 from brain_sidecar.core.test_mode import TestModeService
 
@@ -28,6 +30,7 @@ BROWSER_STREAM_REMOVED = (
 )
 FIXTURE_TEST_MODE_REQUIRED = "Fixture audio is only available when recorded audio test mode is enabled."
 SSE_HEARTBEAT = ": heartbeat\n\n"
+OLLAMA_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$")
 
 
 def encode_sse_event(event) -> str:
@@ -62,6 +65,17 @@ class StartSessionRequest(BaseModel):
     save_transcript: bool = True
     mic_tuning: MicTuningRequest | None = None
     meeting_contract: MeetingContractRequest | None = None
+    web_context_enabled: bool | None = None
+
+
+class StartLiveRequest(BaseModel):
+    device_id: str | None = None
+    fixture_wav: str | None = None
+    audio_source: str | None = None
+    title: str | None = None
+    mic_tuning: MicTuningRequest | None = None
+    meeting_contract: MeetingContractRequest | None = None
+    web_context_enabled: bool | None = None
 
 
 class LibraryRootRequest(BaseModel):
@@ -71,16 +85,6 @@ class LibraryRootRequest(BaseModel):
 class RecallSearchRequest(BaseModel):
     query: Annotated[str, Field(min_length=1)]
     limit: int = Field(default=8, ge=1, le=24)
-
-
-class WorkMemoryReindexRequest(BaseModel):
-    roots: list[str] | None = None
-    embed: bool = True
-
-
-class WorkMemorySearchRequest(BaseModel):
-    query: Annotated[str, Field(min_length=1)]
-    limit: int = Field(default=5, ge=1, le=12)
 
 
 class WebContextSearchRequest(BaseModel):
@@ -126,6 +130,10 @@ class TestModeReportRequest(BaseModel):
     report: dict[str, Any] = Field(default_factory=dict)
 
 
+class OllamaChatModelRequest(BaseModel):
+    model: Annotated[str, Field(min_length=1, max_length=160)]
+
+
 def _safe_upload_name(filename: str | None) -> str:
     original = Path(filename or "input-file").name
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", original).strip("._")
@@ -160,6 +168,73 @@ def _meeting_contract_payload(contract: MeetingContractRequest | None) -> dict[s
     return normalize_meeting_contract(payload).to_dict()
 
 
+def _normalize_ollama_model_name(model: str) -> str:
+    clean_model = model.strip()
+    if not OLLAMA_MODEL_NAME_RE.fullmatch(clean_model):
+        raise HTTPException(status_code=400, detail="Ollama model names may only use letters, numbers, _, -, ., :, and /.")
+    return clean_model
+
+
+def _ollama_models_payload(settings, models: list[dict[str, Any]], *, error: str | None = None) -> dict:
+    selected = settings.ollama_chat_model
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for model in models:
+        name = str(model.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        size = model.get("size")
+        normalized.append(
+            {
+                "name": name,
+                "size": size if isinstance(size, int) else None,
+                "digest": model.get("digest") if isinstance(model.get("digest"), str) else None,
+                "modified_at": model.get("modified_at") if isinstance(model.get("modified_at"), str) else None,
+                "cloud": name.endswith(":cloud") or size is None,
+                "current": name == selected,
+            }
+        )
+    if selected and selected not in seen:
+        normalized.insert(
+            0,
+            {
+                "name": selected,
+                "size": None,
+                "digest": None,
+                "modified_at": None,
+                "cloud": selected.endswith(":cloud"),
+                "current": True,
+                "configured": True,
+            },
+        )
+    return {
+        "selected_chat_model": selected,
+        "chat_host": settings.ollama_chat_host or settings.ollama_host,
+        "models": normalized,
+        "error": error,
+    }
+
+
+async def _read_limited_upload(file: UploadFile) -> bytes:
+    size = 0
+    chunks: list[bytes] = []
+    try:
+        while True:
+            chunk = await file.read(UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_INPUT_FILE_BYTES:
+                raise HTTPException(status_code=413, detail="Input file is larger than 1 GB.")
+            chunks.append(chunk)
+    finally:
+        await file.close()
+    if size == 0:
+        raise HTTPException(status_code=400, detail="Input file is empty.")
+    return b"".join(chunks)
+
+
 async def _ollama_reachability(manager: SessionManager, chat_host: str, embed_host: str) -> tuple[bool, bool]:
     if chat_host == embed_host:
         reachable = await asyncio.to_thread(manager.ollama.host_reachable, chat_host)
@@ -170,10 +245,31 @@ async def _ollama_reachability(manager: SessionManager, chat_host: str, embed_ho
     return bool(chat_reachable), bool(embed_reachable)
 
 
+def _public_review_job(job: dict[str, Any], *, include_result: bool = True) -> dict[str, Any]:
+    payload = dict(job)
+    payload.pop("temporary_audio_path", None)
+    if not include_result:
+        result = payload.get("result")
+        if isinstance(result, dict):
+            diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
+            payload["result_preview"] = {
+                "clean_segment_count": len(result.get("clean_transcript") or []),
+                "meeting_card_count": len(result.get("meeting_cards") or []),
+                "summary": (result.get("summary") or {}).get("summary") if isinstance(result.get("summary"), dict) else None,
+                "diagnostics": diagnostics,
+            }
+        payload.pop("result", None)
+        payload["clean_segments"] = []
+        payload["meeting_cards"] = []
+        payload["summary"] = None
+    return payload
+
+
 def create_app() -> FastAPI:
     settings = load_settings()
     manager = SessionManager(settings)
     test_mode = TestModeService(settings)
+    review_service = ReviewService(settings, manager)
 
     app = FastAPI(
         title="Brain Sidecar",
@@ -182,6 +278,15 @@ def create_app() -> FastAPI:
     )
     app.state.manager = manager
     app.state.settings = settings
+    app.state.review_service = review_service
+
+    @app.on_event("startup")
+    async def start_review_worker() -> None:
+        await review_service.start_worker()
+
+    @app.on_event("shutdown")
+    async def stop_review_worker() -> None:
+        await review_service.stop_worker()
 
     app.add_middleware(
         CORSMiddleware,
@@ -222,15 +327,15 @@ def create_app() -> FastAPI:
     @app.get("/api/health/gpu")
     async def gpu_health() -> dict:
         status = read_gpu_status().to_dict()
-        status["required"] = True
+        status["required"] = settings.asr_device == "cuda"
         manager = app.state.manager
         status.update(manager._asr_status_fields(None))
         status["asr_primary_model"] = settings.asr_primary_model
         status["asr_fallback_model"] = settings.asr_fallback_model
+        status["asr_device"] = settings.asr_device
         status["asr_backend"] = settings.asr_backend
-        status["asr_streaming_chunk_ms"] = settings.nemotron_chunk_ms if settings.asr_backend == "nemotron_streaming" else None
-        status["streaming_partials_enabled"] = settings.streaming_partials_enabled
-        status["streaming_stable_final_chunks"] = settings.streaming_stable_final_chunks
+        status["energy_lens_enabled"] = settings.energy_lens_enabled
+        status["energy_lens_keyword_count"] = getattr(manager.energy_detector, "keyword_count", 0)
         status["asr_beam_size"] = settings.asr_beam_size
         status["asr_vad_min_silence_ms"] = settings.asr_vad_min_silence_ms
         status["asr_no_speech_threshold"] = settings.asr_no_speech_threshold
@@ -251,10 +356,14 @@ def create_app() -> FastAPI:
         status["transcription_overlap_seconds"] = settings.transcription_overlap_seconds
         status["transcription_queue_size"] = settings.transcription_queue_size
         status["speaker_enrollment_sample_seconds"] = settings.speaker_enrollment_sample_seconds
+        status["speaker_enrollment_minimum_seconds"] = settings.speaker_enrollment_minimum_seconds
+        status["speaker_enrollment_target_seconds"] = settings.speaker_enrollment_target_seconds
         status["speaker_identity_label"] = settings.speaker_identity_label
         status["speaker_retain_raw_enrollment_audio"] = settings.speaker_retain_raw_enrollment_audio
         status["dedupe_similarity_threshold"] = settings.dedupe_similarity_threshold
         status["ollama_chat_model"] = settings.ollama_chat_model
+        status["ollama_chat_fallback_model"] = settings.ollama_chat_fallback_model
+        status["ollama_chat_min_free_vram_mb"] = settings.ollama_chat_min_free_vram_mb
         status["ollama_embed_model"] = settings.ollama_embed_model
         status["ollama_host"] = settings.ollama_host
         status["ollama_chat_host"] = settings.ollama_chat_host or settings.ollama_host
@@ -272,13 +381,45 @@ def create_app() -> FastAPI:
         status["recall_min_score"] = settings.recall_min_score
         status["recall_max_live_hits"] = settings.recall_max_live_hits
         status["recall_prefer_summaries"] = settings.recall_prefer_summaries
+        status["assume_technical_conversation"] = settings.assume_technical_conversation
+        status["company_refs_enabled"] = settings.company_refs_enabled
+        status["company_refs_status"] = app.state.manager.company_refs.status()
+        status["notes_every_segments"] = settings.notes_every_segments
         status["sidecar_quality_gate_enabled"] = settings.sidecar_quality_gate_enabled
-        status["work_memory_job_history_root"] = str(settings.work_memory_job_history_root)
-        status["work_memory_past_work_root"] = str(settings.work_memory_past_work_root)
-        status["work_memory_pas_root"] = str(settings.work_memory_pas_root) if settings.work_memory_pas_root else None
+        status["sidecar_min_evidence_segments"] = settings.sidecar_min_evidence_segments
+        status["sidecar_max_cards_per_5min"] = settings.sidecar_max_cards_per_5min
+        status["sidecar_max_cards_per_generation_pass"] = settings.sidecar_max_cards_per_generation_pass
+        status["energy_lens_max_cards_per_pass"] = settings.energy_lens_max_cards_per_pass
         status["test_mode_enabled"] = settings.test_mode_enabled
         status["test_audio_run_dir"] = str(settings.test_audio_run_dir)
         return status
+
+    async def _list_ollama_models() -> tuple[list[dict[str, Any]], str | None]:
+        chat_host = settings.ollama_chat_host or settings.ollama_host
+        try:
+            return await asyncio.to_thread(app.state.manager.ollama.list_models, chat_host), None
+        except Exception as exc:
+            return [], str(exc)
+
+    @app.get("/api/models/ollama")
+    async def list_ollama_models() -> dict:
+        models, error = await _list_ollama_models()
+        return _ollama_models_payload(settings, models, error=error)
+
+    @app.post("/api/models/ollama/chat")
+    async def select_ollama_chat_model(request: OllamaChatModelRequest) -> dict:
+        model = _normalize_ollama_model_name(request.model)
+        models, error = await _list_ollama_models()
+        available_names = {str(item.get("name") or "").strip() for item in models}
+        available_names.discard("")
+        if available_names and model not in available_names:
+            raise HTTPException(status_code=400, detail=f"Ollama model is not available on the chat host: {model}")
+        if not available_names and model != settings.ollama_chat_model:
+            raise HTTPException(status_code=503, detail=error or "Ollama model list is unavailable.")
+
+        object.__setattr__(settings, "ollama_chat_model", model)
+        update_dotenv_value("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", model, settings.env_path)
+        return _ollama_models_payload(settings, models, error=error)
 
     @app.post("/api/input-files")
     async def upload_input_file(file: UploadFile = File(...)) -> dict:
@@ -330,9 +471,93 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/review/jobs")
+    async def create_review_job(
+        file: UploadFile = File(...),
+        save_result: bool = Form(False),
+        title: str | None = Form(None),
+    ) -> dict:
+        try:
+            data = await _read_limited_upload(file)
+            job = await review_service.create_job(
+                filename=file.filename or "review-audio",
+                data=data,
+                save_result=False,
+                title=title,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _public_review_job(job)
+
+    @app.get("/api/review/jobs")
+    async def list_review_jobs(limit: int = 50, status: str | None = None) -> dict:
+        jobs = await review_service.list_jobs(limit=max(1, min(limit, 200)), status=status)
+        return {"jobs": [_public_review_job(job, include_result=False) for job in jobs]}
+
+    @app.get("/api/review/jobs/latest")
+    async def get_latest_review_job() -> dict:
+        job = await review_service.latest_job()
+        if job is None:
+            raise HTTPException(status_code=404, detail="No review jobs have been started.")
+        return _public_review_job(job)
+
+    @app.post("/api/review/jobs/{job_id}/cancel")
+    async def cancel_review_job(job_id: str) -> dict:
+        try:
+            job = await review_service.cancel_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Review job not found: {job_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _public_review_job(job)
+
+    @app.post("/api/review/jobs/{job_id}/approve")
+    async def approve_review_job(job_id: str) -> dict:
+        try:
+            job = await review_service.approve_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Review job not found: {job_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _public_review_job(job)
+
+    @app.post("/api/review/jobs/{job_id}/discard")
+    async def discard_review_job(job_id: str) -> dict:
+        try:
+            job = await review_service.discard_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Review job not found: {job_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _public_review_job(job)
+
+    @app.get("/api/review/jobs/{job_id}")
+    async def get_review_job(job_id: str) -> dict:
+        try:
+            job = await review_service.get_job(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Review job not found: {job_id}") from exc
+        return _public_review_job(job)
+
     @app.post("/api/web-context/search")
     async def search_web_context(request: WebContextSearchRequest) -> dict:
         return await manager.search_web_context(request.query, session_id=request.session_id)
+
+    @app.get("/api/company-refs/status")
+    async def company_refs_status() -> dict:
+        return await asyncio.to_thread(manager.company_refs.status)
+
+    @app.get("/api/company-refs/search")
+    async def company_refs_search(query: str = "", limit: int = 12) -> dict:
+        refs = await asyncio.to_thread(manager.company_refs.search, query, max(1, min(limit, 50)))
+        return {"query": query, "company_refs": refs, "raw_audio_retained": False}
+
+    @app.post("/api/company-refs/reload")
+    async def company_refs_reload() -> dict:
+        try:
+            return await asyncio.to_thread(manager.company_refs.reload)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/sidecar/query")
     async def sidecar_query(request: SidecarQueryRequest) -> dict:
@@ -340,6 +565,90 @@ def create_app() -> FastAPI:
             return await manager.ask_sidecar(request.query, session_id=request.session_id)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/live/start")
+    async def start_live(request: StartLiveRequest) -> dict:
+        fixture_wav = Path(request.fixture_wav).expanduser().resolve() if request.fixture_wav else None
+        if fixture_wav and not fixture_wav.exists():
+            raise HTTPException(status_code=400, detail=f"Fixture WAV does not exist: {fixture_wav}")
+        audio_source = _audio_source_for_request(
+            request.audio_source,
+            fixture_wav,
+            test_mode_enabled=settings.test_mode_enabled,
+        )
+        live_id = f"live_{uuid4().hex[:16]}"
+        title = " ".join((request.title or "").split()).strip() or time.strftime("Live meeting %Y-%m-%d %H:%M")
+        spool_path = settings.data_dir / "review-spool" / live_id / "live.wav"
+        spool = AudioSpoolWriter(spool_path, sample_rate=settings.audio_sample_rate)
+        try:
+            await manager.start_session(
+                live_id,
+                device_id=request.device_id,
+                fixture_wav=fixture_wav,
+                audio_source=audio_source,
+                save_transcript=False,
+                mic_tuning=_mic_tuning_payload(request.mic_tuning),
+                meeting_contract=_meeting_contract_payload(request.meeting_contract),
+                web_context_enabled=request.web_context_enabled,
+                persist_session=False,
+                audio_spool=spool,
+                live_title=title,
+            )
+        except Exception as exc:
+            spool.abort()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "status": "running",
+            "live_id": live_id,
+            "title": title,
+            "audio_source": audio_source,
+            "raw_audio_retained": False,
+            "temporary_audio_retained": True,
+            "meeting_contract": _meeting_contract_payload(request.meeting_contract),
+            "web_context_enabled": request.web_context_enabled
+            if request.web_context_enabled is not None
+            else settings.web_context_enabled,
+        }
+
+    @app.post("/api/live/{live_id}/stop")
+    async def stop_live(live_id: str) -> dict:
+        stop_result = await manager.stop_session(live_id)
+        audio_path = stop_result.get("audio_path")
+        bytes_written = int(stop_result.get("spooled_audio_bytes") or 0)
+        if not audio_path or bytes_written <= 0:
+            return {
+                "status": "stopped",
+                "live_id": live_id,
+                "review_job_id": None,
+                "temporary_audio_retained": False,
+                "raw_audio_retained": False,
+                "message": "No audio was captured; no Review job was created.",
+            }
+        try:
+            job = await review_service.create_live_handoff_job(
+                live_id=live_id,
+                title=str(stop_result.get("live_title") or "Live meeting review"),
+                audio_path=Path(str(audio_path)),
+                filename=f"{live_id}.wav",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "status": "queued",
+            "live_id": live_id,
+            "review_job_id": job["id"],
+            "queue_position": job.get("queue_position"),
+            "temporary_audio_retained": True,
+            "raw_audio_retained": True,
+            "message": "Temporary audio queued for Review validation.",
+        }
+
+    @app.get("/api/live/{live_id}/events")
+    async def live_events(
+        live_id: str,
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ):
+        return await _event_stream(live_id, last_event_id)
 
     @app.post("/api/sessions")
     async def create_session(request: CreateSessionRequest) -> dict:
@@ -378,6 +687,15 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/sessions/{session_id}/review/regenerate")
+    async def regenerate_session_review(session_id: str) -> dict:
+        try:
+            return await review_service.regenerate_session_review(session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/api/sessions/{session_id}/start")
     async def start_session(session_id: str, request: StartSessionRequest) -> dict:
         fixture_wav = Path(request.fixture_wav).expanduser().resolve() if request.fixture_wav else None
@@ -397,6 +715,7 @@ def create_app() -> FastAPI:
                 save_transcript=request.save_transcript,
                 mic_tuning=_mic_tuning_payload(request.mic_tuning),
                 meeting_contract=_meeting_contract_payload(request.meeting_contract),
+                web_context_enabled=request.web_context_enabled,
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -407,6 +726,10 @@ def create_app() -> FastAPI:
             "save_transcript": request.save_transcript,
             "raw_audio_retained": False,
             "meeting_contract": _meeting_contract_payload(request.meeting_contract),
+            "web_context_enabled": request.web_context_enabled
+            if request.web_context_enabled is not None
+            else settings.web_context_enabled,
+            "web_context_configured": bool(settings.brave_search_api_key.strip()),
         }
 
     @app.websocket("/api/sessions/{session_id}/audio-stream")
@@ -418,6 +741,20 @@ def create_app() -> FastAPI:
     async def stop_session(session_id: str) -> dict:
         await manager.stop_session(session_id)
         return {"status": "stopped", "session_id": session_id, "raw_audio_retained": False}
+
+    @app.post("/api/sessions/{session_id}/pause")
+    async def pause_session(session_id: str) -> dict:
+        paused = await manager.pause_session(session_id)
+        if not paused:
+            raise HTTPException(status_code=400, detail="Only active recorded-audio playback can be paused.")
+        return {"status": "paused", "session_id": session_id, "raw_audio_retained": False}
+
+    @app.post("/api/sessions/{session_id}/resume")
+    async def resume_session(session_id: str) -> dict:
+        resumed = await manager.resume_session(session_id)
+        if not resumed:
+            raise HTTPException(status_code=400, detail="Only paused recorded-audio playback can be resumed.")
+        return {"status": "listening", "session_id": session_id, "raw_audio_retained": False}
 
     async def _event_stream(session_id: str | None, last_event_id: str | None):
         async def stream():
@@ -592,43 +929,6 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"hits": [hit.to_dict() for hit in hits]}
-
-    @app.get("/api/work-memory/status")
-    async def work_memory_status() -> dict:
-        return manager.work_memory.status()
-
-    @app.get("/api/work-memory/projects")
-    async def work_memory_projects() -> dict:
-        projects = manager.storage.work_memory_projects()
-        for project in projects:
-            project["evidence"] = manager.storage.work_memory_evidence(project["id"], limit=4)
-        return {"projects": projects}
-
-    @app.get("/api/work-memory/sources")
-    async def work_memory_sources(limit: int = 80) -> dict:
-        return {"sources": manager.storage.work_memory_sources(limit=max(1, min(limit, 200)))}
-
-    @app.post("/api/work-memory/reindex")
-    async def work_memory_reindex(request: WorkMemoryReindexRequest | None = None) -> dict:
-        roots = None
-        if request and request.roots:
-            roots = [Path(root).expanduser().resolve() for root in request.roots]
-            missing = [str(root) for root in roots if not root.exists()]
-            if missing:
-                raise HTTPException(status_code=400, detail=f"Work memory root does not exist: {missing[0]}")
-        try:
-            report = await manager.work_memory.reindex(roots=roots, embed=True if request is None else request.embed)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return report.to_dict()
-
-    @app.post("/api/work-memory/search")
-    async def work_memory_search(request: WorkMemorySearchRequest) -> dict:
-        try:
-            cards = manager.work_memory.search(request.query, limit=request.limit, manual=True)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"cards": [card.to_dict() for card in cards]}
 
     @app.on_event("shutdown")
     async def shutdown() -> None:

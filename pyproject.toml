@@ -20,12 +20,6 @@ gpu = [
   "nvidia-cublas-cu12",
   "nvidia-cudnn-cu12==9.*",
 ]
-nemotron = [
-  "Cython>=3.0.0",
-  "packaging>=24.0",
-  "torch>=2.3.0",
-  "huggingface-hub>=0.24.0",
-]
 speaker = [
   "torch>=2.3.0",
   "torchaudio>=2.3.0",
@@ -46,6 +40,9 @@ brain-sidecar-speaker = "brain_sidecar.tools.speaker_admin:main"
 
 [tool.setuptools.packages.find]
 include = ["brain_sidecar*"]
+
+[tool.setuptools.package-data]
+brain_sidecar = ["data/*.json", "resources/*.jsonl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

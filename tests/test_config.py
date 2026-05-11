@@ -13,10 +13,31 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
         "BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS",
         "BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS",
         "BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE",
+        "BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS",
         "BRAIN_SIDECAR_ASR_VAD_MIN_SILENCE_MS",
         "BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED",
         "BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS",
         "BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS",
+        "BRAIN_SIDECAR_ENERGY_LENS_ENABLED",
+        "BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE",
+        "BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS",
+        "BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS",
+        "BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION",
+        "BRAIN_SIDECAR_COMPANY_REFS_ENABLED",
+        "BRAIN_SIDECAR_COMPANY_REFS_SEED_PATH",
+        "BRAIN_SIDECAR_COMPANY_REFS_MIN_CONFIDENCE",
+        "BRAIN_SIDECAR_COMPANY_REFS_MAX_LIVE_CARDS",
+        "BRAIN_SIDECAR_COMPANY_REFS_DUPLICATE_WINDOW_SECONDS",
+        "BRAIN_SIDECAR_REVIEW_ASR_BACKEND",
+        "BRAIN_SIDECAR_REVIEW_ASR_MODEL",
+        "BRAIN_SIDECAR_REVIEW_ASR_DEVICE",
+        "BRAIN_SIDECAR_REVIEW_ASR_BATCH_SIZE",
+        "BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS",
+        "BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS",
+        "BRAIN_SIDECAR_REVIEW_CORRECTION_BATCH_SIZE",
+        "BRAIN_SIDECAR_REVIEW_CORRECTION_CONCURRENCY",
+        "BRAIN_SIDECAR_SPEAKER_ENROLLMENT_MINIMUM_SECONDS",
+        "BRAIN_SIDECAR_SPEAKER_ENROLLMENT_TARGET_SECONDS",
     ]:
         monkeypatch.delenv(name, raising=False)
 
@@ -26,13 +47,34 @@ def test_transcription_timing_defaults_use_balanced_live_profile(monkeypatch, tm
     assert settings.transcription_window_seconds == 3.4
     assert settings.transcription_overlap_seconds == 0.8
     assert settings.transcription_queue_size == 8
+    assert settings.notes_every_segments == 2
     assert settings.asr_vad_min_silence_ms == 300
     assert settings.partial_transcripts_enabled is False
     assert settings.partial_window_seconds == 2.0
     assert settings.partial_min_interval_seconds == 2.0
+    assert settings.energy_lens_enabled is True
+    assert settings.energy_lens_min_confidence == "medium"
+    assert settings.energy_lens_max_keywords == 6
+    assert settings.energy_lens_max_cards_per_pass == 2
     assert settings.recall_min_score == 0.58
     assert settings.recall_max_live_hits == 4
     assert settings.recall_prefer_summaries is True
+    assert settings.assume_technical_conversation is True
+    assert settings.company_refs_enabled is True
+    assert settings.company_refs_seed_path is None
+    assert settings.company_refs_min_confidence == 0.70
+    assert settings.company_refs_max_live_cards == 3
+    assert settings.company_refs_duplicate_window_seconds == 900.0
+    assert settings.review_asr_backend == "nemo"
+    assert settings.review_asr_model == "stt_en_fastconformer_ctc_xxlarge"
+    assert settings.review_asr_device == "auto"
+    assert settings.review_asr_batch_size == 2
+    assert settings.review_asr_chunk_seconds == 45.0
+    assert settings.review_asr_chunk_overlap_seconds == 3.0
+    assert settings.review_correction_batch_size == 12
+    assert settings.review_correction_concurrency == 2
+    assert settings.speaker_enrollment_minimum_seconds == 60.0
+    assert settings.speaker_enrollment_target_seconds == 120.0
 
 
 def test_load_settings_reads_repo_dotenv_without_overriding_exports(monkeypatch, tmp_path) -> None:
@@ -70,6 +112,8 @@ def test_ollama_split_host_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE", "10m")
     monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE", "15m")
     monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE", "0")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL", "smollm2:135m")
+    monkeypatch.setenv("BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB", "9000")
 
     settings = load_settings()
 
@@ -79,12 +123,18 @@ def test_ollama_split_host_env_overrides(monkeypatch, tmp_path) -> None:
     assert settings.ollama_keep_alive == "10m"
     assert settings.ollama_chat_keep_alive == "15m"
     assert settings.ollama_embed_keep_alive == "0"
+    assert settings.ollama_chat_fallback_model == "smollm2:135m"
+    assert settings.ollama_chat_min_free_vram_mb == 9000
 
 
-def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
+def test_faster_whisper_cloud_chat_defaults(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     for name in [
         "BRAIN_SIDECAR_ASR_BACKEND",
+        "BRAIN_SIDECAR_ASR_PRIMARY_MODEL",
+        "BRAIN_SIDECAR_ASR_FALLBACK_MODEL",
+        "BRAIN_SIDECAR_ASR_COMPUTE_TYPE",
+        "BRAIN_SIDECAR_ASR_DEVICE",
         "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START",
         "BRAIN_SIDECAR_OLLAMA_HOST",
         "BRAIN_SIDECAR_OLLAMA_CHAT_HOST",
@@ -94,21 +144,76 @@ def test_same_gpu_nemotron_phi_defaults(monkeypatch, tmp_path) -> None:
         "BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE",
         "BRAIN_SIDECAR_OLLAMA_CHAT_MODEL",
         "BRAIN_SIDECAR_OLLAMA_EMBED_MODEL",
+        "BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL",
+        "BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB",
     ]:
         monkeypatch.delenv(name, raising=False)
 
     settings = load_settings()
 
-    assert settings.asr_backend == "nemotron_streaming"
+    assert settings.asr_backend == "faster_whisper"
+    assert settings.asr_primary_model == "small.en"
+    assert settings.asr_fallback_model == "tiny.en"
+    assert settings.asr_compute_type == "int8"
+    assert settings.asr_device == "cpu"
     assert settings.asr_unload_ollama_on_start is False
     assert settings.ollama_host == "http://127.0.0.1:11434"
     assert settings.ollama_chat_host == "http://127.0.0.1:11434"
     assert settings.ollama_embed_host == "http://127.0.0.1:11434"
-    assert settings.ollama_chat_model == "phi3:mini"
+    assert settings.ollama_chat_model == "qwen3.5:397b-cloud"
+    assert settings.ollama_chat_fallback_model == ""
+    assert settings.ollama_chat_min_free_vram_mb == 0
     assert settings.ollama_embed_model == "embeddinggemma"
     assert settings.ollama_keep_alive == "30m"
     assert settings.ollama_chat_keep_alive == "30m"
     assert settings.ollama_embed_keep_alive == "0"
+
+
+def test_asr_device_env_overrides(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_ASR_BACKEND", "faster_whisper")
+    monkeypatch.setenv("BRAIN_SIDECAR_ASR_DEVICE", "cuda")
+    monkeypatch.setenv("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "float16")
+
+    settings = load_settings()
+
+    assert settings.asr_backend == "faster_whisper"
+    assert settings.asr_device == "cuda"
+    assert settings.asr_compute_type == "float16"
+
+
+def test_review_asr_env_overrides(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_BACKEND", "faster_whisper")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_MODEL", "review-large")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_DEVICE", "cpu")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_BATCH_SIZE", "3")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS", "35")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS", "4")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_CORRECTION_BATCH_SIZE", "5")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_CORRECTION_CONCURRENCY", "4")
+
+    settings = load_settings()
+
+    assert settings.review_asr_backend == "faster_whisper"
+    assert settings.review_asr_model == "review-large"
+    assert settings.review_asr_device == "cpu"
+    assert settings.review_asr_batch_size == 3
+    assert settings.review_asr_chunk_seconds == 35.0
+    assert settings.review_asr_chunk_overlap_seconds == 4.0
+    assert settings.review_correction_batch_size == 5
+    assert settings.review_correction_concurrency == 4
+
+
+def test_review_asr_overlap_is_clamped_below_chunk(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS", "10")
+    monkeypatch.setenv("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS", "99")
+
+    settings = load_settings()
+
+    assert settings.review_asr_chunk_seconds == 10.0
+    assert settings.review_asr_chunk_overlap_seconds == pytest.approx(9.9)
 
 
 def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
@@ -116,12 +221,22 @@ def test_transcription_timing_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250")
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS", "3.4")
     monkeypatch.setenv("BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS", "0.8")
+    monkeypatch.setenv("BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS", "1")
+    monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_ENABLED", "false")
+    monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE", "high")
+    monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS", "4")
+    monkeypatch.setenv("BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS", "2")
 
     settings = load_settings()
 
     assert settings.audio_chunk_ms == 250
     assert settings.transcription_window_seconds == 3.4
     assert settings.transcription_overlap_seconds == 0.8
+    assert settings.notes_every_segments == 1
+    assert settings.energy_lens_enabled is False
+    assert settings.energy_lens_min_confidence == "high"
+    assert settings.energy_lens_max_keywords == 4
+    assert settings.energy_lens_max_cards_per_pass == 2
 
 
 def test_balanced_preview_env_profile(monkeypatch, tmp_path) -> None:
@@ -163,23 +278,19 @@ def test_partial_transcript_env_overrides_are_guarded(monkeypatch, tmp_path) -> 
     assert settings.partial_min_interval_seconds == 0.5
 
 
-def test_recall_and_work_memory_env_overrides(monkeypatch, tmp_path) -> None:
+def test_recall_env_overrides(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(config, "_DEFAULT_ENV_PATH", tmp_path / "missing.env")
     monkeypatch.setenv("BRAIN_SIDECAR_RECALL_MIN_SCORE", "0.7")
     monkeypatch.setenv("BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS", "2")
     monkeypatch.setenv("BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES", "false")
-    monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT", str(tmp_path / "job"))
-    monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT", str(tmp_path / "past"))
-    monkeypatch.setenv("BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT", str(tmp_path / "pas"))
+    monkeypatch.setenv("BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION", "false")
 
     settings = load_settings()
 
     assert settings.recall_min_score == 0.7
     assert settings.recall_max_live_hits == 2
     assert settings.recall_prefer_summaries is False
-    assert settings.work_memory_job_history_root == tmp_path / "job"
-    assert settings.work_memory_past_work_root == tmp_path / "past"
-    assert settings.work_memory_pas_root == tmp_path / "pas"
+    assert settings.assume_technical_conversation is False
 
 
 def test_sidecar_quality_gate_env_overrides(monkeypatch, tmp_path) -> None:

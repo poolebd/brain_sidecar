@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, ReactNode } from "react";
+import type { ChangeEvent, ReactNode, RefObject } from "react";
 import {
   buildLiveFieldRows,
   buildConsultingBriefMarkdown,
@@ -8,9 +8,9 @@ import {
   displaySourceLabel,
   getTranscriptDisplayLabel,
   groupMeetingOutputCards,
+  isCompanyReferenceCard,
   isCurrentMeetingCard,
   isManualCard,
-  isWorkMemoryCard,
   normalizeDisplayText,
   qualityLabelForCard,
   type LiveFieldRow,
@@ -20,11 +20,21 @@ import {
   type TranscriptEvent,
   type TranscriptSource,
 } from "./presentation";
+import { LiveMeetingWorkbench, liveWorkbenchModeLabel, SessionRuntimeStrip, SessionSelectorBar, type LiveWorkbenchMode, type SessionRuntimeItem } from "./live/LiveShell";
+import { compareReviewJobs, isReviewDefaultSelectable, isReviewTerminal, MeetingSummaryBrief, ReviewPage, reviewJobId } from "./review/ReviewPage";
+import { buildMeetingSummaryMarkdown, buildMeetingSummaryNotesViewModel } from "./review/meetingSummaryNotes";
+import { FilePickAction } from "./shared/FilePickAction";
+import type { ReviewJobResponse, SavedTranscriptSegment, SessionMemorySummary, TranscriptLine } from "./types";
 
 type ThemeName = "neutral" | "midnight" | "canopy" | "ember";
 type AudioSource = "server_device" | "fixture";
-type SessionRetention = "temporary" | "saved";
-type AppPage = "live" | "sessions" | "tools" | "models" | "memory";
+type AppPage = "live" | "review" | "sessions" | "tools" | "models" | "references";
+type ToolView = "voice" | "speaker" | "test" | "debug" | "appearance";
+type ReferenceView = "overview" | "roots" | "documents";
+
+type MemorySelection =
+  | { view: "roots"; id: string; root: string }
+  | { view: "documents"; id: string; source: LibraryChunkSource };
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? defaultApiBase();
 const ENABLE_FIXTURE_AUDIO = import.meta.env.VITE_ENABLE_FIXTURE_AUDIO === "1";
@@ -33,11 +43,15 @@ const DEFAULT_THEME: ThemeName = "midnight";
 const APP_PAGE_STORAGE_KEY = "brain-sidecar-active-page-v1";
 const THEME_STORAGE_KEY = "brain-sidecar-theme-v2";
 const DEBUG_METADATA_STORAGE_KEY = "brain-sidecar-debug-metadata-v1";
-const SESSION_RETENTION_STORAGE_KEY = "brain-sidecar-session-retention-v1";
 const MIC_TUNING_STORAGE_KEY = "brain-sidecar-mic-tuning-v1";
 const MEETING_FOCUS_STORAGE_KEY = "brain-sidecar-meeting-focus-v1";
+const REVIEW_LAST_JOB_STORAGE_KEY = "brain-sidecar-last-review-job-v1";
 const DEFAULT_CONTEXT_CARD_LIMIT = 3;
 const DEFAULT_MEETING_GOAL = "Offload meeting obligations, questions, risks, follow-ups, useful context, and post-call synthesis for BP.";
+const TEST_AUDIO_ACCEPT = "audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg,.mp4,.webm";
+const DEFAULT_TEST_MAX_SECONDS = "60";
+const TEST_PLAYBACK_AUTOSTOP_GRACE_MS = 3500;
+const TEST_PLAYBACK_START_TIMEOUT_MS = 12_000;
 
 const MEETING_REMINDER_OPTIONS = [
   { key: "owners", label: "Owners", reminder: "Track owners and ownership ambiguity." },
@@ -91,6 +105,7 @@ type DeviceListResponse = {
 
 type SpeechSensitivity = "quiet" | "normal" | "noisy";
 type MeetingMode = "quiet" | "balanced" | "assertive";
+type WebContextMode = "default" | "on" | "off";
 type MeetingReminderKey = typeof MEETING_REMINDER_OPTIONS[number]["key"];
 
 type MicTuning = {
@@ -102,6 +117,7 @@ type MicTuning = {
 type MeetingFocusState = {
   goal: string;
   mode: MeetingMode;
+  webContextMode: WebContextMode;
   reminders: Record<MeetingReminderKey, boolean>;
 };
 
@@ -120,22 +136,23 @@ type MeetingDiagnostics = {
   source_id_coverage: number;
 };
 
+type EnergyFrame = {
+  active: boolean;
+  score: number;
+  confidence: "low" | "medium" | "high";
+  categories: string[];
+  keywords: string[];
+  evidenceSegmentIds: string[];
+  evidenceQuote: string;
+  summaryLabel: string;
+};
+
 type EventEnvelope = {
   id: string;
   type: string;
   session_id: string | null;
   at: number;
   payload: Record<string, unknown>;
-};
-
-type TranscriptLine = {
-  id: string;
-  text: string;
-  start_s: number;
-  end_s: number;
-  source_segment_ids?: string[];
-  asr_model?: string;
-  created_at?: number;
 };
 
 type NoteSource = {
@@ -180,30 +197,6 @@ type SessionSummary = {
   raw_audio_retained?: boolean;
 };
 
-type SavedTranscriptSegment = TranscriptLine & {
-  is_final?: boolean;
-  speaker_role?: string;
-  speaker_label?: string;
-  speaker_confidence?: number;
-  speaker_match_reason?: string;
-  speaker_low_confidence?: boolean;
-};
-
-type SessionMemorySummary = {
-  session_id: string;
-  title: string;
-  summary: string;
-  topics: string[];
-  decisions: string[];
-  actions: string[];
-  unresolved_questions: string[];
-  entities: string[];
-  lessons: string[];
-  source_segment_ids: string[];
-  created_at: number;
-  updated_at: number;
-};
-
 type SessionDetail = SessionSummary & {
   transcript_segments: SavedTranscriptSegment[];
   note_cards: NoteCard[];
@@ -221,61 +214,6 @@ type RecallHit = {
   pinned?: boolean;
   explicitly_requested?: boolean;
   priority?: string;
-};
-
-type WorkMemoryStatus = {
-  projects: number;
-  evidence: number;
-  sources: number;
-  disabled_sources: number;
-  latest_index_at: number | null;
-  source_groups: Record<string, number>;
-  default_roots: string[];
-  guardrail: string;
-};
-
-type WorkMemoryCard = {
-  project_id: string;
-  title: string;
-  organization: string;
-  date_range: string;
-  score: number;
-  confidence: number;
-  reason: string;
-  lesson: string;
-  citations: string[];
-  text: string;
-};
-
-type WorkMemoryProject = {
-  id: string;
-  project_key: string;
-  title: string;
-  organization: string;
-  date_range: string;
-  role: string;
-  domain: string;
-  summary: string;
-  lessons: string[];
-  triggers: string[];
-  source_group: string;
-  confidence: number;
-  updated_at: number;
-  evidence?: { id: string; source_path: string; snippet: string; artifact_type: string; weight: number }[];
-};
-
-type WorkMemorySource = {
-  id: string;
-  path: string;
-  source_group: string;
-  sensitivity: string;
-  status: string;
-  title: string;
-  content_hash: string;
-  metadata: Record<string, unknown>;
-  disabled: boolean;
-  created_at: number;
-  updated_at: number;
 };
 
 type LibraryChunkSource = {
@@ -320,12 +258,23 @@ type TestModeReport = {
   recall_hits: number;
   queue_depth: number;
   dropped_windows: number;
-  work_parallel_rows: number;
+  reference_context_cards: number;
   error_count: number;
   expected_terms: string[];
   matched_expected_terms: string[];
   issues: string[];
   report_path?: string;
+};
+
+type TestModeSnapshot = {
+  transcript: TranscriptLine[];
+  notes: NoteCard[];
+  recall: RecallHit[];
+  sidecarCards: SidecarDisplayCard[];
+  pipeline: PipelineState;
+  errors: string[];
+  status: string;
+  testExpectedTerms: string;
 };
 
 type GpuHealth = {
@@ -339,12 +288,9 @@ type GpuHealth = {
   asr_cuda_available?: boolean;
   asr_cuda_error?: string;
   asr_backend?: string;
-  asr_streaming_supported?: boolean;
-  asr_streaming_chunk_ms?: number | null;
-  nemotron_model_id?: string;
-  nemotron_loaded?: boolean;
   asr_model?: string | null;
   asr_dtype?: string;
+  asr_device?: string;
   asr_backend_error?: string | null;
   asr_primary_model?: string;
   asr_fallback_model?: string;
@@ -371,8 +317,6 @@ type GpuHealth = {
   partial_transcripts_enabled?: boolean;
   partial_window_seconds?: number;
   partial_min_interval_seconds?: number;
-  streaming_partials_enabled?: boolean;
-  streaming_stable_final_chunks?: number;
   speaker_enrollment_sample_seconds?: number;
   speaker_identity_label?: string;
   speaker_retain_raw_enrollment_audio?: boolean;
@@ -384,6 +328,23 @@ type GpuHealth = {
   test_audio_run_dir?: string;
 };
 
+type OllamaModelOption = {
+  name: string;
+  size?: number | null;
+  digest?: string | null;
+  modified_at?: string | null;
+  cloud?: boolean;
+  current?: boolean;
+  configured?: boolean;
+};
+
+type OllamaModelsResponse = {
+  selected_chat_model: string;
+  chat_host: string;
+  models: OllamaModelOption[];
+  error?: string | null;
+};
+
 type PipelineState = {
   queueDepth: number;
   droppedWindows: number;
@@ -391,11 +352,8 @@ type PipelineState = {
   silentWindows: number;
   asrEmptyWindows: number;
   finalSegmentsReplaced: number;
-  streamingPartialCount: number;
-  streamingFinalCount: number;
-  streamingFlushCount: number;
-  streamingLatencyMs?: number;
-  streamingRealtimeFactor?: number;
+  asrDurationMs?: number;
+  partialAsrDurationMs?: number;
 };
 
 type SpeakerStatus = {
@@ -547,6 +505,9 @@ export function App() {
       return "live";
     }
     const storedPage = window.localStorage.getItem(APP_PAGE_STORAGE_KEY);
+    if (storedPage === "memory") {
+      return "references";
+    }
     return isAppPage(storedPage) ? storedPage : "live";
   });
   const [theme, setTheme] = useState<ThemeName>(() => {
@@ -565,24 +526,28 @@ export function App() {
   const [meetingFocusExpanded, setMeetingFocusExpanded] = useState(false);
   const [activeMeetingContract, setActiveMeetingContract] = useState<MeetingContractPayload | null>(null);
   const [meetingDiagnostics, setMeetingDiagnostics] = useState<MeetingDiagnostics | null>(null);
-  const [sessionRetention, setSessionRetention] = useState<SessionRetention>(() => {
-    if (typeof window === "undefined") {
-      return "temporary";
-    }
-    const storedRetention = window.localStorage.getItem(SESSION_RETENTION_STORAGE_KEY);
-    return storedRetention === "saved" ? "saved" : "temporary";
-  });
-  const [activeSessionRetention, setActiveSessionRetention] = useState<SessionRetention | null>(null);
+  const [energyFrame, setEnergyFrame] = useState<EnergyFrame | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [liveId, setLiveId] = useState<string | null>(null);
   const [currentSessionTitle, setCurrentSessionTitle] = useState("New meeting");
   const [sessionCatalog, setSessionCatalog] = useState<SessionSummary[]>([]);
   const [sessionSearch, setSessionSearch] = useState("");
+  const [showAllSessions, setShowAllSessions] = useState(false);
   const [sessionsBusy, setSessionsBusy] = useState("");
   const [selectedPastSessionId, setSelectedPastSessionId] = useState<string | null>(null);
   const [selectedPastSession, setSelectedPastSession] = useState<SessionDetail | null>(null);
   const [sessionTitleDraft, setSessionTitleDraft] = useState("");
+  const [reviewTitle, setReviewTitle] = useState("");
+  const [reviewJob, setReviewJob] = useState<ReviewJobResponse | null>(null);
+  const [reviewJobs, setReviewJobs] = useState<ReviewJobResponse[]>([]);
+  const [reviewBusy, setReviewBusy] = useState("");
+  const [reviewError, setReviewError] = useState("");
+  const [toolView, setToolView] = useState<ToolView>("voice");
   const [status, setStatus] = useState("idle");
   const [gpu, setGpu] = useState<GpuHealth>({});
+  const [ollamaModels, setOllamaModels] = useState<OllamaModelsResponse | null>(null);
+  const [ollamaModelBusy, setOllamaModelBusy] = useState("");
+  const [ollamaModelNotice, setOllamaModelNotice] = useState("");
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [notes, setNotes] = useState<NoteCard[]>([]);
   const [recall, setRecall] = useState<RecallHit[]>([]);
@@ -593,16 +558,17 @@ export function App() {
     silentWindows: 0,
     asrEmptyWindows: 0,
     finalSegmentsReplaced: 0,
-    streamingPartialCount: 0,
-    streamingFinalCount: 0,
-    streamingFlushCount: 0,
   });
   const [fixturePath, setFixturePath] = useState(DEFAULT_FIXTURE_AUDIO);
   const [testSourcePath, setTestSourcePath] = useState(DEFAULT_FIXTURE_AUDIO);
-  const [testMaxSeconds, setTestMaxSeconds] = useState("");
+  const [testMaxSeconds, setTestMaxSeconds] = useState(DEFAULT_TEST_MAX_SECONDS);
   const [testExpectedTerms, setTestExpectedTerms] = useState("");
   const [testPrepared, setTestPrepared] = useState<TestModePrepared | null>(null);
   const [testBusy, setTestBusy] = useState("");
+  const [testPlaybackStartedAtMs, setTestPlaybackStartedAtMs] = useState<number | null>(null);
+  const [testPlaybackBaseElapsedMs, setTestPlaybackBaseElapsedMs] = useState(0);
+  const [testPlaybackNow, setTestPlaybackNow] = useState(Date.now());
+  const [liveTestExpanded, setLiveTestExpanded] = useState(false);
   const [fileUploadBusy, setFileUploadBusy] = useState("");
   const [testReport, setTestReport] = useState<TestModeReport | null>(null);
   const [libraryPath, setLibraryPath] = useState("");
@@ -612,14 +578,8 @@ export function App() {
   const [selectedLibrarySourcePath, setSelectedLibrarySourcePath] = useState<string | null>(null);
   const [memoryQuery, setMemoryQuery] = useState("");
   const [memoryBusy, setMemoryBusy] = useState("");
-  const [workMemoryProjects, setWorkMemoryProjects] = useState<WorkMemoryProject[]>([]);
-  const [workMemorySources, setWorkMemorySources] = useState<WorkMemorySource[]>([]);
-  const [memorySearchResults, setMemorySearchResults] = useState<WorkMemoryCard[]>([]);
   const [manualQuery, setManualQuery] = useState("");
   const [manualQueryBusy, setManualQueryBusy] = useState(false);
-  const [workMemoryStatus, setWorkMemoryStatus] = useState<WorkMemoryStatus | null>(null);
-  const [workMemoryMatches, setWorkMemoryMatches] = useState<WorkMemoryCard[]>([]);
-  const [workMemoryBusy, setWorkMemoryBusy] = useState("");
   const [speakerStatus, setSpeakerStatus] = useState<SpeakerStatus | null>(null);
   const [speakerEnrollment, setSpeakerEnrollment] = useState<SpeakerEnrollment | null>(null);
   const [speakerBusy, setSpeakerBusy] = useState("");
@@ -648,8 +608,27 @@ export function App() {
   const speakerEventSourceRef = useRef<EventSource | null>(null);
   const testStartedAtRef = useRef<string | null>(null);
   const testSessionIdRef = useRef<string | null>(null);
+  const activeTestPreparedRef = useRef<TestModePrepared | null>(null);
+  const testAutoStopTimerRef = useRef<number | null>(null);
+  const testSnapshotRef = useRef<TestModeSnapshot>({
+    transcript: [],
+    notes: [],
+    recall: [],
+    sidecarCards: [],
+    pipeline: {
+      queueDepth: 0,
+      droppedWindows: 0,
+      silentWindows: 0,
+      asrEmptyWindows: 0,
+      finalSegmentsReplaced: 0,
+    },
+    errors: [],
+    status: "idle",
+    testExpectedTerms: "",
+  });
   const eventSeqRef = useRef(0);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const reviewTranscriptScrollRef = useRef<HTMLDivElement | null>(null);
   const liveEndRef = useRef<HTMLDivElement | null>(null);
   const followLiveRef = useRef(true);
   const micPlaybackUrlRef = useRef<string | null>(null);
@@ -660,7 +639,6 @@ export function App() {
     refreshDevices();
     refreshGpu();
     refreshSpeakerStatus();
-    refreshWorkMemoryStatus();
     refreshSessionCatalog();
     attachSpeakerEvents();
   }, []);
@@ -670,11 +648,15 @@ export function App() {
     if (activePage === "sessions") {
       refreshSessionCatalog();
     }
-    if (activePage === "memory") {
+    if (activePage === "references") {
       refreshMemoryPage();
     }
     if (activePage === "models") {
       refreshGpu();
+      refreshOllamaModels();
+    }
+    if (activePage === "review" && reviewBusy !== "uploading") {
+      void refreshReviewJobs();
     }
   }, [activePage]);
 
@@ -688,10 +670,6 @@ export function App() {
   }, [showDebugMetadata]);
 
   useEffect(() => {
-    window.localStorage.setItem(SESSION_RETENTION_STORAGE_KEY, sessionRetention);
-  }, [sessionRetention]);
-
-  useEffect(() => {
     window.localStorage.setItem(MIC_TUNING_STORAGE_KEY, JSON.stringify(micTuning));
   }, [micTuning]);
 
@@ -703,6 +681,7 @@ export function App() {
     return () => {
       eventSourceRef.current?.close();
       speakerEventSourceRef.current?.close();
+      clearTestAutoStopTimer();
       if (evidenceHighlightTimerRef.current) {
         window.clearTimeout(evidenceHighlightTimerRef.current);
       }
@@ -713,12 +692,45 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    testSnapshotRef.current = {
+      transcript,
+      notes,
+      recall,
+      sidecarCards,
+      pipeline,
+      errors,
+      status,
+      testExpectedTerms,
+    };
+  }, [errors, notes, pipeline, recall, sidecarCards, status, testExpectedTerms, transcript]);
+
+  useEffect(() => {
     if (speakerBusy !== "recording") {
       return;
     }
     const timer = window.setInterval(() => setSpeakerRecordingNow(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [speakerBusy]);
+
+  useEffect(() => {
+    if (testBusy !== "playing" || testPlaybackStartedAtMs === null) {
+      return;
+    }
+    setTestPlaybackNow(Date.now());
+    const timer = window.setInterval(() => setTestPlaybackNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [testBusy, testPlaybackStartedAtMs]);
+
+  useEffect(() => {
+    if (!reviewJob || isReviewTerminal(reviewJob.status)) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void refreshReviewJob(reviewJob.job_id);
+      void refreshReviewJobs();
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [reviewJob?.job_id, reviewJob?.status]);
 
   const gpuLabel = useMemo(() => {
     if (!gpu.nvidia_available) return "GPU not visible";
@@ -743,12 +755,8 @@ export function App() {
     () => usefulContextCards.filter(isCurrentMeetingCard),
     [usefulContextCards],
   );
-  const workMemoryContextCards = useMemo(
-    () => usefulContextCards.filter(isWorkMemoryCard),
-    [usefulContextCards],
-  );
   const otherContextCards = useMemo(
-    () => usefulContextCards.filter((card) => !isCurrentMeetingCard(card) && !isWorkMemoryCard(card) && !isManualCard(card)),
+    () => usefulContextCards.filter((card) => !isCurrentMeetingCard(card) && !isManualCard(card)),
     [usefulContextCards],
   );
   const manualSourceCards = useMemo(
@@ -784,9 +792,6 @@ export function App() {
   const visibleMeetingCards = showAllContext
     ? currentMeetingCards
     : currentMeetingCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
-  const visibleMemoryCards = showAllContext
-    ? workMemoryContextCards
-    : workMemoryContextCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
   const visibleOtherContextCards = showAllContext
     ? otherContextCards
     : otherContextCards.slice(0, DEFAULT_CONTEXT_CARD_LIMIT);
@@ -796,28 +801,68 @@ export function App() {
     () => buildConsultingBriefMarkdown(usefulContextCards, "Consulting Brief", activeMeetingContract ?? undefined),
     [activeMeetingContract, usefulContextCards],
   );
+  const reviewTranscriptEvents = useMemo(
+    () => (reviewJob?.clean_segments ?? []).map((segment) => ({
+      id: `review-transcript-${segment.id}`,
+      segmentId: segment.id,
+      sourceSegmentIds: segment.source_segment_ids ?? [segment.id],
+      text: segment.text,
+      at: payloadTimeMs(segment.created_at) ?? Date.now(),
+      source: "microphone" as const,
+      speakerRole: speakerRoleFromPayload(segment.speaker_role),
+      speakerLabel: segment.speaker_label,
+      speakerConfidence: segment.speaker_confidence,
+      startedAt: payloadTimeMs(segment.start_s),
+      endedAt: payloadTimeMs(segment.end_s),
+      isFinal: true,
+    })),
+    [reviewJob?.clean_segments],
+  );
+  const reviewCards = useMemo(
+    () => {
+      if (!reviewJob) {
+        return [];
+      }
+      return reviewJob.meeting_cards
+        .map((payload) => displayCardForSidecarPayload(payload, {
+          id: `review-card-${String(payload.id ?? "")}`,
+          type: "sidecar_card",
+          session_id: reviewJob.session_id ?? reviewJob.job_id,
+          at: reviewJob.updated_at,
+          payload,
+        }))
+        .filter((card): card is SidecarDisplayCard => Boolean(card));
+    },
+    [reviewJob],
+  );
+  const reviewMeetingGroups = useMemo(() => groupMeetingOutputCards(reviewCards), [reviewCards]);
+  const reviewSummaryNotes = useMemo(
+    () => reviewJob ? buildMeetingSummaryNotesViewModel(reviewJob, reviewCards) : null,
+    [reviewCards, reviewJob],
+  );
+  const reviewSummaryMarkdown = useMemo(
+    () => reviewSummaryNotes ? buildMeetingSummaryMarkdown(reviewSummaryNotes) : "",
+    [reviewSummaryNotes],
+  );
 
-  const workMemoryLabel = workMemoryStatus
-    ? `${workMemoryStatus.projects} projects / ${workMemoryStatus.sources} sources`
-    : "not indexed";
-  const asrBackendLabel = gpu.asr_backend === "nemotron_streaming"
-    ? "Nemotron Streaming"
-    : "Faster-Whisper";
-  const asrModelLabel = gpu.asr_backend === "nemotron_streaming"
-    ? gpu.nemotron_model_id ?? gpu.asr_model ?? "nemotron"
-    : gpu.asr_model ?? gpu.asr_primary_model ?? "medium.en";
-  const streamingModeLabel = gpu.asr_backend === "nemotron_streaming"
-    ? `Stream ${Number(gpu.asr_streaming_chunk_ms ?? 0)} ms`
-    : gpu.partial_transcripts_enabled
-      ? `Preview ${formatSeconds(gpu.partial_window_seconds ?? 0)}`
-      : `Final ${formatSeconds(gpu.transcription_window_seconds ?? 0)}`;
-  const streamingMetricLabel = pipeline.streamingLatencyMs != null
-    ? `${pipeline.streamingLatencyMs.toFixed(0)} ms${pipeline.streamingRealtimeFactor != null ? ` / ${pipeline.streamingRealtimeFactor.toFixed(2)}x` : ""}`
-    : "stream idle";
+  const asrBackendLabel = "Faster-Whisper";
+  const asrModelLabel = gpu.asr_model ?? gpu.asr_primary_model ?? "small.en";
+  const asrDeviceLabel = gpu.asr_device ?? "cpu";
+  const asrDeviceStatusLabel = asrDeviceLabel === "cpu"
+    ? "CPU ASR"
+    : gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "CUDA check";
+  const asrCadenceLabel = gpu.partial_transcripts_enabled
+    ? `Preview ${formatSeconds(gpu.partial_window_seconds ?? 0)}`
+    : `Final ${formatSeconds(gpu.transcription_window_seconds ?? 0)}`;
+  const asrTimingLabel = pipeline.asrDurationMs != null
+    ? `${pipeline.asrDurationMs.toFixed(0)} ms final`
+    : pipeline.partialAsrDurationMs != null
+      ? `${pipeline.partialAsrDurationMs.toFixed(0)} ms preview`
+      : "ASR idle";
   const testModeVisible = Boolean(gpu.test_mode_enabled);
   const webStatusLabel = gpu.web_context_enabled
     ? gpu.web_context_configured ? "web ready" : "web key missing"
-    : "web off";
+    : gpu.web_context_configured ? "web selectable" : "web off";
   const ollamaChatHostLabel = formatOllamaHostLabel(gpu.ollama_chat_host);
   const ollamaEmbedHostLabel = formatOllamaHostLabel(gpu.ollama_embed_host);
   const ollamaChatReachabilityLabel = gpu.ollama_chat_reachable == null
@@ -864,7 +909,7 @@ export function App() {
     : !speakerStatus.backend.available
       ? speakerStatus.backend.reason ?? "Speaker embedding backend is unavailable."
       : speakerStatus.ready
-        ? `Transcripts can label your matching voice as ${speakerEnrollmentLabel}; other voices stay Speaker 1, Speaker 2, or Unknown.`
+        ? `Transcripts can label your matching voice as ${speakerEnrollmentLabel}; non-matches stay Other speaker or Unknown.`
         : `Record only ${speakerEnrollmentLabel} so transcripts can identify your voice. Raw enrollment audio is discarded.`;
   const speakerTrainingButtonLabel = speakerBusy === "starting"
     ? "Starting..."
@@ -892,34 +937,49 @@ export function App() {
           ? `Finish and use ${speakerEnrollmentLabel} label`
           : `Record ${Math.max(1, Math.ceil(speakerNeededSpeech / Math.max(1, speakerSampleSeconds)))} more sample${Math.ceil(speakerNeededSpeech / Math.max(1, speakerSampleSeconds)) === 1 ? "" : "s"}`;
   const captureStarting = ["starting", "freeing_gpu", "loading_asr"].includes(status);
-  const captureActive = ["listening", "catching_up"].includes(status);
+  const captureActive = ["listening", "catching_up", "paused"].includes(status);
   const selectedServerMic = devices.find((device) => device.id === selectedDevice) ?? null;
   const serverMicInUse = Boolean(selectedServerMic?.in_use);
   const missingServerDevice = audioSource === "server_device" && (!selectedDevice || (serverMicInUse && !captureActive));
   const captureStartDisabled = captureStarting || captureActive || missingServerDevice;
-  const captureStopDisabled = !sessionId || status === "idle" || status === "stopped";
+  const captureStopDisabled = !(sessionId || liveId) || status === "idle" || status === "stopped";
   const serverMicStatus = selectedServerMic
     ? `${selectedServerMic.label}${selectedServerMic.in_use ? " (in use)" : selectedServerMic.healthy === false ? " (not usable)" : ""}`
     : "No healthy server microphone detected";
-  const activeRetention = activeSessionRetention ?? sessionRetention;
-  const captureModeLabel = audioSource === "fixture"
-    ? "Recording playback"
+  const inputReadinessTitle = missingServerDevice
+    ? "Missing mic"
+    : micTest && micTest.recommendation.status !== "good"
+      ? "Needs tuning"
+      : "Ready";
+  const inputReadinessDetail = missingServerDevice
+    ? serverMicStatus
+    : `${serverMicStatus} · gain ${micTuning.input_gain_db > 0 ? "+" : ""}${micTuning.input_gain_db.toFixed(0)} dB · ${micTuning.speech_sensitivity}`;
+  const playbackActive = ["playing", "starting-playback", "pausing", "paused", "resuming"].includes(testBusy);
+  const playbackPaused = testBusy === "paused" || status === "paused";
+  const captureModeLabel = playbackActive || audioSource === "fixture"
+    ? "Recorded audio"
     : "Server mic";
-  const sessionRetentionStatus = sessionRetention === "saved" ? "Saved transcript" : "Not saved";
-  const activeRetentionStatus = activeRetention === "saved" ? "Saved transcript" : "Not saved";
-  const sessionRetentionDetail = sessionRetention === "saved"
-    ? "Transcript text and notes will be available for future recall. Raw audio is not saved."
-    : "Ephemeral: transcript text and notes stay on screen only. Raw audio is not saved.";
+  const sessionRetentionStatus = "Ephemeral Live";
+  const activeRetentionStatus = "Queued for Review";
+  const gpuFreeLabel = gpu.memory_free_mb != null && gpu.memory_total_mb != null
+    ? `${gpu.memory_free_mb}/${gpu.memory_total_mb} MB free`
+    : "VRAM check";
   const captureStatusSummary = missingServerDevice
     ? "No healthy server mic"
-    : `${captureModeLabel} · ${captureActive ? activeRetentionStatus : sessionRetentionStatus} · raw audio discarded`;
+    : `${captureModeLabel} · ${captureActive ? activeRetentionStatus : sessionRetentionStatus}`;
+  const topRuntimeSummary = captureActive || captureStarting
+    ? captureStatusSummary
+    : `${asrBackendLabel} · ${gpuFreeLabel}`;
+  const topRuntimeDetail = captureActive || captureStarting
+    ? `${asrBackendLabel} · ${gpuFreeLabel}`
+    : captureStatusSummary;
   const headerQueueLabel = pipeline.queueDepth > 0 || captureActive || captureStarting
     ? `Queue ${pipeline.queueDepth}`
     : "";
   const contextEmptyTitle = captureStarting
     ? "Starting context"
     : captureActive
-      ? activeRetention === "saved" ? "Recording context" : "Listening for context"
+      ? "Live reference"
       : "Context standby";
   const contextEmptyBody = captureActive && currentMeetingCards.length === 0
     ? "No grounded cards yet. Unsupported/noisy cards are being suppressed."
@@ -928,10 +988,8 @@ export function App() {
       : "Start listening, record a transcript, or run a query.";
   const captureIdleButtonLabel = audioSource === "fixture"
     ? "Start Playback"
-    : sessionRetention === "saved"
-      ? "Start Recording"
-      : "Start Listening";
-  const captureActiveLabel = activeRetention === "saved" ? "Recording" : "Listening";
+    : "Start Live";
+  const captureActiveLabel = playbackPaused ? "Paused" : playbackActive ? "Playing..." : "Live Running";
   const captureButtonLabel = status === "freeing_gpu"
     ? "Freeing GPU..."
     : status === "loading_asr" || status === "starting"
@@ -943,11 +1001,71 @@ export function App() {
     ? "Starting Playback..."
     : testBusy === "playing"
       ? "Playing..."
+      : testBusy === "paused"
+        ? "Resume"
       : "Start Playback";
   const prepareButtonLabel = testBusy === "preparing" ? "Preparing..." : testPrepared ? "Prepared" : "Prepare Audio";
-  const gpuFreeLabel = gpu.memory_free_mb != null && gpu.memory_total_mb != null
-    ? `${gpu.memory_free_mb}/${gpu.memory_total_mb} MB free`
-    : "VRAM check";
+  const liveTestUploadDisabled = captureActive || captureStarting || Boolean(fileUploadBusy) || Boolean(testBusy);
+  const liveTestConfigDisabled = liveTestUploadDisabled;
+  const liveTestToggleDisabled = Boolean(fileUploadBusy) || testBusy === "preparing";
+  const liveTestStatus = fileUploadBusy === "test-audio"
+    ? "uploading"
+    : testBusy || (testPrepared ? "ready" : "idle");
+  const liveTestStateLabel = liveTestStatus === "uploading"
+    ? "Uploading"
+    : liveTestStatus === "preparing"
+      ? "Preparing"
+      : liveTestStatus === "starting-playback"
+        ? "Starting"
+        : liveTestStatus === "playing"
+          ? "Playing"
+          : liveTestStatus === "paused"
+            ? "Paused"
+            : liveTestStatus === "pausing"
+              ? "Pausing"
+              : liveTestStatus === "resuming"
+                ? "Resuming"
+                : testReport
+                  ? "Report ready"
+                  : testPrepared
+                    ? "Ready"
+                    : "Idle";
+  const liveTestStateDetail = liveTestStatus === "uploading"
+    ? "Uploading the file to local test storage."
+    : liveTestStatus === "preparing"
+      ? "Converting audio into a local WAV fixture."
+      : liveTestStatus === "starting-playback"
+        ? "Starting the live pipeline with recorded audio."
+        : liveTestStatus === "playing"
+          ? "Feeding recorded audio through the live transcript."
+          : liveTestStatus === "paused"
+            ? "Playback is paused; resume to continue the transcript."
+            : testReport
+              ? "Playback finished and the local report is ready."
+              : testPrepared
+                ? "Audio is prepared. Start playback when ready."
+                : "Upload a common audio file to run it through Live.";
+  const canResetLiveTest = Boolean(testPrepared || testReport || testBusy || fileUploadBusy === "test-audio");
+  const testPlaybackDurationSeconds = testPrepared?.duration_seconds ?? 0;
+  const testPlaybackElapsedSeconds = testBusy === "playing" && testPlaybackStartedAtMs !== null
+    ? Math.min(
+        testPlaybackDurationSeconds || Number.POSITIVE_INFINITY,
+        Math.max(0, (testPlaybackBaseElapsedMs + testPlaybackNow - testPlaybackStartedAtMs) / 1000),
+      )
+    : playbackPaused
+      ? Math.min(testPlaybackDurationSeconds || Number.POSITIVE_INFINITY, Math.max(0, testPlaybackBaseElapsedMs / 1000))
+    : 0;
+  const testPlaybackProgress = testPlaybackDurationSeconds > 0
+    ? Math.max(0, Math.min(100, (testPlaybackElapsedSeconds / testPlaybackDurationSeconds) * 100))
+    : 0;
+  const testPlaybackRemainingSeconds = testPlaybackDurationSeconds > 0
+    ? Math.max(0, testPlaybackDurationSeconds - testPlaybackElapsedSeconds)
+    : 0;
+  const testPlaybackMessage = transcript.length > 0
+    ? `${transcript.length} heard ${pluralize("line", transcript.length)} so far. Cards will land when there is enough evidence.`
+    : pipeline.asrEmptyWindows > 0
+      ? "Audio is moving; ASR has not found speech in the recent windows yet."
+      : "Audio is playing through the live pipeline. Waiting for the first transcript window.";
   const statusTone = status === "listening" || status === "catching_up"
     ? "live"
     : status === "error"
@@ -955,6 +1073,13 @@ export function App() {
       : captureStarting
         ? "busy"
         : "idle";
+  const liveWorkbenchMode: LiveWorkbenchMode = briefVisible
+    ? "ended"
+    : playbackActive || playbackPaused
+      ? "replay"
+      : liveTestExpanded || Boolean(testBusy) || Boolean(testPrepared) || fileUploadBusy === "test-audio"
+        ? "dev-test"
+        : "live";
 
   async function refreshDevices() {
     const response = await fetch(`${API_BASE}/api/devices`);
@@ -973,22 +1098,71 @@ export function App() {
     setGpu(await response.json());
   }
 
+  async function refreshOllamaModels() {
+    setOllamaModelBusy((current) => current || "loading");
+    try {
+      const response = await fetch(`${API_BASE}/api/models/ollama`);
+      if (!response.ok) {
+        setOllamaModelNotice("Model list unavailable");
+        return;
+      }
+      const payload = await response.json() as OllamaModelsResponse;
+      setOllamaModels(payload);
+      if (payload.error) {
+        setOllamaModelNotice("Model list degraded");
+      } else if (ollamaModelNotice === "Model list unavailable" || ollamaModelNotice === "Model list degraded") {
+        setOllamaModelNotice("");
+      }
+    } catch {
+      setOllamaModelNotice("Model list unavailable");
+    } finally {
+      setOllamaModelBusy((current) => current === "loading" ? "" : current);
+    }
+  }
+
+  async function selectOllamaChatModel(model: string) {
+    const cleanModel = model.trim();
+    if (!cleanModel || cleanModel === (gpu.ollama_chat_model ?? ollamaModels?.selected_chat_model)) {
+      return;
+    }
+    setOllamaModelBusy("saving");
+    setOllamaModelNotice("");
+    try {
+      const response = await fetch(`${API_BASE}/api/models/ollama/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: cleanModel }),
+      });
+      const payload = await response.json() as OllamaModelsResponse & { detail?: string };
+      if (!response.ok) {
+        setOllamaModelNotice(payload.detail || "Model update failed");
+        return;
+      }
+      setOllamaModels(payload);
+      setGpu((current) => ({
+        ...current,
+        ollama_chat_model: payload.selected_chat_model,
+        ollama_chat_host: payload.chat_host,
+      }));
+      setOllamaModelNotice(`Saved ${payload.selected_chat_model} to .env`);
+      await refreshGpu();
+    } catch {
+      setOllamaModelNotice("Model update failed");
+    } finally {
+      setOllamaModelBusy("");
+    }
+  }
+
   async function refreshSpeakerStatus() {
     const response = await fetch(`${API_BASE}/api/speaker/status`);
     if (!response.ok) return;
     setSpeakerStatus(await response.json());
   }
 
-  async function refreshWorkMemoryStatus() {
-    const response = await fetch(`${API_BASE}/api/work-memory/status`);
-    if (!response.ok) return;
-    setWorkMemoryStatus(await response.json());
-  }
-
   async function refreshSessionCatalog() {
     setSessionsBusy((current) => current || "loading");
     const query = sessionSearch.trim();
-    const url = new URL(`${API_BASE}/api/sessions`);
+    const url = new URL(`${API_BASE}/api/sessions`, window.location.origin);
     url.searchParams.set("include_empty", "true");
     url.searchParams.set("limit", "80");
     if (query) {
@@ -1032,26 +1206,28 @@ export function App() {
     }
     const metadata = await response.json() as SessionSummary;
     setSelectedPastSession((current) => current ? { ...current, ...metadata } : current);
+    setSessionTitleDraft(metadata.title);
     setSessionCatalog((current) => current.map((session) => session.id === metadata.id ? metadata : session));
     if (metadata.id === sessionId) {
       setCurrentSessionTitle(metadata.title);
     }
   }
 
-  async function createSession(title?: string) {
+  async function createSession(title?: string, signal?: AbortSignal) {
     const requestedTitle = (title ?? currentSessionTitle.trim()) || null;
     const response = await fetch(`${API_BASE}/api/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: requestedTitle }),
+      signal,
     });
     const payload = await response.json();
     setSessionId(payload.id);
-    setCurrentSessionTitle(String(payload.title ?? requestedTitle ?? "New meeting"));
+    const nextTitle = String(payload.title ?? requestedTitle ?? "New meeting");
+    setCurrentSessionTitle(nextTitle);
     setTranscript([]);
     setNotes([]);
     setRecall([]);
-    setWorkMemoryMatches([]);
     setErrors([]);
     setPipeline({
       queueDepth: 0,
@@ -1059,13 +1235,11 @@ export function App() {
       silentWindows: 0,
       asrEmptyWindows: 0,
       finalSegmentsReplaced: 0,
-      streamingPartialCount: 0,
-      streamingFinalCount: 0,
-      streamingFlushCount: 0,
     });
     captureWarningRef.current = "";
     setActiveMeetingContract(null);
     setMeetingDiagnostics(null);
+    setEnergyFrame(null);
     setTranscriptEvents([]);
     setSidecarCards([]);
     setDismissedCardKeys(new Set());
@@ -1076,7 +1250,13 @@ export function App() {
     followLiveRef.current = true;
     setFollowLive(true);
     attachEvents(payload.id);
-    await refreshSessionCatalog();
+    void refreshSessionCatalog().catch(() => {
+      appendSystemLog({
+        level: "warning",
+        title: "Session list refresh skipped",
+        message: "The meeting session was created, but the saved-session list could not refresh yet.",
+      });
+    });
     return payload.id as string;
   }
 
@@ -1084,7 +1264,33 @@ export function App() {
     if (captureActive || captureStarting) {
       return;
     }
-    await createSession(currentSessionTitle.trim() || "New meeting");
+    setSessionId(null);
+    setLiveId(null);
+    setCurrentSessionTitle("New meeting");
+    setTranscript([]);
+    setNotes([]);
+    setRecall([]);
+    setErrors([]);
+    setPipeline({
+      queueDepth: 0,
+      droppedWindows: 0,
+      silentWindows: 0,
+      asrEmptyWindows: 0,
+      finalSegmentsReplaced: 0,
+    });
+    captureWarningRef.current = "";
+    setActiveMeetingContract(null);
+    setMeetingDiagnostics(null);
+    setEnergyFrame(null);
+    setTranscriptEvents([]);
+    setSidecarCards([]);
+    setDismissedCardKeys(new Set());
+    setExpandedContextCards(new Set());
+    setSystemLogs([]);
+    setShowAllContext(false);
+    setUnseenItems(0);
+    followLiveRef.current = true;
+    setFollowLive(true);
     setStatus("idle");
     setActivePage("live");
   }
@@ -1118,7 +1324,7 @@ export function App() {
     if (id === "new") {
       setSessionId(null);
       setCurrentSessionTitle("New meeting");
-      return;
+        return;
     }
     const selected = sessionCatalog.find((session) => session.id === id);
     if (!selected) {
@@ -1141,8 +1347,6 @@ export function App() {
     await Promise.all([
       refreshLibraryRoots(),
       refreshLibraryChunks(selectedLibrarySourcePath ?? undefined),
-      refreshWorkMemoryCollections(),
-      refreshWorkMemoryStatus(),
     ]);
     setMemoryBusy((current) => current === "loading" ? "" : current);
   }
@@ -1157,7 +1361,7 @@ export function App() {
   }
 
   async function refreshLibraryChunks(sourcePath?: string) {
-    const url = new URL(`${API_BASE}/api/library/chunks`);
+    const url = new URL(`${API_BASE}/api/library/chunks`, window.location.origin);
     url.searchParams.set("limit", "120");
     if (memoryQuery.trim()) {
       url.searchParams.set("query", memoryQuery.trim());
@@ -1174,47 +1378,20 @@ export function App() {
     setLibraryChunks(payload.chunks ?? []);
   }
 
-  async function refreshWorkMemoryCollections() {
-    const [projectsResponse, sourcesResponse] = await Promise.all([
-      fetch(`${API_BASE}/api/work-memory/projects`),
-      fetch(`${API_BASE}/api/work-memory/sources?limit=120`),
-    ]);
-    if (projectsResponse.ok) {
-      const payload = await projectsResponse.json() as { projects?: WorkMemoryProject[] };
-      setWorkMemoryProjects(payload.projects ?? []);
-    }
-    if (sourcesResponse.ok) {
-      const payload = await sourcesResponse.json() as { sources?: WorkMemorySource[] };
-      setWorkMemorySources(payload.sources ?? []);
-    }
-  }
-
   async function searchMemory() {
     const query = memoryQuery.trim();
     if (!query) {
       await refreshLibraryChunks(selectedLibrarySourcePath ?? undefined);
-      setMemorySearchResults([]);
       return;
     }
     setMemoryBusy("searching");
-    const [workResponse] = await Promise.all([
-      fetch(`${API_BASE}/api/work-memory/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, limit: 8 }),
-      }),
-      refreshLibraryChunks(selectedLibrarySourcePath ?? undefined),
-    ]);
+    await refreshLibraryChunks(selectedLibrarySourcePath ?? undefined);
     setMemoryBusy("");
-    if (workResponse.ok) {
-      const payload = await workResponse.json() as { cards?: WorkMemoryCard[] };
-      setMemorySearchResults(payload.cards ?? []);
-    }
   }
 
-  function attachEvents(id: string) {
+  function attachEvents(id: string, kind: "session" | "live" = "session") {
     eventSourceRef.current?.close();
-    const source = new EventSource(`${API_BASE}/api/sessions/${id}/events`);
+    const source = new EventSource(`${API_BASE}/api/${kind === "live" ? "live" : "sessions"}/${id}/events`);
     source.onmessage = handleEventMessage;
     for (const type of [
       "audio_status",
@@ -1259,11 +1436,8 @@ export function App() {
         silentWindows: Number(payload.silent_windows ?? current.silentWindows),
         asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
         finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
-        streamingPartialCount: Number(payload.asr_streaming_partial_count ?? current.streamingPartialCount),
-        streamingFinalCount: Number(payload.asr_streaming_final_count ?? current.streamingFinalCount),
-        streamingFlushCount: Number(payload.asr_streaming_flush_count ?? current.streamingFlushCount),
-        streamingLatencyMs: numberOrUndefined(payload.asr_streaming_latency_ms) ?? current.streamingLatencyMs,
-        streamingRealtimeFactor: numberOrUndefined(payload.asr_streaming_realtime_factor) ?? current.streamingRealtimeFactor,
+        asrDurationMs: numberOrUndefined(payload.asr_duration_ms) ?? current.asrDurationMs,
+        partialAsrDurationMs: numberOrUndefined(payload.partial_asr_duration_ms) ?? current.partialAsrDurationMs,
       }));
       const captureWarning = captureWarningFromPayload(payload);
       if (captureWarning && captureWarning.id !== captureWarningRef.current) {
@@ -1287,7 +1461,7 @@ export function App() {
         appendSystemLog({
           level: "status",
           title: "Loading ASR",
-          message: `${asrBackendNameFromPayload(payload)} is loading on CUDA. Target free VRAM: ${payload.asr_min_free_vram_mb ?? "unknown"} MB.`,
+          message: `${asrBackendNameFromPayload(payload)} is loading on ${payload.asr_device ?? "cpu"}. Target free VRAM: ${payload.asr_min_free_vram_mb ?? "unknown"} MB.`,
           metadata: payload,
         });
       }
@@ -1313,15 +1487,13 @@ export function App() {
         silentWindows: Number(payload.silent_windows ?? current.silentWindows),
         asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
         finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
-        streamingPartialCount: Number(payload.asr_streaming_partial_count ?? current.streamingPartialCount),
-        streamingFinalCount: Number(payload.asr_streaming_final_count ?? current.streamingFinalCount),
-        streamingFlushCount: Number(payload.asr_streaming_flush_count ?? current.streamingFlushCount),
-        streamingLatencyMs: numberOrUndefined(payload.asr_streaming_latency_ms) ?? current.streamingLatencyMs,
-        streamingRealtimeFactor: numberOrUndefined(payload.asr_streaming_realtime_factor) ?? current.streamingRealtimeFactor,
+        asrDurationMs: numberOrUndefined(payload.asr_duration_ms) ?? current.asrDurationMs,
+        partialAsrDurationMs: numberOrUndefined(payload.partial_asr_duration_ms) ?? current.partialAsrDurationMs,
       }));
       appendTranscriptEvent(transcriptEventFromPayload(payload, envelope));
     }
     if (envelope.type === "transcript_final") {
+      syncMeetingStatusFromPayload(payload);
       setPipeline((current) => ({
         ...current,
         queueDepth: Number(payload.queue_depth ?? current.queueDepth),
@@ -1330,11 +1502,8 @@ export function App() {
         silentWindows: Number(payload.silent_windows ?? current.silentWindows),
         asrEmptyWindows: Number(payload.asr_empty_windows ?? current.asrEmptyWindows),
         finalSegmentsReplaced: Number(payload.final_segments_replaced ?? current.finalSegmentsReplaced),
-        streamingPartialCount: Number(payload.asr_streaming_partial_count ?? current.streamingPartialCount),
-        streamingFinalCount: Number(payload.asr_streaming_final_count ?? current.streamingFinalCount),
-        streamingFlushCount: Number(payload.asr_streaming_flush_count ?? current.streamingFlushCount),
-        streamingLatencyMs: numberOrUndefined(payload.asr_streaming_latency_ms) ?? current.streamingLatencyMs,
-        streamingRealtimeFactor: numberOrUndefined(payload.asr_streaming_realtime_factor) ?? current.streamingRealtimeFactor,
+        asrDurationMs: numberOrUndefined(payload.asr_duration_ms) ?? current.asrDurationMs,
+        partialAsrDurationMs: numberOrUndefined(payload.partial_asr_duration_ms) ?? current.partialAsrDurationMs,
       }));
       const line = {
         id: String(payload.id),
@@ -1365,19 +1534,7 @@ export function App() {
     }
     if (envelope.type === "recall_hit") {
       const hit = recallHitFromPayload(payload);
-      if (hit.source_type === "work_memory_project") {
-        const card = workCardFromHit(hit);
-        setWorkMemoryMatches((current) => [
-          card,
-            ...current.filter((candidate) => candidate.project_id !== hit.source_id).slice(0, 5),
-        ]);
-        appendSidecarCard(displayCardForWorkCard(card, {
-          origin: hit.source_segment_ids?.length ? "live" : "unpaired",
-          sourceSegmentIds: hit.source_segment_ids,
-        }));
-      } else {
-        appendSidecarCard(displayCardForRecall(hit));
-      }
+      appendSidecarCard(displayCardForRecall(hit));
       setRecall((current) => [hit, ...current.slice(0, 11)]);
     }
     if (envelope.type === "error") {
@@ -1403,6 +1560,9 @@ export function App() {
     const nextDiagnostics = meetingDiagnosticsFromPayload(payload.meeting_diagnostics);
     if (nextDiagnostics) {
       setMeetingDiagnostics(nextDiagnostics);
+    }
+    if ("energy_lens_active" in payload || "energy_lens_confidence" in payload) {
+      setEnergyFrame(energyFrameFromPayload(payload));
     }
   }
 
@@ -1452,6 +1612,190 @@ export function App() {
     if (path) {
       onPath(path);
     }
+  }
+
+  async function handleReviewFilePick(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) {
+      return;
+    }
+    const body = new FormData();
+    body.append("file", file);
+    body.append("source", "upload");
+    if (reviewTitle.trim()) {
+      body.append("title", reviewTitle.trim());
+    }
+    setReviewBusy("uploading");
+    setReviewError("");
+    setCurrentReviewJob(null);
+    const result = await fetchJson<ReviewJobResponse>(`${API_BASE}/api/review/jobs`, {
+      method: "POST",
+      body,
+    });
+    setReviewBusy("");
+    if (!result.ok) {
+      const detail = (result.payload as { detail?: string }).detail ?? "Review upload failed.";
+      setReviewError(detail);
+      pushError(detail);
+      return;
+    }
+    setCurrentReviewJob(result.payload);
+    void refreshReviewJobs();
+  }
+
+  function startNewReview() {
+    setReviewError("");
+    setReviewTitle("");
+    setCurrentReviewJob(null);
+  }
+
+  function setCurrentReviewJob(job: ReviewJobResponse | null) {
+    if (job?.id && !job.job_id) {
+      job.job_id = job.id;
+    }
+    setReviewJob(job);
+    if (job) {
+      setReviewJobs((current) => {
+        const jobId = reviewJobId(job);
+        const next = [job, ...current.filter((candidate) => reviewJobId(candidate) !== jobId)];
+        return next.sort(compareReviewJobs);
+      });
+    }
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (job?.job_id) {
+      window.localStorage.setItem(REVIEW_LAST_JOB_STORAGE_KEY, job.job_id);
+    } else {
+      window.localStorage.removeItem(REVIEW_LAST_JOB_STORAGE_KEY);
+    }
+  }
+
+  async function refreshReviewJobs() {
+    setReviewBusy((current) => current || "loading-list");
+    const result = await fetchJson<{ jobs?: ReviewJobResponse[] }>(`${API_BASE}/api/review/jobs?limit=50`, {
+      method: "GET",
+    });
+    setReviewBusy((current) => current === "loading-list" ? "" : current);
+    if (!result.ok) {
+      return;
+    }
+    const jobs = (result.payload.jobs ?? []).map((job) => ({ ...job, job_id: reviewJobId(job) }));
+    setReviewJobs(jobs);
+    if (!reviewJob && jobs.length > 0) {
+      const selected = jobs.find(isReviewDefaultSelectable);
+      if (selected) {
+        void refreshReviewJob(reviewJobId(selected));
+      }
+    } else if (reviewJob) {
+      const updated = jobs.find((job) => reviewJobId(job) === reviewJobId(reviewJob));
+      if (updated && updated.status !== reviewJob.status) {
+        void refreshReviewJob(reviewJobId(updated));
+      }
+    }
+  }
+
+  async function refreshLatestReviewJob() {
+    setReviewBusy((current) => current || "loading-latest");
+    const latest = await fetchJson<ReviewJobResponse>(`${API_BASE}/api/review/jobs/latest`, {
+      method: "GET",
+    });
+    if (latest.ok) {
+      setCurrentReviewJob(latest.payload);
+      setReviewBusy("");
+      return;
+    }
+    const storedJobId = typeof window !== "undefined"
+      ? window.localStorage.getItem(REVIEW_LAST_JOB_STORAGE_KEY)
+      : "";
+    if (storedJobId) {
+      const stored = await fetchJson<ReviewJobResponse>(`${API_BASE}/api/review/jobs/${encodeURIComponent(storedJobId)}`, {
+        method: "GET",
+      });
+      if (stored.ok) {
+        setCurrentReviewJob(stored.payload);
+      }
+    }
+    setReviewBusy("");
+  }
+
+  async function refreshReviewJob(jobId: string) {
+    const result = await fetchJson<ReviewJobResponse>(`${API_BASE}/api/review/jobs/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+    });
+    if (!result.ok) {
+      const detail = (result.payload as { detail?: string }).detail ?? "Review status unavailable.";
+      setReviewError(detail);
+      return;
+    }
+    const wasApproved = reviewJob?.status === "approved";
+    setCurrentReviewJob(result.payload);
+    if (!wasApproved && result.payload.status === "approved") {
+      void refreshSessionCatalog();
+      if (result.payload.session_id) {
+        void loadPastSession(result.payload.session_id);
+      }
+    }
+  }
+
+  async function approveReviewJob() {
+    if (!reviewJob || reviewJob.status !== "completed_awaiting_validation") {
+      return;
+    }
+    setReviewBusy("approving");
+    const result = await fetchJson<ReviewJobResponse>(`${API_BASE}/api/review/jobs/${encodeURIComponent(reviewJobId(reviewJob))}/approve`, {
+      method: "POST",
+    });
+    setReviewBusy("");
+    if (!result.ok) {
+      const detail = (result.payload as { detail?: string }).detail ?? "Review approval failed.";
+      setReviewError(detail);
+      pushError(detail);
+      return;
+    }
+    setCurrentReviewJob(result.payload);
+    void refreshReviewJobs();
+    if (result.payload.session_id) {
+      void refreshSessionCatalog();
+    }
+  }
+
+  async function discardReviewJob() {
+    if (!reviewJob || !["queued", "paused_for_live", "completed_awaiting_validation", "error"].includes(reviewJob.status)) {
+      return;
+    }
+    setReviewBusy("discarding");
+    const result = await fetchJson<ReviewJobResponse>(`${API_BASE}/api/review/jobs/${encodeURIComponent(reviewJobId(reviewJob))}/discard`, {
+      method: "POST",
+    });
+    setReviewBusy("");
+    if (!result.ok) {
+      const detail = (result.payload as { detail?: string }).detail ?? "Review discard failed.";
+      setReviewError(detail);
+      pushError(detail);
+      return;
+    }
+    setCurrentReviewJob(result.payload);
+    void refreshReviewJobs();
+  }
+
+  async function cancelReviewJob() {
+    if (!reviewJob || isReviewTerminal(reviewJob.status)) {
+      return;
+    }
+    setReviewBusy("canceling");
+    const result = await fetchJson<ReviewJobResponse>(`${API_BASE}/api/review/jobs/${encodeURIComponent(reviewJobId(reviewJob))}/cancel`, {
+      method: "POST",
+    });
+    setReviewBusy("");
+    if (!result.ok) {
+      const detail = (result.payload as { detail?: string }).detail ?? "Review cancel failed.";
+      setReviewError(detail);
+      pushError(detail);
+      return;
+    }
+    setCurrentReviewJob(result.payload);
   }
 
   function appendTranscriptEvent(event: TranscriptEvent) {
@@ -1516,7 +1860,7 @@ export function App() {
   }
 
   async function copyCardSuggestion(card: SidecarDisplayCard) {
-    const text = card.suggestedSay ?? card.suggestedAsk;
+    const text = card.suggestedSay ?? card.suggestedAsk ?? card.evidenceQuote ?? card.summary;
     if (!text) {
       return;
     }
@@ -1602,12 +1946,11 @@ export function App() {
     });
   }
 
-  function jumpToEvidence(card: SidecarDisplayCard) {
-    const ids = new Set((card.sourceSegmentIds ?? []).filter(Boolean));
+  function focusEvidenceIds(idsInput: string[]) {
+    const ids = new Set(idsInput.filter(Boolean));
     if (ids.size === 0) {
       return;
     }
-    setExpandedContextCards((current) => new Set(current).add(card.id));
     setHighlightedSourceIds(ids);
     if (evidenceHighlightTimerRef.current) {
       window.clearTimeout(evidenceHighlightTimerRef.current);
@@ -1632,23 +1975,88 @@ export function App() {
     setFollowState(false);
   }
 
+  function focusReviewEvidenceIds(idsInput: string[]) {
+    const ids = new Set(idsInput.filter(Boolean));
+    if (ids.size === 0) {
+      return;
+    }
+    setHighlightedSourceIds(ids);
+    if (evidenceHighlightTimerRef.current) {
+      window.clearTimeout(evidenceHighlightTimerRef.current);
+    }
+    evidenceHighlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedSourceIds(new Set());
+      evidenceHighlightTimerRef.current = null;
+    }, 2400);
+    const node = reviewTranscriptScrollRef.current;
+    if (!node) {
+      return;
+    }
+    const targets = Array.from(node.querySelectorAll<HTMLElement>("[data-transcript-id], [data-source-segment-ids]"))
+      .filter((element) => {
+        const sourceIds = (element.dataset.sourceSegmentIds ?? "").split(" ").filter(Boolean);
+        return ids.has(element.dataset.transcriptId ?? "") || sourceIds.some((sourceId) => ids.has(sourceId));
+      });
+    targets[0]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  function jumpToEvidence(card: SidecarDisplayCard) {
+    if ((card.sourceSegmentIds ?? []).filter(Boolean).length === 0) {
+      return;
+    }
+    setExpandedContextCards((current) => new Set(current).add(card.id));
+    focusEvidenceIds(card.sourceSegmentIds ?? []);
+  }
+
   async function start(options: {
     fixtureWav?: string;
     testRun?: TestModePrepared;
     freshSession?: boolean;
+    signal?: AbortSignal;
   } = {}): Promise<boolean> {
-    if (captureStartDisabled) {
+    if (captureStarting || captureActive) {
       return false;
     }
-    const id = options.freshSession ? await createSession() : sessionId ?? (await createSession());
     const selectedSource: AudioSource = options.fixtureWav ? "fixture" : audioSource;
     const fixtureWav = options.fixtureWav
       ?? (selectedSource === "fixture" && fixturePath.trim() ? fixturePath.trim() : null);
-    const retentionForStart = sessionRetention;
+    if (!fixtureWav && missingServerDevice) {
+      return false;
+    }
+    const useSessionCompatibilityPath = Boolean(options.testRun || fixtureWav || audioSource === "fixture");
+    let id: string;
+    try {
+      if (useSessionCompatibilityPath) {
+        id = options.freshSession ? await createSession(undefined, options.signal) : sessionId ?? (await createSession(undefined, options.signal));
+      } else {
+        id = liveId ?? "";
+      }
+    } catch (error) {
+      const aborted = error instanceof DOMException && error.name === "AbortError";
+      const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
+      const message = aborted
+        ? "Recorded audio start timed out before playback began."
+        : `Recorded audio could not create a playback session.${detail}`;
+      setStatus("error");
+      if (options.testRun) {
+        setTestBusy("");
+        activeTestPreparedRef.current = null;
+        setTestPlaybackStartedAtMs(null);
+        clearTestAutoStopTimer();
+      }
+      setActiveMeetingContract(null);
+      setErrors((current) => [message, ...current.slice(0, 4)]);
+      appendSystemLog({
+        level: "error",
+        title: aborted ? "Recorded audio did not start" : "Start failed",
+        message,
+      });
+      return false;
+    }
     const contractForStart = buildMeetingContractPayload(meetingFocus);
-    setActiveSessionRetention(retentionForStart);
     setActiveMeetingContract(contractForStart);
     setMeetingDiagnostics(null);
+    setEnergyFrame(null);
     setMeetingFocusExpanded(false);
     setStatus("starting");
     setBriefVisible(false);
@@ -1656,28 +2064,71 @@ export function App() {
       level: "status",
       title: "Starting capture",
       message: `${fixtureWav ? "Recorded audio playback" : "Live microphone capture"} is starting. ${
-        retentionForStart === "saved" ? "Transcript text will be saved." : "Transcript text will stay live only."
+        useSessionCompatibilityPath ? "Recorded test audio is starting." : "Live transcript and cards are ephemeral; audio will be queued for Review validation on stop."
       }`,
     });
-    const response = await fetch(`${API_BASE}/api/sessions/${id}/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        device_id: null,
-        fixture_wav: fixtureWav,
-        audio_source: fixtureWav ? "fixture" : "server_device",
-        save_transcript: retentionForStart === "saved",
-        mic_tuning: micTuning,
-        meeting_contract: contractForStart,
-      }),
-    });
+    let response: Response;
+    try {
+      if (useSessionCompatibilityPath) {
+        response = await fetch(`${API_BASE}/api/sessions/${id}/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            device_id: null,
+            fixture_wav: fixtureWav,
+            audio_source: fixtureWav ? "fixture" : "server_device",
+            save_transcript: false,
+            mic_tuning: micTuning,
+            meeting_contract: contractForStart,
+            web_context_enabled: webContextEnabledForStart(meetingFocus),
+          }),
+          signal: options.signal,
+        });
+      } else {
+        response = await fetch(`${API_BASE}/api/live/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            device_id: null,
+            audio_source: "server_device",
+            title: currentSessionTitle.trim() || "Live meeting",
+            mic_tuning: micTuning,
+            meeting_contract: contractForStart,
+            web_context_enabled: webContextEnabledForStart(meetingFocus),
+          }),
+          signal: options.signal,
+        });
+      }
+    } catch (error) {
+      const aborted = error instanceof DOMException && error.name === "AbortError";
+      const message = aborted
+        ? "Recorded audio start timed out before playback began."
+        : "Start failed while contacting the local runtime.";
+      setStatus("error");
+      if (options.testRun) {
+        setTestBusy("");
+        activeTestPreparedRef.current = null;
+        setTestPlaybackStartedAtMs(null);
+        clearTestAutoStopTimer();
+      }
+      setActiveMeetingContract(null);
+      setErrors((current) => [message, ...current.slice(0, 4)]);
+      appendSystemLog({
+        level: "error",
+        title: aborted ? "Recorded audio did not start" : "Start failed",
+        message,
+      });
+      return false;
+    }
     if (!response.ok) {
       const payload = await response.json();
       setStatus("error");
       if (options.testRun) {
         setTestBusy("");
+        activeTestPreparedRef.current = null;
+        setTestPlaybackStartedAtMs(null);
+        clearTestAutoStopTimer();
       }
-      setActiveSessionRetention(null);
       setActiveMeetingContract(null);
       setErrors((current) => [payload.detail ?? "Start failed", ...current]);
       appendSystemLog({
@@ -1689,55 +2140,147 @@ export function App() {
       return false;
     }
     const startPayload = await response.json().catch(() => null);
+    if (!useSessionCompatibilityPath) {
+      const nextLiveId = String(startPayload?.live_id ?? "");
+      if (nextLiveId) {
+        setLiveId(nextLiveId);
+        setSessionId(null);
+        id = nextLiveId;
+        attachEvents(nextLiveId, "live");
+      }
+      if (startPayload?.title) {
+        setCurrentSessionTitle(String(startPayload.title));
+      }
+    }
     const normalizedContract = meetingContractFromPayload(startPayload?.meeting_contract);
     if (normalizedContract) {
       setActiveMeetingContract(normalizedContract);
     }
     if (options.testRun) {
-      testStartedAtRef.current = new Date().toISOString();
+      const startedAtMs = Date.now();
+      testStartedAtRef.current = new Date(startedAtMs).toISOString();
       testSessionIdRef.current = id;
+      activeTestPreparedRef.current = options.testRun;
+      setTestPlaybackStartedAtMs(startedAtMs);
+      setTestPlaybackBaseElapsedMs(0);
+      setTestPlaybackNow(startedAtMs);
+      scheduleTestAutoStop(options.testRun, id, options.testRun.duration_seconds * 1000);
       setTestBusy("playing");
     }
     setStatus((current) => current === "error" ? current : "listening");
     return true;
   }
 
-  async function stop() {
-    if (!sessionId) return;
-    const stoppedSessionId = sessionId;
-    const stoppedRetention = activeSessionRetention ?? sessionRetention;
-    await fetch(`${API_BASE}/api/sessions/${sessionId}/stop`, { method: "POST" });
+  async function stop(sessionIdOverride?: string) {
+    const stoppingLiveId = !sessionIdOverride && liveId && !activeTestPreparedRef.current ? liveId : null;
+    const stoppedSessionId = sessionIdOverride ?? sessionId;
+    if (!stoppingLiveId && !stoppedSessionId) return;
+    clearTestAutoStopTimer();
+    const snapshot = testSnapshotRef.current;
+    let stopPayload: Record<string, unknown> | null = null;
+    if (stoppingLiveId) {
+      const response = await fetch(`${API_BASE}/api/live/${encodeURIComponent(stoppingLiveId)}/stop`, { method: "POST" });
+      stopPayload = await response.json().catch(() => null);
+      if (response.ok && stopPayload?.review_job_id) {
+        appendSystemLog({
+          level: "status",
+          title: "Queued for Review",
+          message: `Temporary audio queued as ${String(stopPayload.review_job_id)}${stopPayload.queue_position ? ` · position ${stopPayload.queue_position}` : ""}.`,
+          metadata: stopPayload,
+        });
+        void refreshReviewJobs();
+        void refreshReviewJob(String(stopPayload.review_job_id));
+      }
+    } else if (stoppedSessionId) {
+      await fetch(`${API_BASE}/api/sessions/${stoppedSessionId}/stop`, { method: "POST" });
+    }
     setStatus("stopped");
     appendSystemLog({
       level: "status",
       title: "Capture stopped",
-      message: stoppedRetention === "saved"
-        ? `${transcript.length} heard lines saved as transcript text.`
-        : `${transcript.length} heard lines shown live; transcript text was not saved.`,
+      message: stoppingLiveId
+        ? `${snapshot.transcript.length} heard lines cleared from Live; temporary audio is in the Review queue.`
+        : `${snapshot.transcript.length} heard lines shown live; transcript text was not saved.`,
     });
-    setBriefVisible(true);
-    setActiveSessionRetention(null);
+    setBriefVisible(!stoppingLiveId);
+    if (stoppingLiveId) {
+      eventSourceRef.current?.close();
+      setLiveId(null);
+      setTranscript([]);
+      setNotes([]);
+      setRecall([]);
+      setTranscriptEvents([]);
+      setSidecarCards([]);
+      setDismissedCardKeys(new Set());
+      setExpandedContextCards(new Set());
+      setErrors([]);
+      setPipeline({
+        queueDepth: 0,
+        droppedWindows: 0,
+        silentWindows: 0,
+        asrEmptyWindows: 0,
+        finalSegmentsReplaced: 0,
+      });
+      followLiveRef.current = true;
+      setFollowLive(true);
+    }
+    setTestPlaybackStartedAtMs(null);
+    setTestPlaybackBaseElapsedMs(0);
     await refreshSessionCatalog();
-    if (testPrepared && testStartedAtRef.current && testSessionIdRef.current === stoppedSessionId) {
-      await saveTestReport(stoppedSessionId, testPrepared, testStartedAtRef.current);
+    const preparedForReport = activeTestPreparedRef.current ?? testPrepared;
+    const testWasActive = Boolean(
+      liveTestExpanded
+      || playbackActive
+      || playbackPaused
+      || activeTestPreparedRef.current
+      || testSessionIdRef.current
+      || ["playing", "paused", "pausing", "resuming", "starting-playback"].includes(testBusy),
+    );
+    if (preparedForReport && stoppedSessionId) {
+      await saveTestReport(stoppedSessionId, preparedForReport, testStartedAtRef.current ?? new Date().toISOString());
+    } else if (testWasActive) {
+      setTestBusy("");
+      testStartedAtRef.current = null;
+      testSessionIdRef.current = null;
+      activeTestPreparedRef.current = null;
+      clearTestAutoStopTimer();
     }
   }
 
-  async function prepareTestAudio() {
-    if (!testSourcePath.trim()) return;
+  function clearTestAutoStopTimer() {
+    if (testAutoStopTimerRef.current) {
+      window.clearTimeout(testAutoStopTimerRef.current);
+      testAutoStopTimerRef.current = null;
+    }
+  }
+
+  function scheduleTestAutoStop(prepared: TestModePrepared, sessionIdToStop: string, remainingMs?: number) {
+    clearTestAutoStopTimer();
+    const durationMs = Math.max(1000, remainingMs ?? prepared.duration_seconds * 1000);
+    testAutoStopTimerRef.current = window.setTimeout(() => {
+      testAutoStopTimerRef.current = null;
+      void stop(sessionIdToStop);
+    }, durationMs + TEST_PLAYBACK_AUTOSTOP_GRACE_MS);
+  }
+
+  async function prepareTestAudio(sourcePathOverride?: string): Promise<TestModePrepared | null> {
+    const sourcePath = (sourcePathOverride ?? testSourcePath).trim();
+    if (!sourcePath) return null;
     const maxSeconds = testMaxSeconds.trim() ? Number(testMaxSeconds.trim()) : null;
     if (maxSeconds !== null && (!Number.isFinite(maxSeconds) || maxSeconds <= 0)) {
       setErrors((current) => ["Max seconds must be a positive number.", ...current.slice(0, 4)]);
-      return;
+      return null;
     }
     setTestBusy("preparing");
+    setTestPlaybackStartedAtMs(null);
+    setTestPlaybackBaseElapsedMs(0);
     setTestPrepared(null);
     setTestReport(null);
     const response = await fetch(`${API_BASE}/api/test-mode/audio/prepare`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        source_path: testSourcePath.trim(),
+        source_path: sourcePath,
         max_seconds: maxSeconds,
         expected_terms: parseExpectedTerms(testExpectedTerms),
       }),
@@ -1746,7 +2289,7 @@ export function App() {
     setTestBusy("");
     if (!response.ok) {
       setErrors((current) => [payload.detail ?? "Could not prepare recorded audio", ...current.slice(0, 4)]);
-      return;
+      return null;
     }
     const prepared = payload as TestModePrepared;
     setTestPrepared(prepared);
@@ -1757,15 +2300,141 @@ export function App() {
       message: `${prepared.duration_seconds.toFixed(1)}s ready for playback. ${prepared.expected_terms.length} expected terms.`,
       metadata: prepared as unknown as Record<string, unknown>,
     });
+    return prepared;
   }
 
   async function startTestPlayback() {
     if (!testPrepared) return;
+    await startPreparedTestPlayback(testPrepared);
+  }
+
+  async function startPreparedTestPlayback(prepared: TestModePrepared): Promise<void> {
     setTestReport(null);
     setTestBusy("starting-playback");
-    const started = await start({ fixtureWav: testPrepared.fixture_wav, testRun: testPrepared, freshSession: true });
-    if (!started) {
-      setTestBusy("");
+    const controller = new AbortController();
+    const startTimer = window.setTimeout(() => {
+      controller.abort();
+    }, TEST_PLAYBACK_START_TIMEOUT_MS);
+    try {
+      const started = await start({
+        fixtureWav: prepared.fixture_wav,
+        testRun: prepared,
+        freshSession: true,
+        signal: controller.signal,
+      });
+      if (!started) {
+        setTestBusy("");
+      }
+    } finally {
+      window.clearTimeout(startTimer);
+    }
+  }
+
+  function currentTestPlaybackElapsedMs(): number {
+    if (testBusy === "playing" && testPlaybackStartedAtMs !== null) {
+      return Math.max(0, testPlaybackBaseElapsedMs + Date.now() - testPlaybackStartedAtMs);
+    }
+    return Math.max(0, testPlaybackBaseElapsedMs);
+  }
+
+  async function pauseTestPlayback() {
+    if (!sessionId || testBusy !== "playing") {
+      return;
+    }
+    const elapsedMs = currentTestPlaybackElapsedMs();
+    setTestBusy("pausing");
+    clearTestAutoStopTimer();
+    const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/pause`, { method: "POST" });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      setErrors((current) => [payload.detail ?? "Could not pause recorded audio playback.", ...current.slice(0, 4)]);
+      setTestBusy("playing");
+      const preparedForResume = activeTestPreparedRef.current ?? testPrepared;
+      if (preparedForResume) {
+        scheduleTestAutoStop(
+          preparedForResume,
+          sessionId,
+          Math.max(1000, preparedForResume.duration_seconds * 1000 - elapsedMs),
+        );
+      }
+      return;
+    }
+    setTestPlaybackBaseElapsedMs(elapsedMs);
+    setTestPlaybackStartedAtMs(null);
+    setTestBusy("paused");
+    setStatus("paused");
+  }
+
+  async function resumeTestPlayback() {
+    const activePrepared = activeTestPreparedRef.current ?? testPrepared;
+    if (!sessionId || !activePrepared || testBusy !== "paused") {
+      return;
+    }
+    setTestBusy("resuming");
+    const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/resume`, { method: "POST" });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { detail?: string };
+      setErrors((current) => [payload.detail ?? "Could not resume recorded audio playback.", ...current.slice(0, 4)]);
+      setTestBusy("paused");
+      setStatus("paused");
+      return;
+    }
+    const resumedAtMs = Date.now();
+    setTestPlaybackStartedAtMs(resumedAtMs);
+    setTestPlaybackNow(resumedAtMs);
+    scheduleTestAutoStop(
+      activePrepared,
+      sessionId,
+      Math.max(1000, activePrepared.duration_seconds * 1000 - testPlaybackBaseElapsedMs),
+    );
+    setTestBusy("playing");
+    setStatus("listening");
+  }
+
+  async function restartTestPlayback() {
+    const preparedForRestart = activeTestPreparedRef.current ?? testPrepared;
+    const sessionToStop = testSessionIdRef.current ?? sessionId;
+    if (!preparedForRestart) {
+      return;
+    }
+    if (playbackActive && sessionToStop) {
+      await stop(sessionToStop);
+    }
+    await startPreparedTestPlayback(preparedForRestart);
+  }
+
+  async function resetTestPlayback() {
+    const sessionToStop = testSessionIdRef.current ?? sessionId;
+    if (playbackActive && sessionToStop) {
+      await stop(sessionToStop);
+    }
+    clearTestAutoStopTimer();
+    testStartedAtRef.current = null;
+    testSessionIdRef.current = null;
+    activeTestPreparedRef.current = null;
+    setTestBusy("");
+    setTestPrepared(null);
+    setTestReport(null);
+    setTestPlaybackStartedAtMs(null);
+    setTestPlaybackBaseElapsedMs(0);
+    setLiveTestExpanded(false);
+  }
+
+  async function handleLiveTestFilePick(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file || liveTestUploadDisabled) {
+      return;
+    }
+    setLiveTestExpanded(true);
+    const path = await uploadInputFile(file, "test-audio");
+    if (!path) {
+      return;
+    }
+    setTestSourcePath(path);
+    const prepared = await prepareTestAudio(path);
+    if (prepared) {
+      await startPreparedTestPlayback(prepared);
     }
   }
 
@@ -1786,18 +2455,21 @@ export function App() {
     setTestBusy("");
     testStartedAtRef.current = null;
     testSessionIdRef.current = null;
+    activeTestPreparedRef.current = null;
+    setTestPlaybackStartedAtMs(null);
+    clearTestAutoStopTimer();
   }
 
   function buildTestModeReport(sessionIdForReport: string, prepared: TestModePrepared, startedAt: string): TestModeReport {
+    const snapshot = testSnapshotRef.current;
     const expectedTerms = prepared.expected_terms.length > 0
       ? prepared.expected_terms
-      : parseExpectedTerms(testExpectedTerms);
+      : parseExpectedTerms(snapshot.testExpectedTerms);
     const responseText = [
-      transcript.map((line) => line.text).join("\n"),
-      notes.map((note) => `${note.title}\n${note.body}`).join("\n"),
-      recall.map((hit) => hit.text).join("\n"),
-      workMemoryMatches.map((card) => card.text).join("\n"),
-      sidecarCards.map((card) => `${card.title}\n${card.summary}\n${card.whyRelevant ?? ""}`).join("\n"),
+      snapshot.transcript.map((line) => line.text).join("\n"),
+      snapshot.notes.map((note) => `${note.title}\n${note.body}`).join("\n"),
+      snapshot.recall.map((hit) => hit.text).join("\n"),
+      snapshot.sidecarCards.map((card) => `${card.title}\n${card.summary}\n${card.whyRelevant ?? ""}`).join("\n"),
     ].filter(Boolean).join("\n");
     return {
       run_id: prepared.run_id,
@@ -1807,17 +2479,17 @@ export function App() {
       duration_seconds: prepared.duration_seconds,
       started_at: startedAt,
       completed_at: new Date().toISOString(),
-      status,
-      transcript_segments: transcript.length,
-      note_cards: notes.length,
-      recall_hits: recall.length,
-      queue_depth: pipeline.queueDepth,
-      dropped_windows: pipeline.droppedWindows,
-      work_parallel_rows: workMemoryMatches.length,
-      error_count: errors.length,
+      status: snapshot.status,
+      transcript_segments: snapshot.transcript.length,
+      note_cards: snapshot.notes.length,
+      recall_hits: snapshot.recall.length,
+      queue_depth: snapshot.pipeline.queueDepth,
+      dropped_windows: snapshot.pipeline.droppedWindows,
+      reference_context_cards: snapshot.sidecarCards.filter((card) => !isCurrentMeetingCard(card) && !isManualCard(card)).length,
+      error_count: snapshot.errors.length,
       expected_terms: expectedTerms,
       matched_expected_terms: matchExpectedTerms(responseText, expectedTerms),
-      issues: errors.length > 0 ? ["UI surfaced one or more errors during playback."] : [],
+      issues: snapshot.errors.length > 0 ? ["UI surfaced one or more errors during playback."] : [],
     };
   }
 
@@ -1840,7 +2512,6 @@ export function App() {
     });
     setLibraryPath("");
     await refreshLibraryRoots();
-    await refreshWorkMemoryStatus();
   }
 
   async function reindex() {
@@ -1904,29 +2575,6 @@ export function App() {
         metadata: payload as unknown as Record<string, unknown>,
       });
     }
-  }
-
-  async function reindexWorkMemory() {
-    setWorkMemoryBusy("indexing");
-    const response = await fetch(`${API_BASE}/api/work-memory/reindex`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    const payload = await response.json();
-    setWorkMemoryBusy("");
-    if (!response.ok) {
-      setErrors((current) => [payload.detail ?? "Work memory reindex failed", ...current]);
-      return;
-    }
-    await refreshWorkMemoryStatus();
-    setStatus(`work memory indexed ${payload.projects_indexed ?? 0} projects`);
-    appendSystemLog({
-      level: "status",
-      title: "Work memory indexed",
-      message: `${payload.projects_indexed ?? 0} projects refreshed.`,
-      metadata: payload,
-    });
   }
 
   async function testMicrophone() {
@@ -2098,7 +2746,7 @@ export function App() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        session_id: segment?.session_id ?? sessionId ?? "manual-review",
+        session_id: segment?.session_id ?? liveId ?? sessionId ?? "manual-review",
         segment_id: segment?.segment_id ?? segment?.id ?? null,
         old_label: segment?.display_speaker_label ?? "",
         new_label: newLabel,
@@ -2141,198 +2789,278 @@ export function App() {
       />
       <div className="app-main">
       <header className="top-bar">
-        <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true" />
-          <div>
-            <strong>Brain Sidecar</strong>
-            <small>Local meeting cockpit</small>
-          </div>
+        <div className="top-runtime-context" aria-label="Runtime summary">
+          <span>Runtime</span>
+          <strong>{topRuntimeSummary}</strong>
+          <small>{topRuntimeDetail}</small>
         </div>
         <div className="top-actions">
           <span className={`status-pill ${statusTone}`} aria-label="Runtime status">
             <span aria-hidden="true" />
             {status}
           </span>
-          <span className={`retention-pill ${activeRetention}`} aria-label="Session save mode status">
-            {captureActive ? (activeRetention === "saved" ? "Recording" : "Listening") : sessionRetentionStatus}
+          <span className="retention-pill" aria-label="Live retention status">
+            {captureActive ? "Review handoff armed" : sessionRetentionStatus}
           </span>
           {headerQueueLabel && <span className="queue-pill" aria-label="Capture queue status">{headerQueueLabel}</span>}
-          <button
-            className="secondary tool-drawer-toggle"
-            type="button"
-            onClick={() => setActivePage("tools")}
-          >
-            Utilities
-          </button>
           <button className="primary" onClick={() => start()} disabled={captureStartDisabled}>
             {captureButtonLabel}
           </button>
-          <button className="danger" onClick={stop} disabled={captureStopDisabled}>
-            Stop
-          </button>
+          {!captureStopDisabled && (
+            <button className="danger" onClick={() => stop()}>
+              {liveId ? "Stop & Queue" : "Stop"}
+            </button>
+          )}
         </div>
       </header>
 
       {activePage === "live" && (
-      <main className="workspace-grid page live-page" aria-label="Live">
-        <section className="transcript-pane" aria-label="Live field pane">
-          <SessionSelectorBar
-            sessionId={sessionId}
-            title={currentSessionTitle}
-            sessions={sessionCatalog}
-            status={status}
-            retention={sessionRetention}
-            activeRetention={activeRetention}
-            disabled={captureActive || captureStarting}
-            onSelect={selectLiveSession}
-            onNew={newLiveSession}
-            onTitleChange={setCurrentSessionTitle}
-            onTitleSave={updateLiveSessionTitle}
-            onRetentionChange={setSessionRetention}
-          />
-          <div className="field-toolbar">
-            <div>
-              <p className="label">Live Field</p>
-              <h1>Live field</h1>
-            </div>
-            <div className="field-toolbar-status">
-              <span>{transcript.length} heard</span>
-              <span>{currentMeetingCards.length} current</span>
-              <span>{gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "GPU check"}</span>
-            </div>
-          </div>
-
-          <div className="cockpit-control-row">
-            <CaptureControlBar
-              retention={sessionRetention}
-              disabled={captureStarting || captureActive}
-              statusSummary={captureStatusSummary}
-              detail={sessionRetentionDetail}
-              warning={missingServerDevice ? serverMicStatus : ""}
-              onChange={setSessionRetention}
-            />
-
-            <MeetingFocusControl
-              value={meetingFocus}
-              expanded={meetingFocusExpanded}
-              activeContract={activeMeetingContract}
-              captureActive={captureActive || captureStarting}
-              onChange={setMeetingFocus}
-              onEdit={() => setMeetingFocusExpanded(true)}
-              onDone={() => setMeetingFocusExpanded(false)}
-            />
-          </div>
-
-          {errors.length > 0 && (
-            <section className="errors" role="alert">
-              {errors.map((error, index) => (
-                <p key={`${error}-${index}`}>{error}</p>
-              ))}
-            </section>
-          )}
-
-          <div
-            id="transcript"
-            className="transcript-scroll live-field-scroll scroll"
-            role="feed"
-            aria-label="Live field"
-            ref={transcriptScrollRef}
-            onScroll={handleFieldScroll}
-          >
-            <LiveFieldPane
+        <LiveMeetingWorkbench
+          mode={liveWorkbenchMode}
+          active={captureActive || captureStarting || playbackActive || playbackPaused}
+          transcriptPane={(
+            <LiveTranscriptPane
+              setupHeader={(
+                <section className="live-cockpit-header" aria-label="Live cockpit setup">
+                  <SessionSelectorBar
+                    title={currentSessionTitle}
+                    status={status}
+                    disabled={captureActive || captureStarting}
+                    onTitleChange={setCurrentSessionTitle}
+                  />
+                  <div className={`cockpit-control-row ${testModeVisible ? "with-test" : ""}`}>
+                    <CaptureControlBar
+                      statusSummary={captureStatusSummary}
+                      warning={missingServerDevice ? serverMicStatus : ""}
+                    />
+                    <MeetingFocusControl
+                      value={meetingFocus}
+                      expanded={meetingFocusExpanded}
+                      activeContract={activeMeetingContract}
+                      captureActive={captureActive || captureStarting}
+                      webContextConfigured={gpu.web_context_configured === true}
+                      webContextGlobalEnabled={gpu.web_context_enabled === true}
+                      onChange={setMeetingFocus}
+                      onEdit={() => setMeetingFocusExpanded(true)}
+                      onDone={() => setMeetingFocusExpanded(false)}
+                    />
+                    <ReplayTestDrawer
+                      visible={testModeVisible}
+                      expanded={liveTestExpanded}
+                      stateDetail={liveTestStateDetail}
+                      stateLabel={liveTestStateLabel}
+                      stateStatus={liveTestStatus}
+                      canReset={canResetLiveTest}
+                      resetDisabled={fileUploadBusy === "test-audio" || testBusy === "preparing" || testBusy === "starting-playback"}
+                      toggleDisabled={liveTestToggleDisabled}
+                      testSourcePath={testSourcePath}
+                      fileBusy={fileUploadBusy === "test-audio"}
+                      uploadDisabled={liveTestUploadDisabled}
+                      maxSeconds={testMaxSeconds}
+                      expectedTerms={testExpectedTerms}
+                      configDisabled={liveTestConfigDisabled}
+                      prepared={testPrepared}
+                      report={testReport}
+                      playbackActive={playbackActive}
+                      playbackPaused={playbackPaused}
+                      testBusy={testBusy}
+                      captureActive={captureActive}
+                      captureStarting={captureStarting}
+                      playbackElapsedSeconds={testPlaybackElapsedSeconds}
+                      onToggle={() => setLiveTestExpanded((current) => !current)}
+                      onReset={() => void resetTestPlayback()}
+                      onFilePick={handleLiveTestFilePick}
+                      onMaxSecondsChange={setTestMaxSeconds}
+                      onExpectedTermsChange={setTestExpectedTerms}
+                      onStartPlayback={startTestPlayback}
+                      onPausePlayback={pauseTestPlayback}
+                      onResumePlayback={resumeTestPlayback}
+                      onRestartPlayback={restartTestPlayback}
+                      onStopPlayback={() => stop(testSessionIdRef.current ?? sessionId ?? undefined)}
+                      stopPlaybackDisabled={!playbackActive || !sessionId}
+                    />
+                  </div>
+                </section>
+              )}
+              runtimeStrip={(
+                <SessionRuntimeStrip
+                  mode={liveWorkbenchMode}
+                  items={liveWorkbenchMode === "live"
+                    ? [
+                        {
+                          label: "State",
+                          value: captureActive || captureStarting ? "Live" : "Ready",
+                          tone: captureActive || captureStarting ? "good" : "normal",
+                        },
+                        { label: "Input", value: captureModeLabel },
+                        ...(pipeline.queueDepth > 0
+                          ? [{ label: "Queue", value: String(pipeline.queueDepth), tone: "warning" as const }]
+                          : []),
+                        { label: "Sidecar", value: `${currentMeetingCards.length} returns` },
+                      ]
+                    : [
+                        {
+                          label: "State",
+                          value: liveWorkbenchMode === "ended"
+                            ? "Ended"
+                            : liveWorkbenchMode === "replay"
+                              ? "Replay"
+                              : liveWorkbenchMode === "dev-test"
+                                ? "Test"
+                                : captureActive || captureStarting ? "Live" : "Ready",
+                          tone: captureActive || captureStarting ? "good" : "normal",
+                        },
+                        { label: "Input", value: captureModeLabel },
+                        { label: "ASR", value: asrTimingLabel },
+                        { label: "Queue", value: String(pipeline.queueDepth), tone: pipeline.queueDepth > 0 ? "warning" : "normal" },
+                        { label: "Sidecar", value: `${currentMeetingCards.length} returns` },
+                      ]}
+                />
+              )}
+              transcriptCount={transcript.length}
+              currentCardCount={currentMeetingCards.length}
+              asrDeviceStatusLabel={asrDeviceStatusLabel}
+              errors={errors}
+              playbackCue={(testBusy === "playing" || playbackPaused) && testPrepared ? (
+                <LivePlaybackCue
+                  durationSeconds={testPrepared.duration_seconds}
+                  elapsedSeconds={testPlaybackElapsedSeconds}
+                  progress={testPlaybackProgress}
+                  remainingSeconds={testPlaybackRemainingSeconds}
+                  message={testPlaybackMessage}
+                  paused={playbackPaused}
+                />
+              ) : null}
               rows={liveFieldRows}
               expandedCards={expandedContextCards}
               highlightedSourceIds={highlightedSourceIds}
+              showDebugMetadata={showDebugMetadata}
+              active={captureActive || captureStarting}
+              followLive={followLive}
+              unseenItems={unseenItems}
+              manualQuery={manualQuery}
+              manualQueryBusy={manualQueryBusy}
+              manualSourceCards={manualSourceCards}
+              transcriptScrollRef={transcriptScrollRef}
+              liveEndRef={liveEndRef}
+              onScroll={handleFieldScroll}
+              onJumpToLive={() => scrollFieldToLive("smooth")}
+              onToggleCard={toggleExpandedContextCard}
+              onJumpToEvidence={jumpToEvidence}
+              onPin={togglePinnedCard}
+              onDismiss={dismissCard}
+              onCopy={copyCardSuggestion}
+              onManualQueryChange={setManualQuery}
+              onManualSearch={searchRecall}
+            />
+          )}
+          sidecarPane={liveWorkbenchMode === "ended" ? (
+            <PostCallMeetingOutput
+              groups={meetingOutputGroups}
+              usefulCount={currentMeetingCards.length}
+              rawCount={sidecarCards.length}
+              qualityMetrics={qualityMetrics}
+              meetingDiagnostics={meetingDiagnostics}
+              qualityGateActive={gpu.sidecar_quality_gate_enabled !== false}
+              loading={manualQueryBusy}
+              emptyTitle={contextEmptyTitle}
+              emptyBody={contextEmptyBody}
+              contextCards={visibleOtherContextCards}
+              manualCards={manualSourceCards}
+              showAll={showAllContext}
+              canShowMore={
+                currentMeetingCards.length > DEFAULT_CONTEXT_CARD_LIMIT
+                || otherContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT
+              }
+              onToggleShowAll={() => setShowAllContext((value) => !value)}
+              expandedCards={expandedContextCards}
               showDebugMetadata={showDebugMetadata}
               onToggle={toggleExpandedContextCard}
               onJumpToEvidence={jumpToEvidence}
               onPin={togglePinnedCard}
               onDismiss={dismissCard}
               onCopy={copyCardSuggestion}
-              active={captureActive || captureStarting}
-            />
-            <div className="live-field-end" ref={liveEndRef} aria-hidden="true" />
-          </div>
-
-          {!followLive && (
-            <button className="jump-live" onClick={() => scrollFieldToLive("smooth")}>
-              Jump to live{unseenItems > 0 ? ` (${unseenItems})` : ""}
-            </button>
-          )}
-
-          <form
-            className="query-bar"
-            role="search"
-            onSubmit={(event) => {
-              event.preventDefault();
-              searchRecall();
-            }}
-          >
-            <input
-              aria-label="Unified query"
-              value={manualQuery}
-              onChange={(event) => setManualQuery(event.target.value)}
-              placeholder="Ask Sidecar anything"
-            />
-            <button className="primary subtle" disabled={manualQueryBusy || !manualQuery.trim()}>
-              {manualQueryBusy ? "Searching..." : "Search"}
-            </button>
-          </form>
-
-          <ManualSourceSections cards={manualSourceCards} />
-        </section>
-
-        <section className="context-pane" id="recall" aria-label="Meeting Output">
-          <div className="field-toolbar context-toolbar">
-            <div>
-              <p className="label">Sidecar</p>
-              <h1>Meeting Output</h1>
-            </div>
-            <div className="field-toolbar-status">
-              <span>{currentMeetingCards.length} current</span>
-              <span>{gpu.sidecar_quality_gate_enabled !== false ? "Quality gate on" : "Quality gate off"}</span>
-            </div>
-          </div>
-          <ContractActiveBadge contract={activeMeetingContract} />
-          <SessionContextPane
-            groups={meetingOutputGroups}
-            usefulCount={currentMeetingCards.length}
-            rawCount={sidecarCards.length}
-            qualityMetrics={qualityMetrics}
-            meetingDiagnostics={meetingDiagnostics}
-            qualityGateActive={gpu.sidecar_quality_gate_enabled !== false}
-            captureActive={captureActive || captureStarting}
-            loading={manualQueryBusy}
-            emptyTitle={contextEmptyTitle}
-            emptyBody={contextEmptyBody}
-            workMemoryCards={visibleMemoryCards}
-            contextCards={visibleOtherContextCards}
-            manualCards={manualSourceCards}
-            showAll={showAllContext}
-            canShowMore={
-              currentMeetingCards.length > DEFAULT_CONTEXT_CARD_LIMIT
-              || workMemoryContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT
-              || otherContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT
-            }
-            onToggleShowAll={() => setShowAllContext((value) => !value)}
-            expandedCards={expandedContextCards}
-            showDebugMetadata={showDebugMetadata}
-            onToggle={toggleExpandedContextCard}
-            onJumpToEvidence={jumpToEvidence}
-            onPin={togglePinnedCard}
-            onDismiss={dismissCard}
-            onCopy={copyCardSuggestion}
-          />
-          {briefVisible && (
-            <ConsultingBriefPane
-              markdown={consultingBriefMarkdown}
+              contract={activeMeetingContract}
+              energyFrame={energyFrame}
+              showBrief={briefVisible}
+              briefMarkdown={consultingBriefMarkdown}
               currentCount={currentMeetingCards.length}
-              memoryCount={workMemoryContextCards.length}
-              onCopy={copyConsultingBrief}
+              contextCount={otherContextCards.length}
+              onCopyBrief={copyConsultingBrief}
+            />
+          ) : (
+            <LiveModelReturnsPane
+              mode={liveWorkbenchMode}
+              status={status}
+              gpu={gpu}
+              pipeline={pipeline}
+              transcriptCount={transcript.length}
+              currentCards={currentMeetingCards}
+              contextCards={visibleOtherContextCards}
+              manualCards={manualSourceCards}
+              groups={meetingOutputGroups}
+              qualityMetrics={qualityMetrics}
+              meetingDiagnostics={meetingDiagnostics}
+              qualityGateActive={gpu.sidecar_quality_gate_enabled !== false}
+              rawCount={sidecarCards.length}
+              systemLogs={systemLogs}
+              contract={activeMeetingContract}
+              energyFrame={energyFrame}
+              showAll={showAllContext}
+              canShowMore={
+                currentMeetingCards.length > DEFAULT_CONTEXT_CARD_LIMIT
+                || otherContextCards.length > DEFAULT_CONTEXT_CARD_LIMIT
+              }
+              onToggleShowAll={() => setShowAllContext((value) => !value)}
+              expandedCards={expandedContextCards}
+              showDebugMetadata={showDebugMetadata}
+              onToggle={toggleExpandedContextCard}
+              onJumpToEvidence={jumpToEvidence}
+              onPin={togglePinnedCard}
+              onDismiss={dismissCard}
+              onCopy={copyCardSuggestion}
             />
           )}
-        </section>
-      </main>
+        />
+      )}
+
+      {activePage === "review" && (
+        <ReviewPage
+          title={reviewTitle}
+          job={reviewJob}
+          jobs={reviewJobs}
+          busy={reviewBusy}
+          error={reviewError}
+          transcriptEvents={reviewTranscriptEvents}
+          cards={reviewCards}
+          summaryNotes={reviewSummaryNotes}
+          groups={reviewMeetingGroups}
+          expandedCards={expandedContextCards}
+          highlightedSourceIds={highlightedSourceIds}
+          showDebugMetadata={showDebugMetadata}
+          transcriptScrollRef={reviewTranscriptScrollRef}
+          onTitleChange={setReviewTitle}
+          onFilePick={handleReviewFilePick}
+          onNewReview={startNewReview}
+          onRecoverLatest={() => void refreshReviewJobs()}
+          onCancel={() => void cancelReviewJob()}
+          onApprove={() => void approveReviewJob()}
+          onDiscard={() => void discardReviewJob()}
+          onSelectJob={(job) => void refreshReviewJob(reviewJobId(job))}
+          onToggleCard={toggleExpandedContextCard}
+          onJumpToEvidence={(card) => focusReviewEvidenceIds(card.sourceSegmentIds ?? [])}
+          onJumpToEvidenceIds={focusReviewEvidenceIds}
+          onCopyCard={copyCardSuggestion}
+          onCopyTranscript={() => navigator.clipboard?.writeText((reviewJob?.clean_segments ?? []).map((segment) => segment.text).join("\n"))}
+          onCopyCapture={() => navigator.clipboard?.writeText(reviewSummaryMarkdown)}
+          onOpenSession={() => {
+            if (!reviewJob?.session_id) {
+              return;
+            }
+            setActivePage("sessions");
+            void loadPastSession(reviewJob.session_id);
+          }}
+        />
       )}
 
       {activePage === "sessions" && (
@@ -2341,15 +3069,21 @@ export function App() {
           selectedSession={selectedPastSession}
           selectedSessionId={selectedPastSessionId}
           search={sessionSearch}
+          showAll={showAllSessions}
           busy={sessionsBusy}
           titleDraft={sessionTitleDraft}
           highlightedSourceIds={highlightedSourceIds}
           onSearchChange={setSessionSearch}
+          onShowAllChange={setShowAllSessions}
           onRefresh={refreshSessionCatalog}
           onSelect={loadPastSession}
           onTitleDraftChange={setSessionTitleDraft}
           onSaveTitle={updatePastSessionTitle}
           onHighlightSources={setHighlightedSourceIds}
+          onCreateSavedSession={() => {
+            setActivePage("review");
+          }}
+          onGoLive={() => setActivePage("live")}
         />
       )}
 
@@ -2362,34 +3096,35 @@ export function App() {
           gpuFreeLabel={gpuFreeLabel}
           asrBackendLabel={asrBackendLabel}
           asrModelLabel={asrModelLabel}
-          streamingModeLabel={streamingModeLabel}
-          streamingMetricLabel={streamingMetricLabel}
+          asrCadenceLabel={asrCadenceLabel}
+          asrTimingLabel={asrTimingLabel}
           ollamaChatHostLabel={ollamaChatHostLabel}
           ollamaEmbedHostLabel={ollamaEmbedHostLabel}
           ollamaChatReachabilityLabel={ollamaChatReachabilityLabel}
           ollamaEmbedReachabilityLabel={ollamaEmbedReachabilityLabel}
+          ollamaModels={ollamaModels}
+          ollamaModelBusy={ollamaModelBusy}
+          ollamaModelNotice={ollamaModelNotice}
           onRefresh={refreshGpu}
+          onRefreshOllamaModels={refreshOllamaModels}
+          onSelectOllamaChatModel={selectOllamaChatModel}
         />
       )}
 
-      {activePage === "memory" && (
-        <MemoryPage
-          workMemoryStatus={workMemoryStatus}
+      {activePage === "references" && (
+        <ReferencesPage
           libraryPath={libraryPath}
           libraryRoots={libraryRoots}
           librarySources={librarySources}
           libraryChunks={libraryChunks}
           selectedLibrarySourcePath={selectedLibrarySourcePath}
           memoryQuery={memoryQuery}
-          memoryBusy={memoryBusy || workMemoryBusy}
-          workMemoryProjects={workMemoryProjects}
-          workMemorySources={workMemorySources}
-          memorySearchResults={memorySearchResults}
-          fileUploadBusy={fileUploadBusy}
+          memoryBusy={memoryBusy}
+          webContextEnabled={gpu.web_context_enabled === true}
+          webContextConfigured={gpu.web_context_configured === true}
           onLibraryPathChange={setLibraryPath}
           onAddLibraryRoot={addLibraryRoot}
           onReindexLibrary={reindex}
-          onReindexWorkMemory={reindexWorkMemory}
           onSelectLibrarySource={(sourcePath) => {
             setSelectedLibrarySourcePath(sourcePath);
             refreshLibraryChunks(sourcePath);
@@ -2397,24 +3132,53 @@ export function App() {
           onMemoryQueryChange={setMemoryQuery}
           onSearch={searchMemory}
           onRefresh={refreshMemoryPage}
-          onInputFilePick={(event) => handleInputFilePick(event, "index-file", setLibraryPath)}
         />
       )}
 
       {activePage === "tools" && (
         <main className="page tools-page" aria-label="Tools">
-          <div className="drawer-header page-header">
+          <div className="utility-header page-header">
             <div>
               <p className="label">Tools</p>
-              <h2>Meeting utilities</h2>
-              <span>Speaker identity, microphone tuning, tests, theme, and system logs.</span>
+              <h1>Tools</h1>
+              <span>Calibrate input, train BP speaker identity, run test audio, inspect logs, and adjust appearance.</span>
             </div>
           </div>
+          <nav className="utility-tabs" aria-label="Tool sections">
+            {([
+              ["voice", "Voice & Input"],
+              ["speaker", "Speaker Identity"],
+              ["test", "Test Mode"],
+              ["debug", "Logs & Debug"],
+              ["appearance", "Appearance"],
+            ] as [ToolView, string][]).map(([view, label]) => (
+              <button
+                key={view}
+                type="button"
+                className={toolView === view ? "active" : ""}
+                aria-current={toolView === view ? "page" : undefined}
+                onClick={() => setToolView(view)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
 
-          <section className="drawer-section" id="capture">
-            <div className="drawer-section-heading">
-              <h3>Input</h3>
+          {toolView === "voice" && (
+          <section className="utility-section" id="capture" aria-label="Voice & Input">
+            <div className="utility-section-heading">
+              <h3>Voice & Input</h3>
               <span>{devices.length || "No"} devices</span>
+            </div>
+            <div className={`tool-readiness-card ${inputReadinessTitle === "Ready" ? "ready" : "warning"}`} aria-label="Input readiness">
+              <div>
+                <p className="label">Input readiness</p>
+                <strong>{inputReadinessTitle}</strong>
+                <span>{inputReadinessDetail}</span>
+              </div>
+              <button className="primary subtle" onClick={testMicrophone} disabled={micTestBusy || audioSource !== "server_device" || missingServerDevice}>
+                {micTestBusy ? "Testing..." : "Test Mic"}
+              </button>
             </div>
             {ENABLE_FIXTURE_AUDIO && (
               <label className="field field-wide">
@@ -2436,32 +3200,6 @@ export function App() {
                 <span>{deviceNotice || "Auto-selected on this computer. Browser microphones are disabled."}</span>
               </div>
               <button className="secondary" onClick={refreshDevices}>Refresh</button>
-            </div>
-            <div className="compact-tool">
-              <p className="label">Transcript Retention</p>
-              <div className="mode-control compact" role="group" aria-label="Transcript retention">
-                <button
-                  type="button"
-                  aria-pressed={sessionRetention === "temporary"}
-                  className={sessionRetention === "temporary" ? "active" : ""}
-                  disabled={captureStarting || captureActive}
-                  onClick={() => setSessionRetention("temporary")}
-                >
-                  <span>Listen</span>
-                  <small>Ephemeral</small>
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={sessionRetention === "saved"}
-                  className={sessionRetention === "saved" ? "active" : ""}
-                  disabled={captureStarting || captureActive}
-                  onClick={() => setSessionRetention("saved")}
-                >
-                  <span>Record</span>
-                  <small>Saved transcript</small>
-                </button>
-              </div>
-              <p className="tool-note">{sessionRetentionDetail}</p>
             </div>
             <div className="compact-tool mic-tuning" role="region" aria-label="Guided mic tuning">
               <div className="tuning-header">
@@ -2543,17 +3281,6 @@ export function App() {
                 </div>
               ) : null}
             </div>
-            <div className="button-row">
-              <button className="secondary" onClick={testMicrophone} disabled={micTestBusy || audioSource !== "server_device" || missingServerDevice}>
-                {micTestBusy ? "Testing..." : "Test Mic"}
-              </button>
-              <button className="primary" onClick={() => start()} disabled={captureStartDisabled}>
-                {captureButtonLabel}
-              </button>
-              <button className="danger" onClick={stop} disabled={captureStopDisabled}>
-                End Capture
-              </button>
-            </div>
             {ENABLE_FIXTURE_AUDIO && (
               <div className="compact-tool" role="region" aria-label="Fixture audio test controls">
                 <div className="field">
@@ -2565,11 +3292,12 @@ export function App() {
                       onChange={(event) => setFixturePath(event.target.value)}
                       placeholder="/absolute/path/to/mono-16khz.wav"
                     />
-                    <input
-                      aria-label="Browse fixture WAV"
-                      className="file-picker"
-                      type="file"
+                    <FilePickAction
+                      label="Browse fixture WAV"
+                      actionLabel="Upload WAV"
                       accept=".wav,audio/wav,audio/x-wav"
+                      path={fixturePath}
+                      busy={fileUploadBusy === "fixture"}
                       disabled={Boolean(fileUploadBusy)}
                       onChange={(event) => handleInputFilePick(event, "fixture", setFixturePath)}
                     />
@@ -2578,13 +3306,14 @@ export function App() {
               </div>
             )}
           </section>
+          )}
 
-          {testModeVisible && (
-            <details className="drawer-section drawer-section-collapsible" id="test-mode" role="region" aria-label="Recorded audio test">
-              <summary className="drawer-section-heading">
+          {toolView === "test" && testModeVisible && (
+            <section className="utility-section" id="test-mode" role="region" aria-label="Recorded audio test">
+              <div className="utility-section-heading">
                 <h3>Recorded Audio Test</h3>
                 <span>{testBusy || (testPrepared ? "ready" : "idle")}</span>
-              </summary>
+              </div>
               <div className="test-mode-grid">
                 <div className="field field-wide">
                   <span>Source audio path</span>
@@ -2595,11 +3324,12 @@ export function App() {
                       onChange={(event) => setTestSourcePath(event.target.value)}
                       placeholder="/absolute/path/to/recording.m4a"
                     />
-                    <input
-                      aria-label="Browse source audio"
-                      className="file-picker"
-                      type="file"
-                      accept="audio/*,.wav,.mp3,.m4a,.mp4,.aac,.flac,.ogg,.webm"
+                    <FilePickAction
+                      label="Browse source audio"
+                      actionLabel="Upload audio"
+                      accept={TEST_AUDIO_ACCEPT}
+                      path={testSourcePath}
+                      busy={fileUploadBusy === "test-audio"}
                       disabled={Boolean(fileUploadBusy) || testBusy === "preparing" || captureActive || captureStarting}
                       onChange={(event) => handleInputFilePick(event, "test-audio", setTestSourcePath)}
                     />
@@ -2626,7 +3356,7 @@ export function App() {
                 </label>
               </div>
               <div className="button-row">
-                <button className="secondary" onClick={prepareTestAudio} disabled={testBusy === "preparing" || captureActive || captureStarting}>
+                <button className="secondary" onClick={() => prepareTestAudio()} disabled={testBusy === "preparing" || captureActive || captureStarting}>
                   {prepareButtonLabel}
                 </button>
                 <button className="primary subtle" onClick={startTestPlayback} disabled={!testPrepared || Boolean(testBusy) || captureActive || captureStarting}>
@@ -2637,24 +3367,51 @@ export function App() {
                 <div className="test-mode-summary" aria-label="Prepared audio">
                   <span><strong>{testPrepared.duration_seconds.toFixed(1)}s</strong> duration</span>
                   <span><strong>{testPrepared.expected_terms.length}</strong> expected terms</span>
+                  {testBusy === "playing" && <span>Auto-stops at end</span>}
                   <small>{testPrepared.fixture_wav}</small>
                 </div>
               )}
-	              {testReport && (
-	                <div className="test-mode-summary" aria-label="Recorded audio report">
-	                  <span><strong>{testReport.transcript_segments}</strong> heard lines</span>
-	                  <span><strong>{testReport.matched_expected_terms.length}/{testReport.expected_terms.length}</strong> terms matched</span>
-	                  <small>{testReport.report_path ?? testPrepared?.report_path}</small>
-	                </div>
+              {testReport && (
+                <div className="test-mode-summary" aria-label="Recorded audio report">
+                  <span><strong>{testReport.transcript_segments}</strong> heard lines</span>
+                  <span><strong>{testReport.matched_expected_terms.length}/{testReport.expected_terms.length}</strong> terms matched</span>
+                  <small>{testReport.report_path ?? testPrepared?.report_path}</small>
+                </div>
               )}
-            </details>
+            </section>
           )}
 
-          <details className="drawer-section drawer-section-collapsible" id="speaker-identity" aria-label="Speaker identity" role="region">
-            <summary className="drawer-section-heading">
+          {toolView === "test" && !testModeVisible && (
+            <section className="utility-section" aria-label="Recorded audio test unavailable">
+              <div className="empty-panel">
+                <h2>Test mode is off</h2>
+                <p>Recorded playback controls appear here when test mode is enabled in the local runtime.</p>
+              </div>
+            </section>
+          )}
+
+          {toolView === "speaker" && (
+          <section className="utility-section" id="speaker-identity" aria-label="Speaker identity" role="region">
+            <div className="utility-section-heading">
               <h3>Speaker Identity</h3>
               <span>{speakerStatusLabel}</span>
-            </summary>
+            </div>
+            <div className={`tool-readiness-card ${speakerStatus?.ready ? "ready" : "warning"}`} aria-label="BP label readiness">
+              <div>
+                <p className="label">BP label readiness</p>
+                <strong>{speakerReadinessTitle}</strong>
+                <span>{speakerReadinessDetail}</span>
+              </div>
+              {!speakerEnrollment && !speakerStatus?.ready && (
+                <button
+                  className="primary subtle"
+                  onClick={startSpeakerEnrollment}
+                  disabled={Boolean(speakerBusy) || speakerStatus?.backend.available === false || missingServerDevice}
+                >
+                  {speakerTrainingButtonLabel}
+                </button>
+              )}
+            </div>
 
             <div className={`speaker-training-card ${speakerStage}`} aria-label="Speaker training next step">
               <div className="speaker-training-status">
@@ -2677,21 +3434,11 @@ export function App() {
               </div>
             </div>
 
-            {!speakerEnrollment && !speakerStatus?.ready && (
-              <button
-                className="primary speaker-primary-action"
-                onClick={startSpeakerEnrollment}
-                disabled={Boolean(speakerBusy) || speakerStatus?.backend.available === false || missingServerDevice}
-              >
-                {speakerTrainingButtonLabel}
-              </button>
-            )}
-
             {speakerEnrollment && !speakerStatus?.ready && (
               <div className="speaker-record-flow">
                 <div className="speaker-record-prompt" aria-label="Speaker recording prompt">
                   <strong>Record only {speakerEnrollmentLabel}</strong>
-                  <span>Use your normal mic position. Speak naturally for the full timer. Stop if another voice enters; this is for speaker labels, not word accuracy.</span>
+                  <span>Use your normal mic position. Speak naturally for the full timer. Stop if another voice enters; this verifies BP, not separate meeting speakers.</span>
                 </div>
                 <div className="speaker-training-prompts" aria-label="Suggested speaker training prompts">
                   <div className="speaker-training-prompts-head">
@@ -2746,7 +3493,7 @@ export function App() {
             {speakerStatus?.ready && (
               <div className="speaker-ready-card" aria-label="Speaker identity ready">
                 <strong>{speakerEnrollmentLabel} transcript label is ready</strong>
-                <span>New transcript segments can be labeled {speakerEnrollmentLabel}; other voices stay Speaker 1, Speaker 2, or Unknown.</span>
+                <span>Live and Review can label high-confidence {speakerEnrollmentLabel} speech; every non-match stays Other speaker or Unknown speaker.</span>
               </div>
             )}
 
@@ -2767,6 +3514,9 @@ export function App() {
                 </button>
                 <button className="secondary" onClick={recalibrateSpeakerProfile} disabled={Boolean(speakerBusy) || (speakerStatus?.embedding_count ?? 0) < 2}>
                   Recalibrate Threshold
+                </button>
+                <button className="secondary danger-subtle" onClick={resetSpeakerProfile} disabled={Boolean(speakerBusy)}>
+                  Delete Learned Embeddings
                 </button>
               </div>
             </details>
@@ -2796,118 +3546,49 @@ export function App() {
                 </div>
               </details>
             )}
-            <details className="voice-preview">
-              <summary>Review learned speaker profile</summary>
-              <div className="speaker-review-list">
-                <div className="speaker-review-row">
-                  <strong>{speakerStatus?.profile.display_name ?? "BP"}</strong>
-                  <span>{speakerStatus?.backend.device ?? "device"}</span>
-                  <p>{speakerStatus?.backend.model_name ?? "No speaker model loaded"}</p>
-                  <div className="speaker-feedback-controls">
-                    <button type="button" className="secondary" onClick={() => submitSpeakerFeedback(null, "merge speakers", "merge_speakers")}>
-                      Merge speakers
-                    </button>
-                    <button type="button" className="secondary" onClick={() => submitSpeakerFeedback(null, "split speaker", "split_speaker")}>
-                      Split speaker
-                    </button>
-                    <button type="button" className="secondary" onClick={() => submitSpeakerFeedback(null, speakerEnrollmentLabel, "rename_speaker")}>
-                      Rename speaker
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </details>
-            <div className="button-row">
-              <button className="secondary danger-subtle" onClick={resetSpeakerProfile} disabled={Boolean(speakerBusy)}>
-                Delete Learned Embeddings
-              </button>
-            </div>
-          </details>
+          </section>
+          )}
 
-          <details className="drawer-section drawer-section-collapsible" id="indexes" aria-label="Indexes" role="region">
-            <summary className="drawer-section-heading">
-              <h3>Indexes</h3>
-              <span>{workMemoryLabel}</span>
-            </summary>
-            <div className="memory-overview" aria-label="Work memory index summary">
-              <span><strong>{workMemoryStatus?.projects ?? 0}</strong> projects</span>
-              <span><strong>{workMemoryStatus?.evidence ?? 0}</strong> citations</span>
-              <span><strong>{workMemoryStatus?.disabled_sources ?? 0}</strong> guarded</span>
-            </div>
-            <div className="field">
-              <span>File root</span>
-              <div className="path-picker">
-                <input
-                  aria-label="File root"
-                  value={libraryPath}
-                  onChange={(event) => setLibraryPath(event.target.value)}
-                  placeholder="/path/to/notes-or-docs"
-                />
-                <input
-                  aria-label="Browse index file"
-                  className="file-picker"
-                  type="file"
-                  accept=".txt,.md,.markdown,.pdf,.docx,.json,.csv,.rtf"
-                  disabled={Boolean(fileUploadBusy) || workMemoryBusy === "indexing"}
-                  onChange={(event) => handleInputFilePick(event, "index-file", setLibraryPath)}
-                />
-              </div>
-            </div>
-            <div className="button-row">
-              <button className="secondary" onClick={addLibraryRoot}>Add Files</button>
-              <button className="secondary" onClick={reindex}>Reindex Files</button>
-              <button className="secondary" onClick={reindexWorkMemory} disabled={workMemoryBusy === "indexing"}>
-                {workMemoryBusy === "indexing" ? "Indexing..." : "Index Work"}
-              </button>
-            </div>
-          </details>
-
-          <details className="drawer-section drawer-section-collapsible" aria-label="System" role="region">
-            <summary className="drawer-section-heading">
-              <h3>System</h3>
+          {toolView === "debug" && (
+          <section className="utility-section" aria-label="Logs & Debug" role="region">
+            <div className="utility-section-heading">
+              <h3>Logs & Debug</h3>
               <span>{gpu.asr_cuda_available ? "ready" : "check"}</span>
-            </summary>
+            </div>
             <p className="gpu-name">{gpuLabel}</p>
             <div className="vram-bar" aria-label={`VRAM usage ${vramPercent}%`}>
               <span style={{ width: `${vramPercent}%` }} />
             </div>
-            <div className="chip-row">
+            <div className="chip-row debug-key-status" aria-label="Debug status summary">
               <span className="chip">{gpu.asr_cuda_available ? "CUDA ready" : gpu.asr_cuda_error ?? "CUDA check"}</span>
               <span className="chip">ASR {asrBackendLabel}</span>
-              <span className="chip">{asrModelLabel}</span>
-              <span className="chip">{streamingModeLabel}</span>
-              {gpu.asr_backend === "nemotron_streaming" && (
-                <>
-                  <span className="chip">{streamingMetricLabel}</span>
-                  <span className="chip">{gpu.nemotron_loaded ? "Nemotron loaded" : "Nemotron cold"}</span>
-                </>
-              )}
+              <span className="chip">{asrDeviceStatusLabel}</span>
               <span className="chip">{gpuFreeLabel}</span>
               <span className="chip">{webStatusLabel}</span>
-              <span className="chip">
-                window {formatSeconds(gpu.transcription_window_seconds ?? 5)} / overlap {formatSeconds(gpu.transcription_overlap_seconds ?? 0.75)}
-              </span>
-              <span className="chip">Chat {gpu.ollama_chat_model ?? "phi3:mini"} @ {ollamaChatHostLabel}</span>
-              <span className={gpu.ollama_chat_reachable === false ? "chip warning" : "chip"}>{ollamaChatReachabilityLabel}</span>
-              <span className="chip">Embed {gpu.ollama_embed_model ?? "embeddinggemma"} @ {ollamaEmbedHostLabel}</span>
-              <span className={gpu.ollama_embed_reachable === false ? "chip warning" : "chip"}>{ollamaEmbedReachabilityLabel}</span>
-              {(gpu.ollama_gpu_models ?? []).length === 0 ? (
-                <span className="chip muted">Ollama idle</span>
-              ) : (
-                gpu.ollama_gpu_models?.map((model) => <span key={model} className="chip">{model}</span>)
-              )}
-              <span className="chip">keep chat {gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"}</span>
-              <span className="chip">keep embed {gpu.ollama_embed_keep_alive ?? "0"}</span>
-              <span className="chip">dedupe {gpu.dedupe_similarity_threshold ?? "?"}</span>
             </div>
-            <label className="field">
-              <span>Theme</span>
-              <select aria-label="Theme" value={theme} onChange={(event) => setTheme(event.target.value as ThemeName)}>
-                {THEMES.map((item) => (
-                  <option key={item.value} value={item.value}>{item.label}</option>
-                ))}
-              </select>
-            </label>
+            <details className="debug-diagnostics">
+              <summary>Runtime diagnostics</summary>
+              <div className="chip-row">
+                <span className="chip">{asrModelLabel}</span>
+                <span className="chip">{asrCadenceLabel}</span>
+                <span className="chip">{asrTimingLabel}</span>
+                <span className="chip">
+                  window {formatSeconds(gpu.transcription_window_seconds ?? 5)} / overlap {formatSeconds(gpu.transcription_overlap_seconds ?? 0.75)}
+                </span>
+                <span className="chip">Chat {gpu.ollama_chat_model ?? "qwen3.5:397b-cloud"} @ {ollamaChatHostLabel}</span>
+                <span className={gpu.ollama_chat_reachable === false ? "chip warning" : "chip"}>{ollamaChatReachabilityLabel}</span>
+                <span className="chip">Embed {gpu.ollama_embed_model ?? "embeddinggemma"} @ {ollamaEmbedHostLabel}</span>
+                <span className={gpu.ollama_embed_reachable === false ? "chip warning" : "chip"}>{ollamaEmbedReachabilityLabel}</span>
+                {(gpu.ollama_gpu_models ?? []).length === 0 ? (
+                  <span className="chip muted">Ollama idle</span>
+                ) : (
+                  gpu.ollama_gpu_models?.map((model) => <span key={model} className="chip">{model}</span>)
+                )}
+                <span className="chip">keep chat {gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"}</span>
+                <span className="chip">keep embed {gpu.ollama_embed_keep_alive ?? "0"}</span>
+                <span className="chip">dedupe {gpu.dedupe_similarity_threshold ?? "?"}</span>
+              </div>
+            </details>
             <label className="toggle-row">
               <input
                 aria-label="Show debug metadata"
@@ -2917,28 +3598,58 @@ export function App() {
               />
               Show debug metadata
             </label>
-            {showDebugMetadata && (
-              <details className="system-log" open>
-                <summary>System logs</summary>
-                {systemLogs.length === 0 ? (
-                  <p className="tool-note">No system logs yet.</p>
-                ) : (
-                  <div className="system-log-list">
-                    {systemLogs.map((log) => (
-                      <article key={`${log.id}-${log.seq}`} className={`system-log-entry ${log.level}`}>
-                        <div>
-                          <strong>{log.title}</strong>
-                          <time>{formatClock(log.at)}</time>
-                        </div>
-                        <p>{log.message}</p>
-                        {log.metadata && <pre>{formatDebugValue(log.metadata)}</pre>}
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </details>
+            <div className="system-log" aria-label="System logs">
+              <strong>System logs</strong>
+              {systemLogs.length === 0 ? (
+                <p className="tool-note">No system logs yet.</p>
+              ) : (
+                <div className="system-log-list">
+                  {systemLogs.map((log) => (
+                    <article key={`${log.id}-${log.seq}`} className={`system-log-entry ${log.level}`}>
+                      <div>
+                        <strong>{log.title}</strong>
+                        <time>{formatClock(log.at)}</time>
+                      </div>
+                      <p>{log.message}</p>
+                      {showDebugMetadata && log.metadata && <pre>{formatDebugValue(log.metadata)}</pre>}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+          )}
+
+          {toolView === "appearance" && (
+          <section className="utility-section" aria-label="Appearance" role="region">
+            <div className="utility-section-heading">
+              <h3>Appearance</h3>
+              <span>{THEMES.find((item) => item.value === theme)?.label ?? theme}</span>
+            </div>
+            <label className="field">
+              <span>Theme</span>
+              <select aria-label="Theme" value={theme} onChange={(event) => setTheme(event.target.value as ThemeName)}>
+                {THEMES.map((item) => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="theme-swatch-row" aria-label="Theme swatches">
+              {THEMES.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className={`theme-swatch ${theme === item.value ? "active" : ""}`}
+                  aria-label={`${item.label} theme`}
+                  onClick={() => setTheme(item.value)}
+                >
+                  <span />
+                  <strong>{item.label}</strong>
+                </button>
+              ))}
+            </div>
+          </section>
             )}
-          </details>
         </main>
       )}
       </div>
@@ -2963,15 +3674,16 @@ function Sidebar({
 }) {
   const items: { page: AppPage; label: string; short: string }[] = [
     { page: "live", label: "Live", short: "Live" },
+    { page: "review", label: "Review", short: "Rev" },
     { page: "sessions", label: "Sessions", short: "Log" },
     { page: "tools", label: "Tools", short: "Tool" },
     { page: "models", label: "Models", short: "AI" },
-    { page: "memory", label: "Memory", short: "Mem" },
+    { page: "references", label: "References", short: "Refs" },
   ];
   return (
     <aside className="sidebar" aria-label="Primary navigation">
       <div className="sidebar-brand">
-        <span className="brand-mark" aria-hidden="true" />
+        <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
         <div>
           <strong>Brain Sidecar</strong>
           <small>Dross cockpit</small>
@@ -2992,110 +3704,37 @@ function Sidebar({
         ))}
       </nav>
       <div className="sidebar-footer">
-        <span className="status-badge">{status}</span>
-        <span>{asrBackendLabel}</span>
-        <span>{gpuFreeLabel}</span>
-        <small>{retentionLabel}</small>
+        <button
+          type="button"
+          className="sidebar-status-button"
+          aria-label="Open capture details"
+          onClick={() => onNavigate("live")}
+        >
+          <span className="status-badge">{status}</span>
+          <small>{retentionLabel}</small>
+        </button>
+        <button
+          type="button"
+          className="sidebar-status-button"
+          aria-label="Open model details"
+          onClick={() => onNavigate("models")}
+        >
+          <span>{asrBackendLabel}</span>
+          <small>{gpuFreeLabel}</small>
+        </button>
       </div>
     </aside>
   );
 }
 
-function SessionSelectorBar({
-  sessionId,
-  title,
-  sessions,
-  status,
-  retention,
-  activeRetention,
-  disabled,
-  onSelect,
-  onNew,
-  onTitleChange,
-  onTitleSave,
-  onRetentionChange,
-}: {
-  sessionId: string | null;
-  title: string;
-  sessions: SessionSummary[];
-  status: string;
-  retention: SessionRetention;
-  activeRetention: SessionRetention;
-  disabled: boolean;
-  onSelect: (id: string) => void;
-  onNew: () => void;
-  onTitleChange: (title: string) => void;
-  onTitleSave: (title: string) => void;
-  onRetentionChange: (retention: SessionRetention) => void;
-}) {
-  const titleInputRef = useRef<HTMLInputElement | null>(null);
-  return (
-    <section className="session-selector" aria-label="Live session selector">
-      <label className="field compact-field session-title-field">
-        <span>Title</span>
-        <input
-          ref={titleInputRef}
-          aria-label="Live session title"
-          value={title}
-          disabled={disabled}
-          onChange={(event) => onTitleChange(event.target.value)}
-          placeholder="New meeting"
-        />
-        <small>{status === "idle" || status === "stopped" ? "stopped" : status} · {activeRetention === "saved" ? "saved" : "temporary"}</small>
-      </label>
-      <label className="field compact-field">
-        <span>Open</span>
-        <select
-          aria-label="Session selector"
-          value={sessionId ?? "new"}
-          disabled={disabled}
-          onChange={(event) => onSelect(event.target.value)}
-        >
-          <option value="new">New meeting</option>
-          {sessions.map((session) => (
-            <option key={session.id} value={session.id}>
-              {session.title}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="mode-control compact" role="group" aria-label="Live retention">
-        <button
-          type="button"
-          aria-pressed={retention === "temporary"}
-          className={retention === "temporary" ? "active" : ""}
-          disabled={disabled}
-          onClick={() => onRetentionChange("temporary")}
-        >
-          <span>Temporary</span>
-          <small>listen only</small>
-        </button>
-        <button
-          type="button"
-          aria-pressed={retention === "saved"}
-          className={retention === "saved" ? "active" : ""}
-          disabled={disabled}
-          onClick={() => onRetentionChange("saved")}
-        >
-          <span>Saved</span>
-          <small>record text</small>
-        </button>
-      </div>
-      <div className="session-selector-actions">
-        <button
-          className="secondary"
-          type="button"
-          onClick={() => onTitleSave(titleInputRef.current?.value ?? title)}
-          disabled={disabled || !sessionId || !title.trim()}
-        >
-          Save Title
-        </button>
-        <button className="secondary" type="button" onClick={onNew} disabled={disabled}>
-          New Session
-        </button>
-      </div>
-    </section>
-  );
+function sessionHasUserValue(session: SessionSummary): boolean {
+  if (session.retention === "saved") {
+    return true;
+  }
+  if ((session.transcript_count ?? 0) > 0 || (session.note_count ?? 0) > 0 || session.summary_exists) {
+    return true;
+  }
+  return !["created", "stopped"].includes((session.status ?? "").toLowerCase());
 }
 
 function SessionsPage({
@@ -3103,32 +3742,81 @@ function SessionsPage({
   selectedSession,
   selectedSessionId,
   search,
+  showAll,
   busy,
   titleDraft,
   highlightedSourceIds,
   onSearchChange,
+  onShowAllChange,
   onRefresh,
   onSelect,
   onTitleDraftChange,
   onSaveTitle,
   onHighlightSources,
+  onCreateSavedSession,
+  onGoLive,
 }: {
   sessions: SessionSummary[];
   selectedSession: SessionDetail | null;
   selectedSessionId: string | null;
   search: string;
+  showAll: boolean;
   busy: string;
   titleDraft: string;
   highlightedSourceIds: Set<string>;
   onSearchChange: (value: string) => void;
+  onShowAllChange: (value: boolean) => void;
   onRefresh: () => void;
   onSelect: (id: string) => void;
   onTitleDraftChange: (value: string) => void;
   onSaveTitle: () => void;
   onHighlightSources: (ids: Set<string>) => void;
+  onCreateSavedSession: () => void;
+  onGoLive: () => void;
 }) {
   const transcriptText = selectedSession?.transcript_segments.map((segment) => segment.text).join("\n") ?? "";
   const briefText = selectedSession?.summary?.summary ?? selectedSession?.note_cards.map((card) => `${card.title}\n${card.body}`).join("\n\n") ?? "";
+  const cleanSearch = search.trim().toLowerCase();
+  const visibleSessions = showAll ? sessions : sessions.filter(sessionHasUserValue);
+  const filteredSessions = cleanSearch
+    ? visibleSessions.filter((session) => (
+      session.title.toLowerCase().includes(cleanSearch)
+      || session.status.toLowerCase().includes(cleanSearch)
+      || (session.retention ?? "").toLowerCase().includes(cleanSearch)
+    ))
+    : visibleSessions;
+  const selectedTitleDirty = Boolean(
+    selectedSession
+    && titleDraft.trim()
+    && titleDraft.trim() !== selectedSession.title.trim(),
+  );
+  if (sessions.length === 0) {
+    return (
+      <main className="page sessions-page" aria-label="Sessions">
+        <header className="page-header">
+          <div>
+            <p className="label">Saved Work</p>
+            <h1>Sessions</h1>
+            <span>Browse saved transcripts, cards, and post-call summaries.</span>
+          </div>
+          {busy === "loading" && <span className="inline-loading">Refreshing saved sessions</span>}
+        </header>
+        <section className="empty-state session-empty-state" aria-label="No saved sessions">
+          <h2>No saved sessions yet</h2>
+          <p>Approve a completed Review job to save transcript text, Meeting Output cards, and summaries.</p>
+          <div className="button-row centered">
+            <button className="primary subtle" type="button" onClick={onCreateSavedSession}>
+              Open Review
+            </button>
+            <button className="secondary" type="button" onClick={onGoLive}>
+              Go to Live
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="page sessions-page" aria-label="Sessions">
       <header className="page-header">
@@ -3137,7 +3825,13 @@ function SessionsPage({
           <h1>Sessions</h1>
           <span>Browse saved transcripts, cards, and post-call summaries.</span>
         </div>
-        <button className="secondary" type="button" onClick={onRefresh} disabled={busy === "loading"}>{busy === "loading" ? "Refreshing..." : "Refresh"}</button>
+        <div className="page-header-actions">
+          {busy === "loading" && <span className="inline-loading">Refreshing saved sessions</span>}
+          <button className="secondary" type="button" onClick={() => onShowAllChange(!showAll)}>
+            {showAll ? "Hide Empty" : "All Sessions"}
+          </button>
+          <button className="secondary" type="button" onClick={onRefresh} disabled={busy === "loading"}>Refresh</button>
+        </div>
       </header>
       <div className="split-pane">
         <section className="session-list" aria-label="Session list">
@@ -3153,11 +3847,10 @@ function SessionsPage({
               placeholder="meeting title"
             />
           </label>
-          <button className="secondary" type="button" onClick={onRefresh}>Search</button>
-          {sessions.length === 0 ? (
-            <p className="empty-note">No saved sessions yet.</p>
+          {filteredSessions.length === 0 ? (
+            <p className="empty-note">{showAll ? "No sessions match this filter." : "No saved or useful sessions match. Use All Sessions for empty temporary runs."}</p>
           ) : (
-            sessions.map((session) => (
+            filteredSessions.map((session) => (
               <button
                 key={session.id}
                 type="button"
@@ -3165,10 +3858,12 @@ function SessionsPage({
                 onClick={() => onSelect(session.id)}
               >
                 <strong>{session.title}</strong>
-                <span>{formatDateTime(session.started_at)} · {session.transcript_count} lines</span>
+                <span>{formatDateTime(session.started_at)}</span>
                 <small className="chip-row">
                   <span className="status-badge">{session.status}</span>
                   <span className="status-badge">{session.retention ?? "empty"}</span>
+                  <span className="status-badge">{session.transcript_count} lines</span>
+                  <span className="status-badge">{session.note_count} cards</span>
                 </small>
               </button>
             ))
@@ -3191,9 +3886,11 @@ function SessionsPage({
                     onChange={(event) => onTitleDraftChange(event.target.value)}
                   />
                 </label>
-                <button className="secondary" type="button" onClick={onSaveTitle} disabled={busy === "saving-title"}>
-                  {busy === "saving-title" ? "Saving..." : "Save Title"}
-                </button>
+                {selectedTitleDirty && (
+                  <button className="secondary" type="button" onClick={onSaveTitle} disabled={busy === "saving-title"}>
+                    {busy === "saving-title" ? "Saving..." : "Save Title"}
+                  </button>
+                )}
               </div>
               <div className="chip-row">
                 <span className="chip">{selectedSession.status}</span>
@@ -3239,15 +3936,7 @@ function SessionsPage({
                       <h3>Cards & Brief</h3>
                       <button className="secondary" type="button" disabled={!briefText} onClick={() => navigator.clipboard?.writeText(briefText)}>Copy brief</button>
                     </div>
-                    {selectedSession.summary && (
-                      <article className="session-summary-card">
-                        <strong>{selectedSession.summary.title}</strong>
-                        <p>{selectedSession.summary.summary}</p>
-                        <div className="chip-row">
-                          {selectedSession.summary.topics.slice(0, 8).map((topic) => <span key={topic} className="chip">{topic}</span>)}
-                        </div>
-                      </article>
-                    )}
+                    {selectedSession.summary && <MeetingSummaryBrief summary={selectedSession.summary} compact />}
                     <div className="session-card-list">
                       {selectedSession.note_cards.length === 0 ? (
                         <p className="empty-note">No Meeting Output cards were saved for this session.</p>
@@ -3284,13 +3973,18 @@ function ModelsPage({
   gpuFreeLabel,
   asrBackendLabel,
   asrModelLabel,
-  streamingModeLabel,
-  streamingMetricLabel,
+  asrCadenceLabel,
+  asrTimingLabel,
   ollamaChatHostLabel,
   ollamaEmbedHostLabel,
   ollamaChatReachabilityLabel,
   ollamaEmbedReachabilityLabel,
+  ollamaModels,
+  ollamaModelBusy,
+  ollamaModelNotice,
   onRefresh,
+  onRefreshOllamaModels,
+  onSelectOllamaChatModel,
 }: {
   gpu: GpuHealth;
   pipeline: PipelineState;
@@ -3299,71 +3993,149 @@ function ModelsPage({
   gpuFreeLabel: string;
   asrBackendLabel: string;
   asrModelLabel: string;
-  streamingModeLabel: string;
-  streamingMetricLabel: string;
+  asrCadenceLabel: string;
+  asrTimingLabel: string;
   ollamaChatHostLabel: string;
   ollamaEmbedHostLabel: string;
   ollamaChatReachabilityLabel: string;
   ollamaEmbedReachabilityLabel: string;
+  ollamaModels: OllamaModelsResponse | null;
+  ollamaModelBusy: string;
+  ollamaModelNotice: string;
   onRefresh: () => void;
+  onRefreshOllamaModels: () => void;
+  onSelectOllamaChatModel: (model: string) => void;
 }) {
+  const asrDevice = gpu.asr_device ?? "cpu";
+  const hearingReady = !gpu.asr_backend_error && (asrDevice === "cpu" || gpu.asr_cuda_available !== false);
+  const thinkingReady = gpu.ollama_chat_reachable !== false;
+  const memoryReady = gpu.ollama_embed_reachable !== false;
+  const runtimeReady = hearingReady && thinkingReady && memoryReady;
+  const readinessTone = runtimeReady ? "ready" : hearingReady || thinkingReady || memoryReady ? "warning" : "danger";
+  const readinessPill = runtimeReady ? "Ready" : hearingReady || thinkingReady || memoryReady ? "Degraded" : "Setup needed";
+  const readinessTitle = runtimeReady
+    ? "Dross runtime ready"
+    : hearingReady && !thinkingReady
+      ? "Dross hearing ready; thinking offline"
+      : thinkingReady && !hearingReady
+        ? "Dross thinking ready; hearing needs setup"
+        : "Dross setup needed";
+  const embeddingKeepalive = gpu.ollama_embed_keep_alive ?? "0";
+  const embeddingKeepaliveLabel = embeddingKeepalive === "0" ? "not resident (0)" : embeddingKeepalive;
+  const residentChatModels = gpu.ollama_gpu_models ?? [];
+  const chatModel = gpu.ollama_chat_model ?? "qwen3.5:397b-cloud";
+  const selectedChatModel = ollamaModels?.selected_chat_model ?? chatModel;
+  const modelOptions = (ollamaModels?.models.length ? ollamaModels.models : [{ name: selectedChatModel, current: true }])
+    .reduce<OllamaModelOption[]>((options, model) => {
+      if (!model.name || options.some((option) => option.name === model.name)) {
+        return options;
+      }
+      return [...options, model];
+    }, []);
+  if (selectedChatModel && !modelOptions.some((model) => model.name === selectedChatModel)) {
+    modelOptions.unshift({ name: selectedChatModel, current: true, configured: true });
+  }
+  const sameGpuInterpretation = runtimeReady
+    ? `Runtime path looks healthy: ${asrBackendLabel} handles hearing on ${asrDevice}, ${selectedChatModel} is ${residentChatModels.includes(selectedChatModel) ? "resident" : "reachable"}, and embeddings ${embeddingKeepalive === "0" ? "load on demand" : "stay resident"}.`
+    : "Health checks show which part of Dross needs attention before a meeting.";
   return (
     <main className="page models-page" aria-label="Models">
       <header className="page-header">
         <div>
           <p className="label">Runtime</p>
           <h1>Models</h1>
-          <span>Local model residency and restart-required configuration.</span>
+          <span>Local model residency and runtime model selection.</span>
         </div>
         <button className="secondary" type="button" onClick={onRefresh}>Refresh status</button>
       </header>
+      <section className={`readiness-summary ${readinessTone}`} aria-label="Dross readiness summary">
+        <div>
+          <p className="label">Readiness</p>
+          <h2>{readinessTitle}</h2>
+          <div className="readiness-kv" aria-label="Dross readiness details">
+            <span><strong>Hearing</strong>{hearingReady ? `${asrBackendLabel} · ${asrCadenceLabel}` : (gpu.asr_backend_error || gpu.asr_cuda_error || "ASR check needed")}</span>
+            <span><strong>Thinking</strong>{thinkingReady ? `${selectedChatModel} · ${ollamaChatHostLabel}` : "chat offline"}</span>
+            <span><strong>Memory</strong>{memoryReady ? `${gpu.ollama_embed_model ?? "embeddinggemma"} · ${ollamaEmbedHostLabel}` : "embeddings offline"}</span>
+            <span><strong>VRAM</strong>{gpuFreeLabel}</span>
+          </div>
+          <p className="readiness-interpretation">{sameGpuInterpretation}</p>
+        </div>
+        <span className={`readiness-pill ${readinessTone}`}>{readinessPill}</span>
+      </section>
       <div className="models-grid">
-        <ModelCard title="Hearing / ASR" status={gpu.asr_backend_error ? "error" : gpu.nemotron_loaded ? "loaded" : "cold"}>
-          <span>Backend <strong>{asrBackendLabel}</strong></span>
-          <span>Model <strong>{asrModelLabel}</strong></span>
-          <span>{streamingModeLabel}</span>
-          <span>{streamingMetricLabel}</span>
-          <span>Dtype <strong>{gpu.asr_dtype ?? "configured in .env"}</strong></span>
+        <ModelCard title="Hearing / ASR" status={gpu.asr_backend_error ? "error" : "ready"}>
+          <RuntimeRow label="Backend" value={asrBackendLabel} />
+          <RuntimeRow label="Model" value={asrModelLabel} />
+          <RuntimeRow label="Device" value={asrDevice} />
+          <RuntimeRow label="Cadence" value={asrCadenceLabel} />
+          <RuntimeRow label="Last ASR" value={asrTimingLabel} />
+          <RuntimeRow label="Dtype" value={gpu.asr_dtype ?? "configured in .env"} />
           {gpu.asr_backend_error && <p className="warning-text">{gpu.asr_backend_error}</p>}
         </ModelCard>
         <ModelCard title="Thinking / Chat" status={gpu.ollama_chat_reachable === false ? "offline" : "ready"}>
-          <span>Model <strong>{gpu.ollama_chat_model ?? "phi3:mini"}</strong></span>
-          <span>Host <strong>{ollamaChatHostLabel}</strong></span>
-          <span>{ollamaChatReachabilityLabel}</span>
-          <span>Keepalive <strong>{gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"}</strong></span>
-          <span>Timeout <strong>{gpu.ollama_chat_timeout_seconds ?? 20}s</strong></span>
+          <label className="field model-select-field">
+            Ollama model
+            <select
+              aria-label="Ollama chat model"
+              value={selectedChatModel}
+              disabled={ollamaModelBusy === "saving" || modelOptions.length === 0}
+              onChange={(event) => onSelectOllamaChatModel(event.target.value)}
+            >
+              {modelOptions.map((model) => (
+                <option key={model.name} value={model.name}>
+                  {formatOllamaModelOption(model)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="model-selector-meta">
+            <small>{ollamaModelBusy === "loading" ? "Loading models" : `${modelOptions.length} available`}</small>
+            <button className="secondary" type="button" onClick={onRefreshOllamaModels} disabled={ollamaModelBusy !== ""}>
+              Refresh list
+            </button>
+          </div>
+          {ollamaModelNotice && <p className={ollamaModelNotice.includes("failed") || ollamaModelNotice.includes("unavailable") ? "warning-text" : "muted-text"}>{ollamaModelNotice}</p>}
+          <RuntimeRow label="Active" value={selectedChatModel} />
+          <RuntimeRow label="Host" value={ollamaChatHostLabel} />
+          <RuntimeRow label="Reachability" value={ollamaChatReachabilityLabel} />
+          <RuntimeRow label="Keepalive" value={gpu.ollama_chat_keep_alive ?? gpu.ollama_keep_alive ?? "30m"} />
+          <RuntimeRow label="Timeout" value={`${gpu.ollama_chat_timeout_seconds ?? 20}s`} />
         </ModelCard>
         <ModelCard title="Memory / Embeddings" status={gpu.ollama_embed_reachable === false ? "offline" : "ready"}>
-          <span>Model <strong>{gpu.ollama_embed_model ?? "embeddinggemma"}</strong></span>
-          <span>Host <strong>{ollamaEmbedHostLabel}</strong></span>
-          <span>{ollamaEmbedReachabilityLabel}</span>
-          <span>Keepalive <strong>{gpu.ollama_embed_keep_alive ?? "0"}</strong></span>
-          <span>Timeout <strong>{gpu.ollama_embed_timeout_seconds ?? 12}s</strong></span>
+          <RuntimeRow label="Model" value={gpu.ollama_embed_model ?? "embeddinggemma"} />
+          <RuntimeRow label="Host" value={ollamaEmbedHostLabel} />
+          <RuntimeRow label="Reachability" value={ollamaEmbedReachabilityLabel} />
+          <RuntimeRow label="Keepalive" value={embeddingKeepaliveLabel} />
+          <RuntimeRow label="Timeout" value={`${gpu.ollama_embed_timeout_seconds ?? 12}s`} />
         </ModelCard>
         <ModelCard title="GPU Residency" status={gpu.gpu_pressure ?? "check"}>
-          <span>{gpuLabel}</span>
+          <RuntimeRow label="Device" value={gpuLabel} />
           <div className="vram-bar" aria-label={`VRAM usage ${vramPercent}%`}><span style={{ width: `${vramPercent}%` }} /></div>
-          <span>{gpuFreeLabel}</span>
-          <span>Ollama models <strong>{gpu.ollama_gpu_models?.join(", ") || "idle"}</strong></span>
-          <span>Unload Ollama on ASR start <strong>{gpu.asr_unload_ollama_on_start ? "yes" : "no"}</strong></span>
-          <span>Streaming finals <strong>{pipeline.streamingFinalCount}</strong></span>
+          <RuntimeRow label="Free VRAM" value={gpuFreeLabel} />
+          <RuntimeRow label="Ollama models" value={gpu.ollama_gpu_models?.join(", ") || "idle"} />
+          <RuntimeRow label="Unload on ASR" value={gpu.asr_unload_ollama_on_start ? "yes" : "no"} />
+          <RuntimeRow label="Transcript revisions" value={String(pipeline.finalSegmentsReplaced)} />
         </ModelCard>
       </div>
-      <section className="copy-snippet" aria-label="Model config snippets">
-        <h2>Config snippets</h2>
+      <details className="copy-snippet config-recipes" aria-label="Config recipes">
+        <summary>
+          <h2>Config recipes</h2>
+          <span>Restart required after .env changes</span>
+        </summary>
         {[
-          ["Switch to Faster-Whisper", "BRAIN_SIDECAR_ASR_BACKEND=faster_whisper"],
-          ["Unload Ollama before ASR", "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true"],
-          ["Split chat to LAN", "BRAIN_SIDECAR_OLLAMA_CHAT_HOST=http://192.168.86.219:11434"],
-          ["Nemotron chunk", "BRAIN_SIDECAR_NEMOTRON_CHUNK_MS=160"],
-        ].map(([label, snippet]) => (
+          ["CPU ASR fallback", "Use when CUDA is unstable or local GPU headroom should stay free.", "BRAIN_SIDECAR_ASR_DEVICE=cpu\nBRAIN_SIDECAR_ASR_COMPUTE_TYPE=int8"],
+          ["CUDA ASR opt-in", "Use only when the GPU is stable and you want Faster-Whisper on CUDA.", "BRAIN_SIDECAR_ASR_DEVICE=cuda\nBRAIN_SIDECAR_ASR_COMPUTE_TYPE=float16"],
+          ["Unload Ollama before ASR", "Use when CUDA ASR needs more free VRAM than resident chat models leave available.", "BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true"],
+          ["Split chat to LAN", "Use when a LAN Ollama host should carry chat while this machine keeps hearing local.", "BRAIN_SIDECAR_OLLAMA_CHAT_HOST=http://192.168.86.219:11434"],
+        ].map(([label, detail, snippet]) => (
           <button key={label} className="secondary" type="button" onClick={() => navigator.clipboard?.writeText(snippet)}>
             <span>{label}</span>
+            <small>{detail}</small>
             <code>{snippet}</code>
             <small>Set in .env · restart required</small>
           </button>
         ))}
-      </section>
+      </details>
     </main>
   );
 }
@@ -3380,8 +4152,36 @@ function ModelCard({ title, status, children }: { title: string; status: string;
   );
 }
 
-function MemoryPage({
-  workMemoryStatus,
+function formatOllamaModelOption(model: OllamaModelOption): string {
+  if (model.cloud) {
+    return `${model.name} · cloud`;
+  }
+  if (model.size && model.size > 0) {
+    return `${model.name} · ${formatBytes(model.size)}`;
+  }
+  return model.configured ? `${model.name} · configured` : model.name;
+}
+
+function formatBytes(bytes: number): string {
+  const gib = bytes / (1024 ** 3);
+  if (gib >= 1) {
+    return `${gib.toFixed(gib >= 10 ? 0 : 1)} GB`;
+  }
+  const mib = bytes / (1024 ** 2);
+  return `${Math.max(1, Math.round(mib))} MB`;
+}
+
+function RuntimeRow({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="runtime-row">
+      <small>{label}</small>
+      {" "}
+      <strong>{value}</strong>
+    </span>
+  );
+}
+
+function ReferencesPage({
   libraryPath,
   libraryRoots,
   librarySources,
@@ -3389,21 +4189,16 @@ function MemoryPage({
   selectedLibrarySourcePath,
   memoryQuery,
   memoryBusy,
-  workMemoryProjects,
-  workMemorySources,
-  memorySearchResults,
-  fileUploadBusy,
+  webContextEnabled,
+  webContextConfigured,
   onLibraryPathChange,
   onAddLibraryRoot,
   onReindexLibrary,
-  onReindexWorkMemory,
   onSelectLibrarySource,
   onMemoryQueryChange,
   onSearch,
   onRefresh,
-  onInputFilePick,
 }: {
-  workMemoryStatus: WorkMemoryStatus | null;
   libraryPath: string;
   libraryRoots: string[];
   librarySources: LibraryChunkSource[];
@@ -3411,139 +4206,318 @@ function MemoryPage({
   selectedLibrarySourcePath: string | null;
   memoryQuery: string;
   memoryBusy: string;
-  workMemoryProjects: WorkMemoryProject[];
-  workMemorySources: WorkMemorySource[];
-  memorySearchResults: WorkMemoryCard[];
-  fileUploadBusy: string;
+  webContextEnabled: boolean;
+  webContextConfigured: boolean;
   onLibraryPathChange: (value: string) => void;
   onAddLibraryRoot: () => void;
   onReindexLibrary: () => void;
-  onReindexWorkMemory: () => void;
   onSelectLibrarySource: (sourcePath: string) => void;
   onMemoryQueryChange: (value: string) => void;
   onSearch: () => void;
   onRefresh: () => void;
-  onInputFilePick: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
+  const [memoryView, setMemoryView] = useState<ReferenceView>("overview");
+  const [selectedMemoryItem, setSelectedMemoryItem] = useState<MemorySelection | null>(null);
+  const cleanQuery = memoryQuery.trim().toLowerCase();
+  const visibleRoots = cleanQuery
+    ? libraryRoots.filter((root) => root.toLowerCase().includes(cleanQuery))
+    : libraryRoots;
+  const visibleDocuments = cleanQuery
+    ? librarySources.filter((source) => (
+      source.title.toLowerCase().includes(cleanQuery)
+      || source.source_path.toLowerCase().includes(cleanQuery)
+    ))
+    : librarySources;
+  const selectedDocument = selectedMemoryItem?.view === "documents"
+    ? selectedMemoryItem.source
+    : librarySources.find((source) => source.source_path === selectedLibrarySourcePath) ?? null;
+  const selectedRoot = selectedMemoryItem?.view === "roots" ? selectedMemoryItem.root : null;
+  const searchReady = memoryQuery.trim().length > 0;
+  const selectedRootIndexedCount = selectedRoot
+    ? librarySources.filter((source) => source.source_path.startsWith(selectedRoot)).length
+    : 0;
+  const categoryItems: { view: ReferenceView; label: string; count: number; disabled?: boolean }[] = [
+    { view: "overview", label: "Overview", count: librarySources.length },
+    { view: "roots", label: "Library Roots", count: libraryRoots.length },
+    { view: "documents", label: "Documents", count: librarySources.length },
+  ];
+  const activeCategoryLabel = categoryItems.find((item) => item.view === memoryView)?.label ?? "Overview";
+  const memoryPaneTitle = memoryView === "overview"
+    ? "Index overview"
+    : memoryView === "roots"
+      ? "Library roots"
+      : "Documents";
+
+  function activateMemoryView(view: ReferenceView) {
+    setMemoryView(view);
+    if (view === "overview") {
+      setSelectedMemoryItem(null);
+      return;
+    }
+    if (view === "roots" && visibleRoots[0]) {
+      setSelectedMemoryItem({ view, id: `root:${visibleRoots[0]}`, root: visibleRoots[0] });
+      return;
+    }
+    if (view === "documents" && visibleDocuments[0]) {
+      setSelectedMemoryItem({ view, id: visibleDocuments[0].source_path, source: visibleDocuments[0] });
+      onSelectLibrarySource(visibleDocuments[0].source_path);
+      return;
+    }
+    setSelectedMemoryItem(null);
+  }
+
+  function runMemorySearch() {
+    if (!memoryQuery.trim()) {
+      return;
+    }
+    onSearch();
+  }
+
+  function clearMemorySearch() {
+    onMemoryQueryChange("");
+    setSelectedMemoryItem(null);
+    setMemoryView("overview");
+  }
+
   return (
-    <main className="page memory-page" aria-label="Memory">
+    <main className="page memory-page" aria-label="References">
       <header className="page-header">
         <div>
           <p className="label">Index</p>
-          <h1>Memory</h1>
-          <span>{workMemoryStatus ? `${workMemoryStatus.projects} projects / ${workMemoryStatus.sources} sources` : "Index status loading"}</span>
+          <h1>References</h1>
+          <span>{librarySources.length} indexed documents / {libraryRoots.length} roots</span>
         </div>
-        <button className="secondary" type="button" onClick={onRefresh} disabled={memoryBusy === "loading"}>{memoryBusy === "loading" ? "Refreshing..." : "Refresh"}</button>
+        <div className="page-header-actions">
+          {memoryBusy === "loading" && <span className="inline-loading">Refreshing references</span>}
+          <button className="secondary" type="button" onClick={onRefresh} disabled={memoryBusy === "loading"}>Refresh</button>
+        </div>
       </header>
-      <div className="memory-explorer">
-        <aside className="memory-tree" aria-label="Memory tree">
-          <label className="field field-wide">
-            <span>Search memory</span>
-            <input
-              aria-label="Search memory"
-              value={memoryQuery}
-              onChange={(event) => onMemoryQueryChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") onSearch();
-              }}
-              placeholder="project, document, phrase"
-            />
-          </label>
-          <button className="secondary" type="button" onClick={onSearch}>{memoryBusy === "searching" ? "Searching..." : "Search"}</button>
-          <h3>Library Roots</h3>
-          {libraryRoots.length === 0 ? <p className="empty-note">No library roots yet.</p> : libraryRoots.map((root) => <span key={root} className="memory-tree-row">{root}</span>)}
-          <h3>Indexed Documents</h3>
-          {librarySources.length === 0 ? <p className="empty-note">No indexed documents yet.</p> : librarySources.map((source) => (
-            <button
-              key={source.source_path}
-              type="button"
-              className={`memory-tree-row ${selectedLibrarySourcePath === source.source_path ? "active" : ""}`}
-              onClick={() => onSelectLibrarySource(source.source_path)}
-            >
-              <strong>{source.title}</strong>
-              <small>{source.chunk_count} chunks</small>
-            </button>
-          ))}
-          <h3>Work Sources</h3>
-          {workMemorySources.slice(0, 24).map((source) => (
-            <span key={source.id} className={`memory-tree-row ${source.disabled ? "muted" : ""}`}>
-              {source.title}
-              <small>{source.source_group} · {source.status}</small>
-            </span>
-          ))}
+      <div className="memory-explorer explorer-shell">
+        <aside className="memory-tree explorer-nav scroll" aria-label="Reference categories">
+          <form
+            className="memory-search-form"
+            role="search"
+            onSubmit={(event) => {
+              event.preventDefault();
+              runMemorySearch();
+            }}
+          >
+            <label className="field field-wide">
+              <span>Search references</span>
+              <input
+                aria-label="Search references"
+                value={memoryQuery}
+                onChange={(event) => onMemoryQueryChange(event.target.value)}
+                placeholder="document, standard, phrase"
+              />
+            </label>
+            <p className="memory-search-note" aria-label="Reference search behavior">
+              Type filters the open category. Search loads matching EE reference chunks.
+            </p>
+            <div className="memory-search-actions">
+              <button className="secondary" type="submit" disabled={!memoryQuery.trim() || memoryBusy === "searching"}>
+                {memoryBusy === "searching" ? "Searching..." : "Search"}
+              </button>
+              {searchReady && (
+                <button className="secondary" type="button" onClick={clearMemorySearch}>
+                  Clear
+                </button>
+              )}
+            </div>
+          </form>
+          <nav className="memory-category-nav" aria-label="Reference category navigation">
+            {categoryItems.map((item) => (
+              <button
+                key={item.view}
+                type="button"
+                className={`memory-category-item ${memoryView === item.view ? "active" : ""} ${item.disabled ? "disabled" : ""}`}
+                aria-current={memoryView === item.view ? "page" : undefined}
+                disabled={item.disabled}
+                onClick={() => activateMemoryView(item.view)}
+              >
+                <span>{item.label}</span>
+                <strong>{item.count}</strong>
+              </button>
+            ))}
+          </nav>
         </aside>
-        <section className="memory-detail" aria-label="Memory detail">
-          <div className="memory-actions">
-            <div className="field field-wide">
-              <span>File root</span>
-              <div className="path-picker">
-                <input
-                  aria-label="File root"
-                  value={libraryPath}
-                  onChange={(event) => onLibraryPathChange(event.target.value)}
-                  placeholder="/path/to/notes-or-docs"
-                />
-                <input
-                  aria-label="Browse index file"
-                  className="file-picker"
-                  type="file"
-                  accept=".txt,.md,.markdown,.pdf,.docx,.json,.csv,.rtf"
-                  disabled={Boolean(fileUploadBusy) || memoryBusy === "indexing"}
-                  onChange={onInputFilePick}
-                />
+
+        <section className="memory-list-pane scroll" aria-label="Reference items">
+          <div className="memory-pane-head">
+            <div>
+              <p className="label">{activeCategoryLabel}</p>
+              <h2>{memoryPaneTitle}</h2>
+            </div>
+            <div className="button-row">
+              <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex References</button>
+            </div>
+          </div>
+
+          {memoryView === "overview" && (
+            <>
+              <div className="memory-overview" aria-label="Reference index summary">
+                <span><strong>{libraryRoots.length}</strong> library roots</span>
+                <span><strong>{librarySources.length}</strong> documents</span>
+                <span><strong>{librarySources.reduce((total, source) => total + source.chunk_count, 0)}</strong> chunks</span>
+                <span><strong>{webContextEnabled ? "on" : "off"}</strong> Brave</span>
+                <span><strong>{webContextConfigured ? "ready" : "missing"}</strong> web key</span>
+              </div>
+              <div className="memory-short-list" aria-label="Recent references">
+                <div className="section-heading-row">
+                  <h3>Recent references</h3>
+                  <span>{Math.min(4, librarySources.length)} shown</span>
+                </div>
+                {librarySources.slice(0, 4).map((source) => ({
+                  id: `doc:${source.source_path}`,
+                  title: source.title,
+                  meta: `${source.chunk_count} chunks · ${PathHint(source.source_path)}`,
+                  onClick: () => {
+                    setMemoryView("documents");
+                    setSelectedMemoryItem({ view: "documents", id: source.source_path, source });
+                    onSelectLibrarySource(source.source_path);
+                  },
+                })).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="memory-item-row"
+                    onClick={item.onClick}
+                  >
+                    <strong>{item.title}</strong>
+                    <span>{item.meta}</span>
+                  </button>
+                ))}
+                {librarySources.length === 0 && (
+                  <div className="empty-panel">
+                    <h2>No indexed references yet</h2>
+                    <p>Add the EE reference root or reindex the configured roots.</p>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {memoryView === "roots" && (
+            <>
+              <div className="memory-root-add" aria-label="Add library root">
+                <label className="field field-wide">
+                  <span>Library root path</span>
+                  <input
+                    aria-label="Library root path"
+                    value={libraryPath}
+                    onChange={(event) => onLibraryPathChange(event.target.value)}
+                    placeholder="/path/to/notes-or-docs"
+                  />
+                </label>
+                <button className="primary subtle" type="button" onClick={onAddLibraryRoot} disabled={!libraryPath.trim()}>
+                  Add Root
+                </button>
+              </div>
+              {visibleRoots.length === 0 ? (
+                <div className="empty-panel">
+                  <h2>No library roots yet</h2>
+                  <p>Add a local path to make files available for document indexing.</p>
+                </div>
+              ) : visibleRoots.map((root) => (
+                <button
+                  key={root}
+                  type="button"
+                  className={`memory-item-row ${selectedRoot === root ? "active" : ""}`}
+                  onClick={() => setSelectedMemoryItem({ view: "roots", id: `root:${root}`, root })}
+                >
+                  <strong>{PathLabel(root)}</strong>
+                  <span>{PathHint(root)}</span>
+                </button>
+              ))}
+            </>
+          )}
+
+          {memoryView === "documents" && (
+            visibleDocuments.length === 0 ? (
+              <div className="empty-panel">
+                <h2>No indexed documents yet</h2>
+                <p>Add a Library Root or reindex the current roots to inspect file chunks here.</p>
+              </div>
+            ) : visibleDocuments.map((source) => (
+              <button
+                key={source.source_path}
+                type="button"
+                className={`memory-item-row ${selectedDocument?.source_path === source.source_path ? "active" : ""}`}
+                onClick={() => {
+                  setSelectedMemoryItem({ view: "documents", id: source.source_path, source });
+                  onSelectLibrarySource(source.source_path);
+                }}
+              >
+                <strong>{source.title}</strong>
+                <span>{source.chunk_count} chunks · updated {formatDateTime(source.updated_at)}</span>
+                <small>{PathHint(source.source_path)}</small>
+              </button>
+            ))
+          )}
+
+        </section>
+
+        <section className="memory-detail explorer-detail scroll" aria-label="Reference detail">
+          {memoryView === "overview" && (
+            <div className="memory-detail-stack">
+              <div className="empty-panel">
+                <h2>Reference index status</h2>
+                <p>Local EE references ground technical analysis. Brave adds sanitized, live-only public context when enabled and configured.</p>
+              </div>
+              <div className="chip-row">
+                {libraryRoots.slice(0, 6).map((root) => <span key={root} className="chip">{PathLabel(root)}</span>)}
+                <span className={webContextEnabled && webContextConfigured ? "chip" : "chip warning"}>
+                  Brave {webContextEnabled ? webContextConfigured ? "ready" : "key missing" : "off"}
+                </span>
               </div>
             </div>
-            <button className="secondary" type="button" onClick={onAddLibraryRoot}>Add Root</button>
-            <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex Library</button>
-            <button className="secondary" type="button" onClick={onReindexWorkMemory}>Reindex Work</button>
-          </div>
-          <div className="memory-overview" aria-label="Work memory index summary">
-            <span><strong>{workMemoryStatus?.projects ?? 0}</strong> projects</span>
-            <span><strong>{workMemoryStatus?.evidence ?? 0}</strong> citations</span>
-            <span><strong>{workMemoryStatus?.disabled_sources ?? 0}</strong> guarded</span>
-          </div>
-          {memorySearchResults.length > 0 && (
-            <section>
-              <h3>Search results</h3>
-              <div className="session-card-list">
-                {memorySearchResults.map((result) => (
-                  <article key={result.project_id} className="session-note-card">
-                    <strong>{result.title}</strong>
-                    <p>{result.text}</p>
-                    <span className="status-badge">{Math.round(result.score * 100)}%</span>
+          )}
+
+          {memoryView !== "overview" && !selectedMemoryItem && (
+            <div className="empty-panel">
+              <h2>
+                {memoryView === "roots" ? "No root selected"
+                  : "No document selected"}
+              </h2>
+              <p>Select a row to inspect paths, chunks, and indexing context for this category.</p>
+            </div>
+          )}
+
+          {selectedRoot && (
+            <div className="memory-detail-stack">
+              <p className="label">Library Root</p>
+              <h2>{PathLabel(selectedRoot)}</h2>
+              <code>{selectedRoot}</code>
+              <div className="chip-row">
+                <span className="chip">{selectedRootIndexedCount} indexed documents</span>
+              </div>
+              <div className="button-row">
+                <button className="secondary" type="button" onClick={onReindexLibrary}>Reindex References</button>
+              </div>
+            </div>
+          )}
+
+          {selectedDocument && (
+            <div className="memory-detail-stack">
+              <p className="label">Indexed Document</p>
+              <h2>{selectedDocument.title}</h2>
+              <code>{selectedDocument.source_path}</code>
+              <div className="chip-row">
+                <span className="chip">{selectedDocument.chunk_count} chunks</span>
+                <span className="chip">first chunk {selectedDocument.first_chunk_index}</span>
+              </div>
+              <div className="library-chunk-list memory-chunk-list" aria-label="Document chunks">
+                {libraryChunks.length === 0 ? <p className="empty-note">No chunks loaded for this document yet.</p> : libraryChunks.map((chunk) => (
+                  <article key={chunk.id} className="library-chunk-card">
+                    <span className="status-badge">chunk {chunk.chunk_index}</span>
+                    <strong>{chunk.title}</strong>
+                    <p>{chunk.text}</p>
                   </article>
                 ))}
               </div>
-            </section>
+            </div>
           )}
-          <section>
-            <h3>{selectedLibrarySourcePath ? PathLabel(selectedLibrarySourcePath) : "Indexed chunks"}</h3>
-            <div className="library-chunk-list scroll">
-              {libraryChunks.length === 0 ? <p className="empty-note">Select an indexed document to inspect chunks.</p> : libraryChunks.map((chunk) => (
-                <article key={chunk.id} className="library-chunk-card">
-                  <span className="status-badge">chunk {chunk.chunk_index}</span>
-                  <strong>{chunk.title}</strong>
-                  <p>{chunk.text}</p>
-                </article>
-              ))}
-            </div>
-          </section>
-          <section>
-            <h3>Projects</h3>
-            <div className="project-grid">
-              {workMemoryProjects.slice(0, 24).map((project) => (
-                <article key={project.id} className="session-note-card">
-                  <strong>{project.title}</strong>
-                  <span>{project.organization} · {project.date_range}</span>
-                  <p>{project.summary}</p>
-                  <div className="chip-row">
-                    <span className="chip">{project.source_group}</span>
-                    <span className="chip">{Math.round(project.confidence * 100)}%</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
+
         </section>
       </div>
     </main>
@@ -3560,48 +4534,719 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
   );
 }
 
-function CaptureControlBar({
-  retention,
-  disabled,
-  statusSummary,
-  detail,
-  warning,
-  onChange,
+function LiveTranscriptPane({
+  setupHeader,
+  runtimeStrip,
+  transcriptCount,
+  currentCardCount,
+  asrDeviceStatusLabel,
+  errors,
+  playbackCue,
+  rows,
+  expandedCards,
+  highlightedSourceIds,
+  showDebugMetadata,
+  active,
+  followLive,
+  unseenItems,
+  manualQuery,
+  manualQueryBusy,
+  manualSourceCards,
+  transcriptScrollRef,
+  liveEndRef,
+  onScroll,
+  onJumpToLive,
+  onToggleCard,
+  onJumpToEvidence,
+  onPin,
+  onDismiss,
+  onCopy,
+  onManualQueryChange,
+  onManualSearch,
 }: {
-  retention: SessionRetention;
-  disabled: boolean;
-  statusSummary: string;
+  setupHeader: ReactNode;
+  runtimeStrip: ReactNode;
+  transcriptCount: number;
+  currentCardCount: number;
+  asrDeviceStatusLabel: string;
+  errors: string[];
+  playbackCue: ReactNode;
+  rows: LiveFieldRow[];
+  expandedCards: Set<string>;
+  highlightedSourceIds: Set<string>;
+  showDebugMetadata: boolean;
+  active: boolean;
+  followLive: boolean;
+  unseenItems: number;
+  manualQuery: string;
+  manualQueryBusy: boolean;
+  manualSourceCards: SidecarDisplayCard[];
+  transcriptScrollRef: RefObject<HTMLDivElement | null>;
+  liveEndRef: RefObject<HTMLDivElement | null>;
+  onScroll: () => void;
+  onJumpToLive: () => void;
+  onToggleCard: (id: string) => void;
+  onJumpToEvidence: (card: SidecarDisplayCard) => void;
+  onPin: (card: SidecarDisplayCard) => void;
+  onDismiss: (card: SidecarDisplayCard) => void;
+  onCopy: (card: SidecarDisplayCard) => void;
+  onManualQueryChange: (value: string) => void;
+  onManualSearch: () => void;
+}) {
+  return (
+    <section className="transcript-pane live-transcript-pane" aria-label="Live transcript pane">
+      {setupHeader}
+      {runtimeStrip}
+      <div className="field-toolbar live-field-toolbar">
+        <div>
+          <p className="label">Live</p>
+          <h1>Conversation</h1>
+        </div>
+        <div className="field-toolbar-status">
+          <span>{transcriptCount} heard</span>
+          <span>{currentCardCount} returns</span>
+          <span>{asrDeviceStatusLabel}</span>
+        </div>
+      </div>
+
+      {errors.length > 0 && (
+        <section className="errors" role="alert">
+          {errors.map((error, index) => (
+            <p key={`${error}-${index}`}>{error}</p>
+          ))}
+        </section>
+      )}
+
+      <div
+        id="transcript"
+        className="transcript-scroll live-field-scroll scroll"
+        role="feed"
+        aria-label="Live field"
+        ref={transcriptScrollRef as RefObject<HTMLDivElement>}
+        onScroll={onScroll}
+        onWheel={() => window.setTimeout(onScroll, 0)}
+      >
+        {playbackCue}
+        <LiveFieldPane
+          rows={rows}
+          expandedCards={expandedCards}
+          highlightedSourceIds={highlightedSourceIds}
+          showDebugMetadata={showDebugMetadata}
+          onToggle={onToggleCard}
+          onJumpToEvidence={onJumpToEvidence}
+          onPin={onPin}
+          onDismiss={onDismiss}
+          onCopy={onCopy}
+          active={active}
+        />
+        <div className="live-field-end" ref={liveEndRef as RefObject<HTMLDivElement>} aria-hidden="true" />
+      </div>
+
+      {!followLive && (
+        <button className="jump-live" onClick={onJumpToLive}>
+          Jump to live{unseenItems > 0 ? ` (${unseenItems})` : ""}
+        </button>
+      )}
+
+      <form
+        className="query-bar"
+        role="search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onManualSearch();
+        }}
+      >
+        <input
+          aria-label="Unified query"
+          value={manualQuery}
+          onChange={(event) => onManualQueryChange(event.target.value)}
+          placeholder="Ask Sidecar"
+        />
+        <button className="primary subtle" disabled={manualQueryBusy || !manualQuery.trim()}>
+          {manualQueryBusy ? "Searching..." : "Search"}
+        </button>
+      </form>
+
+      <ManualSourceSections cards={manualSourceCards} />
+    </section>
+  );
+}
+
+function ReplayTestDrawer({
+  visible,
+  expanded,
+  stateDetail,
+  stateLabel,
+  stateStatus,
+  canReset,
+  resetDisabled,
+  toggleDisabled,
+  testSourcePath,
+  fileBusy,
+  uploadDisabled,
+  maxSeconds,
+  expectedTerms,
+  configDisabled,
+  prepared,
+  report,
+  playbackActive,
+  playbackPaused,
+  testBusy,
+  captureActive,
+  captureStarting,
+  playbackElapsedSeconds,
+  onToggle,
+  onReset,
+  onFilePick,
+  onMaxSecondsChange,
+  onExpectedTermsChange,
+  onStartPlayback,
+  onPausePlayback,
+  onResumePlayback,
+  onRestartPlayback,
+  onStopPlayback,
+  stopPlaybackDisabled,
+}: {
+  visible: boolean;
+  expanded: boolean;
+  stateDetail: string;
+  stateLabel: string;
+  stateStatus: string;
+  canReset: boolean;
+  resetDisabled: boolean;
+  toggleDisabled: boolean;
+  testSourcePath: string;
+  fileBusy: boolean;
+  uploadDisabled: boolean;
+  maxSeconds: string;
+  expectedTerms: string;
+  configDisabled: boolean;
+  prepared: TestModePrepared | null;
+  report: TestModeReport | null;
+  playbackActive: boolean;
+  playbackPaused: boolean;
+  testBusy: string;
+  captureActive: boolean;
+  captureStarting: boolean;
+  playbackElapsedSeconds: number;
+  onToggle: () => void;
+  onReset: () => void;
+  onFilePick: (event: ChangeEvent<HTMLInputElement>) => void;
+  onMaxSecondsChange: (value: string) => void;
+  onExpectedTermsChange: (value: string) => void;
+  onStartPlayback: () => void;
+  onPausePlayback: () => void;
+  onResumePlayback: () => void;
+  onRestartPlayback: () => void;
+  onStopPlayback: () => void;
+  stopPlaybackDisabled: boolean;
+}) {
+  if (!visible) {
+    return null;
+  }
+  return (
+    <section className={`live-test-panel ${expanded ? "expanded" : "collapsed"}`} role="region" aria-label="Live audio test">
+      <div className="live-test-head">
+        <div>
+          <span className="label">Replay / Test</span>
+          <strong>Recorded audio</strong>
+          <small>{stateDetail}</small>
+        </div>
+        <div className="live-test-head-actions">
+          <span className={`live-test-state ${stateStatus}`}>{stateLabel}</span>
+          {canReset && (
+            <button className="secondary compact-button" type="button" onClick={onReset} disabled={resetDisabled}>
+              Reset
+            </button>
+          )}
+          <button
+            className={`secondary compact-button live-test-toggle ${expanded ? "active" : ""}`}
+            type="button"
+            aria-expanded={expanded}
+            onClick={onToggle}
+            disabled={toggleDisabled}
+          >
+            {expanded ? "Hide" : "Test"}
+          </button>
+        </div>
+      </div>
+      {expanded && (
+        <div className="live-test-grid">
+          <FilePickAction
+            label="Test audio upload"
+            actionLabel="Upload and play"
+            accept={TEST_AUDIO_ACCEPT}
+            path={testSourcePath}
+            busy={fileBusy}
+            disabled={uploadDisabled}
+            onChange={onFilePick}
+          />
+          <label className="field">
+            <span>Max seconds</span>
+            <input
+              aria-label="Live test max seconds"
+              inputMode="decimal"
+              value={maxSeconds}
+              onChange={(event) => onMaxSecondsChange(event.target.value)}
+              placeholder="optional"
+              disabled={configDisabled}
+            />
+          </label>
+          <label className="field field-wide">
+            <span>Expected terms</span>
+            <input
+              aria-label="Live test expected terms"
+              value={expectedTerms}
+              onChange={(event) => onExpectedTermsChange(event.target.value)}
+              placeholder="optional validation terms"
+              disabled={configDisabled}
+            />
+          </label>
+        </div>
+      )}
+      {prepared && (
+        <div className="test-mode-summary" aria-label="Live prepared audio">
+          <span><strong>{prepared.duration_seconds.toFixed(1)}s</strong> duration</span>
+          <span><strong>{prepared.expected_terms.length}</strong> expected terms</span>
+          {(testBusy === "playing" || playbackPaused) && (
+            <span>
+              <strong>{formatPlaybackClock(playbackElapsedSeconds)}</strong>
+              {" / "}
+              {formatPlaybackClock(prepared.duration_seconds)}
+            </span>
+          )}
+          <small>{prepared.fixture_wav}</small>
+        </div>
+      )}
+      {(prepared || playbackActive) && (
+        <div className="test-playback-controls" role="group" aria-label="Recorded audio controls">
+          <button
+            className="primary compact-button"
+            type="button"
+            onClick={onStartPlayback}
+            disabled={!prepared || Boolean(testBusy) || captureActive || captureStarting}
+          >
+            Start playback
+          </button>
+          <button className="secondary compact-button" type="button" onClick={onPausePlayback} disabled={testBusy !== "playing"}>
+            Pause
+          </button>
+          <button className="secondary compact-button" type="button" onClick={onResumePlayback} disabled={testBusy !== "paused"}>
+            Resume
+          </button>
+          <button
+            className="secondary compact-button"
+            type="button"
+            onClick={onRestartPlayback}
+            disabled={!prepared || ["preparing", "starting-playback", "pausing", "resuming"].includes(testBusy) || captureStarting}
+          >
+            Restart
+          </button>
+          <button className="danger compact-button" type="button" onClick={onStopPlayback} disabled={stopPlaybackDisabled}>
+            Stop playback
+          </button>
+        </div>
+      )}
+      {report && (
+        <div className="test-mode-summary" aria-label="Live recorded audio report">
+          <span><strong>{report.transcript_segments}</strong> heard lines</span>
+          <span><strong>{report.matched_expected_terms.length}/{report.expected_terms.length}</strong> terms matched</span>
+          <small>{report.report_path ?? prepared?.report_path}</small>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function LiveModelReturnsPane({
+  mode,
+  status,
+  gpu,
+  pipeline,
+  transcriptCount,
+  currentCards,
+  contextCards,
+  manualCards,
+  groups,
+  qualityMetrics,
+  meetingDiagnostics,
+  qualityGateActive,
+  rawCount,
+  systemLogs,
+  contract,
+  energyFrame,
+  showAll,
+  canShowMore,
+  onToggleShowAll,
+  expandedCards,
+  showDebugMetadata,
+  onToggle,
+  onJumpToEvidence,
+  onPin,
+  onDismiss,
+  onCopy,
+}: {
+  mode: LiveWorkbenchMode;
+  status: string;
+  gpu: GpuHealth;
+  pipeline: PipelineState;
+  transcriptCount: number;
+  currentCards: SidecarDisplayCard[];
+  contextCards: SidecarDisplayCard[];
+  manualCards: SidecarDisplayCard[];
+  groups: Record<MeetingOutputBucket, SidecarDisplayCard[]>;
+  qualityMetrics: ReturnType<typeof buildSidecarQualityMetrics>;
+  meetingDiagnostics: MeetingDiagnostics | null;
+  qualityGateActive: boolean;
+  rawCount: number;
+  systemLogs: SystemLog[];
+  contract: MeetingContractPayload | null;
+  energyFrame: EnergyFrame | null;
+  showAll: boolean;
+  canShowMore: boolean;
+  onToggleShowAll: () => void;
+  expandedCards: Set<string>;
+  showDebugMetadata: boolean;
+  onToggle: (id: string) => void;
+  onJumpToEvidence: (card: SidecarDisplayCard) => void;
+  onPin: (card: SidecarDisplayCard) => void;
+  onDismiss: (card: SidecarDisplayCard) => void;
+  onCopy: (card: SidecarDisplayCard) => void;
+}) {
+  const intelligenceOnly = mode === "live" || mode === "replay" || mode === "dev-test";
+  const visibleSections = MEETING_OUTPUT_SECTIONS.filter((section) => groups[section.bucket].length > 0);
+  const hasCards = visibleSections.length > 0 || contextCards.length > 0 || manualCards.length > 0;
+  const latestLogs = systemLogs.slice(0, 3);
+  const statusTiles: Array<{ label: string; value: string; detail: string; tone?: "normal" | "good" | "warning" }> = mode === "live"
+    ? [
+        {
+          label: "Ollama",
+          value: gpu.ollama_chat_model ?? "chat model",
+          detail: formatOllamaHostLabel(gpu.ollama_chat_host),
+        },
+        {
+          label: "Sidecar",
+          value: `${currentCards.length} grounded`,
+          detail: `${rawCount} raw · queue ${pipeline.queueDepth}`,
+          tone: currentCards.length > 0 ? "good" : pipeline.queueDepth > 0 ? "warning" : "normal",
+        },
+      ]
+    : [
+        {
+          label: "Ollama",
+          value: gpu.ollama_chat_model ?? "chat model",
+          detail: formatOllamaHostLabel(gpu.ollama_chat_host),
+        },
+        {
+          label: "Runtime",
+          value: status,
+          detail: `Queue ${pipeline.queueDepth}`,
+          tone: pipeline.queueDepth > 0 ? "warning" : "normal",
+        },
+        {
+          label: "Transcript",
+          value: `${transcriptCount} heard`,
+          detail: pipeline.asrDurationMs != null ? `${pipeline.asrDurationMs.toFixed(0)} ms final` : "ASR window",
+        },
+        {
+          label: "Sidecar",
+          value: `${rawCount} raw`,
+          detail: `${currentCards.length} grounded`,
+          tone: currentCards.length > 0 ? "good" : "normal",
+        },
+      ];
+  return (
+    <section className="context-pane live-model-returns-pane" id="recall" aria-label="Sidecar Intelligence">
+      <div className="field-toolbar context-toolbar">
+        <div>
+          <p className="label">Sidecar</p>
+          <h1>Sidecar Intelligence</h1>
+        </div>
+        <div className="field-toolbar-status">
+          <span>{liveWorkbenchModeLabel(mode)}</span>
+          <span>{currentCards.length} current</span>
+          <span>{qualityGateActive ? "Quality gate on" : "Quality gate off"}</span>
+        </div>
+      </div>
+
+      {!intelligenceOnly && (
+        <div className="model-return-status-grid" aria-label="Model return status">
+          {statusTiles.map((tile) => (
+            <StatusTile
+              key={tile.label}
+              label={tile.label}
+              value={tile.value}
+              detail={tile.detail}
+              tone={tile.tone}
+            />
+          ))}
+        </div>
+      )}
+
+      {!intelligenceOnly && <ContractActiveBadge contract={contract} />}
+      <EnergyLensBadge frame={energyFrame} />
+
+      <div className="context-card-list live-return-list scroll" aria-label="Sidecar returns">
+        {!intelligenceOnly && (
+          <QualityStrip
+            metrics={qualityMetrics}
+            diagnostics={meetingDiagnostics}
+            rawCount={rawCount}
+            qualityGateActive={qualityGateActive}
+            showDebugMetadata={showDebugMetadata}
+          />
+        )}
+
+        {!intelligenceOnly && !hasCards && (
+          <ContextQuietEmpty
+            title="Awaiting grounded returns"
+            body="Ollama and Sidecar returns will appear here when transcript evidence is strong enough."
+          />
+        )}
+
+        {visibleSections.map((section) => (
+          <section key={section.bucket} className="work-note-section meeting-output-section live-return-section" aria-label={`${section.title} summary`}>
+            <div className="work-note-section-head">
+              <h2>{section.title}</h2>
+              <span>{groups[section.bucket].length}</span>
+            </div>
+            <div className="context-preview-list">
+              {groups[section.bucket].map((card) => (
+                <ContextCard
+                  key={`live-return-${section.bucket}-${card.id}`}
+                  card={card}
+                  compact
+                  expanded={expandedCards.has(card.id)}
+                  showDebugMetadata={showDebugMetadata}
+                  onToggle={() => onToggle(card.id)}
+                  onJumpToEvidence={() => onJumpToEvidence(card)}
+                  onPin={() => onPin(card)}
+                  onDismiss={() => onDismiss(card)}
+                  onCopy={() => onCopy(card)}
+                />
+              ))}
+            </div>
+          </section>
+        ))}
+
+        {canShowMore && (
+          <button className="secondary show-more-context" onClick={onToggleShowAll}>
+            {showAll ? "Show less" : "Show more"}
+          </button>
+        )}
+
+        {contextCards.length > 0 && (
+          <details className="session-context-preview context-output reference-context-output" aria-label="Reference context">
+            <summary>
+              <span>Reference context</span>
+              <strong>{contextCards.length}</strong>
+            </summary>
+            <div className="context-preview-list">
+              {contextCards.map((card) => (
+                <ContextCard
+                  key={`live-context-${card.id}`}
+                  card={card}
+                  compact
+                  expanded={expandedCards.has(card.id)}
+                  showDebugMetadata={showDebugMetadata}
+                  onToggle={() => onToggle(card.id)}
+                  onJumpToEvidence={() => onJumpToEvidence(card)}
+                  onPin={() => onPin(card)}
+                  onDismiss={() => onDismiss(card)}
+                  onCopy={() => onCopy(card)}
+                />
+              ))}
+            </div>
+          </details>
+        )}
+
+        {manualCards.length > 0 && (
+          <details className="session-context-preview manual-output" aria-label="Manual query cards">
+            <summary>
+              <span>Manual query</span>
+              <strong>{manualCards.length}</strong>
+            </summary>
+            <div className="context-preview-list">
+              {manualCards.map((card) => (
+                <ContextCard
+                  key={`live-manual-${card.id}`}
+                  card={card}
+                  compact
+                  expanded={expandedCards.has(card.id)}
+                  showDebugMetadata={showDebugMetadata}
+                  onToggle={() => onToggle(card.id)}
+                  onJumpToEvidence={() => onJumpToEvidence(card)}
+                  onPin={() => onPin(card)}
+                  onDismiss={() => onDismiss(card)}
+                  onCopy={() => onCopy(card)}
+                />
+              ))}
+            </div>
+          </details>
+        )}
+
+        {!intelligenceOnly && latestLogs.length > 0 && (
+          <details className="session-context-preview live-return-log" aria-label="Runtime return log">
+            <summary>
+              <span>Runtime events</span>
+              <strong>{latestLogs.length}</strong>
+            </summary>
+            <div className="live-return-log-list">
+              {latestLogs.map((item) => (
+                <article key={item.id} className={`live-return-log-item ${item.level}`}>
+                  <strong>{item.title}</strong>
+                  <p>{item.message}</p>
+                </article>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function PostCallMeetingOutput({
+  groups,
+  usefulCount,
+  rawCount,
+  qualityMetrics,
+  meetingDiagnostics,
+  qualityGateActive,
+  loading,
+  emptyTitle,
+  emptyBody,
+  contextCards,
+  manualCards,
+  showAll,
+  canShowMore,
+  onToggleShowAll,
+  expandedCards,
+  showDebugMetadata,
+  onToggle,
+  onJumpToEvidence,
+  onPin,
+  onDismiss,
+  onCopy,
+  contract,
+  energyFrame,
+  showBrief,
+  briefMarkdown,
+  currentCount,
+  contextCount,
+  onCopyBrief,
+}: {
+  groups: Record<MeetingOutputBucket, SidecarDisplayCard[]>;
+  usefulCount: number;
+  rawCount: number;
+  qualityMetrics: ReturnType<typeof buildSidecarQualityMetrics>;
+  meetingDiagnostics: MeetingDiagnostics | null;
+  qualityGateActive: boolean;
+  loading: boolean;
+  emptyTitle: string;
+  emptyBody: string;
+  contextCards: SidecarDisplayCard[];
+  manualCards: SidecarDisplayCard[];
+  showAll: boolean;
+  canShowMore: boolean;
+  onToggleShowAll: () => void;
+  expandedCards: Set<string>;
+  showDebugMetadata: boolean;
+  onToggle: (id: string) => void;
+  onJumpToEvidence: (card: SidecarDisplayCard) => void;
+  onPin: (card: SidecarDisplayCard) => void;
+  onDismiss: (card: SidecarDisplayCard) => void;
+  onCopy: (card: SidecarDisplayCard) => void;
+  contract: MeetingContractPayload | null;
+  energyFrame: EnergyFrame | null;
+  showBrief: boolean;
+  briefMarkdown: string;
+  currentCount: number;
+  contextCount: number;
+  onCopyBrief: () => void;
+}) {
+  return (
+    <section className="context-pane post-call-output-pane" id="recall" aria-label="Meeting Output">
+      <div className="field-toolbar context-toolbar">
+        <div>
+          <p className="label">Post-call</p>
+          <h1>Meeting Output</h1>
+        </div>
+        <div className="field-toolbar-status">
+          <span>{usefulCount} current</span>
+          <span>{qualityGateActive ? "Quality gate on" : "Quality gate off"}</span>
+        </div>
+      </div>
+      <ContractActiveBadge contract={contract} />
+      <EnergyLensBadge frame={energyFrame} />
+      <SessionContextPane
+        groups={groups}
+        usefulCount={usefulCount}
+        rawCount={rawCount}
+        qualityMetrics={qualityMetrics}
+        meetingDiagnostics={meetingDiagnostics}
+        qualityGateActive={qualityGateActive}
+        captureActive={false}
+        loading={loading}
+        emptyTitle={emptyTitle}
+        emptyBody={emptyBody}
+        contextCards={contextCards}
+        manualCards={manualCards}
+        showAll={showAll}
+        canShowMore={canShowMore}
+        onToggleShowAll={onToggleShowAll}
+        expandedCards={expandedCards}
+        showDebugMetadata={showDebugMetadata}
+        onToggle={onToggle}
+        onJumpToEvidence={onJumpToEvidence}
+        onPin={onPin}
+        onDismiss={onDismiss}
+        onCopy={onCopy}
+      />
+      {showBrief && (
+        <ConsultingBriefPane
+          markdown={briefMarkdown}
+          currentCount={currentCount}
+          contextCount={contextCount}
+          onCopy={onCopyBrief}
+        />
+      )}
+    </section>
+  );
+}
+
+function StatusTile({
+  label,
+  value,
+  detail,
+  tone = "normal",
+}: {
+  label: string;
+  value: string;
   detail: string;
+  tone?: "normal" | "good" | "warning";
+}) {
+  return (
+    <article className={`status-tile ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </article>
+  );
+}
+
+function CaptureControlBar({
+  statusSummary,
+  warning,
+}: {
+  statusSummary: string;
   warning: string;
-  onChange: (value: SessionRetention) => void;
 }) {
   return (
     <section className={`capture-control-bar ${warning ? "warning" : ""}`} aria-label="Capture controls">
-      <div className="mode-control compact capture-mode-control" role="group" aria-label="Session save mode">
-        <button
-          type="button"
-          aria-pressed={retention === "temporary"}
-          className={retention === "temporary" ? "active" : ""}
-          disabled={disabled}
-          onClick={() => onChange("temporary")}
-        >
-          <span>Listen</span>
-          <small>Ephemeral</small>
-        </button>
-        <button
-          type="button"
-          aria-pressed={retention === "saved"}
-          className={retention === "saved" ? "active" : ""}
-          disabled={disabled}
-          onClick={() => onChange("saved")}
-        >
-          <span>Record</span>
-          <small>Saved transcript</small>
-        </button>
-      </div>
       <div className="capture-control-summary" aria-label="Selected capture mode">
         <strong>{statusSummary}</strong>
-        <span>{warning || detail}</span>
+        {warning && <span>{warning}</span>}
       </div>
     </section>
   );
@@ -3612,6 +5257,8 @@ function MeetingFocusControl({
   expanded,
   activeContract,
   captureActive,
+  webContextConfigured,
+  webContextGlobalEnabled,
   onChange,
   onEdit,
   onDone,
@@ -3620,6 +5267,8 @@ function MeetingFocusControl({
   expanded: boolean;
   activeContract: MeetingContractPayload | null;
   captureActive: boolean;
+  webContextConfigured: boolean;
+  webContextGlobalEnabled: boolean;
   onChange: (value: MeetingFocusState) => void;
   onEdit: () => void;
   onDone: () => void;
@@ -3637,6 +5286,7 @@ function MeetingFocusControl({
         <div className="meeting-focus-summary" aria-label="Meeting Focus summary">
           <span>Focus</span>
           <strong>{capitalize(summaryContract.mode)}</strong>
+          <span>{webContextSummary(value.webContextMode, webContextConfigured, webContextGlobalEnabled)}</span>
           <span>{reminderSummary}</span>
           <p>{goalSummary}</p>
         </div>
@@ -3656,7 +5306,13 @@ function MeetingFocusControl({
       )}
 
       {expanded && !captureActive && (
-        <MeetingFocusEditor value={value} onChange={onChange} onDone={onDone} />
+        <MeetingFocusEditor
+          value={value}
+          webContextConfigured={webContextConfigured}
+          webContextGlobalEnabled={webContextGlobalEnabled}
+          onChange={onChange}
+          onDone={onDone}
+        />
       )}
     </section>
   );
@@ -3664,13 +5320,22 @@ function MeetingFocusControl({
 
 function MeetingFocusEditor({
   value,
+  webContextConfigured,
+  webContextGlobalEnabled,
   onChange,
   onDone,
 }: {
   value: MeetingFocusState;
+  webContextConfigured: boolean;
+  webContextGlobalEnabled: boolean;
   onChange: (value: MeetingFocusState) => void;
   onDone: () => void;
 }) {
+  const webModes: { mode: WebContextMode; label: string }[] = [
+    { mode: "default", label: webContextGlobalEnabled ? "Default on" : "Default off" },
+    { mode: "on", label: "On" },
+    { mode: "off", label: "Off" },
+  ];
   return (
     <div className="meeting-focus-editor">
       <label className="field meeting-focus-goal">
@@ -3695,6 +5360,23 @@ function MeetingFocusEditor({
               <span>{capitalize(mode)}</span>
             </button>
           ))}
+        </div>
+        <div className="meeting-web-context-control">
+          <span>Brave web</span>
+          <div className="mode-control compact" role="group" aria-label="Brave web context">
+            {webModes.map(({ mode, label }) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={value.webContextMode === mode}
+                className={value.webContextMode === mode ? "active" : ""}
+                disabled={mode === "on" && !webContextConfigured}
+                onClick={() => onChange({ ...value, webContextMode: mode })}
+              >
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
         </div>
         <div className="meeting-reminder-grid" aria-label="Meeting focus reminders">
           {MEETING_REMINDER_OPTIONS.map((option) => (
@@ -3735,6 +5417,64 @@ function ContractActiveBadge({ contract }: { contract: MeetingContractPayload | 
         </div>
       </div>
     </details>
+  );
+}
+
+function EnergyLensBadge({ frame }: { frame: EnergyFrame | null }) {
+  if (!frame?.active || frame.confidence === "low") {
+    return null;
+  }
+  const categoryLabel = frame.categories.slice(0, 2).join(" + ");
+  return (
+    <details className="contract-badge energy-lens-badge" aria-label="Energy lens">
+      <summary>
+        <span>Energy lens{categoryLabel ? ` · ${categoryLabel}` : ""}</span>
+      </summary>
+      <div className="contract-details">
+        <p>Detected from current transcript evidence.</p>
+        <div className="chip-row">
+          <span className="chip">{frame.confidence}</span>
+          {frame.categories.slice(0, 3).map((category) => <span key={category} className="chip">{category}</span>)}
+          {frame.keywords.slice(0, 6).map((keyword) => <span key={keyword} className="chip">{keyword}</span>)}
+        </div>
+        {frame.evidenceQuote && <p className="energy-lens-evidence">{frame.evidenceQuote}</p>}
+      </div>
+    </details>
+  );
+}
+
+function LivePlaybackCue({
+  durationSeconds,
+  elapsedSeconds,
+  progress,
+  remainingSeconds,
+  message,
+  paused,
+}: {
+  durationSeconds: number;
+  elapsedSeconds: number;
+  progress: number;
+  remainingSeconds: number;
+  message: string;
+  paused: boolean;
+}) {
+  return (
+    <section className="live-playback-cue" aria-label="Recorded audio playback">
+      <div className="live-playback-head">
+        <div>
+          <span className="label">Recorded audio</span>
+          <strong>{paused ? "Paused" : "Playing through Live"}</strong>
+        </div>
+        <span>
+          {formatPlaybackClock(elapsedSeconds)} / {formatPlaybackClock(durationSeconds)}
+        </span>
+      </div>
+      <div className="live-playback-bar" aria-label={`Playback progress ${Math.round(progress)}%`}>
+        <span style={{ width: `${progress}%` }} />
+      </div>
+      <p>{message}</p>
+      <small>{formatPlaybackClock(remainingSeconds)} remaining · {paused ? "resume to continue feeding audio" : "transcript and cards appear as ASR windows complete"}</small>
+    </section>
   );
 }
 
@@ -3845,7 +5585,6 @@ function SessionContextPane({
   loading,
   emptyTitle,
   emptyBody,
-  workMemoryCards,
   contextCards,
   manualCards,
   showAll,
@@ -3869,7 +5608,6 @@ function SessionContextPane({
   loading: boolean;
   emptyTitle: string;
   emptyBody: string;
-  workMemoryCards: SidecarDisplayCard[];
   contextCards: SidecarDisplayCard[];
   manualCards: SidecarDisplayCard[];
   showAll: boolean;
@@ -3885,7 +5623,7 @@ function SessionContextPane({
 }) {
   const cardCount = MEETING_OUTPUT_SECTIONS.reduce((count, section) => count + groups[section.bucket].length, 0);
   const visibleSections = MEETING_OUTPUT_SECTIONS.filter((section) => groups[section.bucket].length > 0);
-  const hasSupplementalCards = workMemoryCards.length > 0 || contextCards.length > 0 || manualCards.length > 0;
+  const hasSupplementalCards = contextCards.length > 0 || manualCards.length > 0;
   const quietTitle = captureActive && cardCount === 0 ? "Silent by design" : emptyTitle;
   const quietBody = captureActive && cardCount === 0
     ? "No grounded cards yet. Unsupported/noisy cards are being suppressed."
@@ -3939,35 +5677,10 @@ function SessionContextPane({
         </button>
       )}
 
-      {workMemoryCards.length > 0 && (
-        <details className="session-context-preview memory-output" aria-label="Work memory cards">
-          <summary>
-            <span>Work memory</span>
-            <strong>{workMemoryCards.length}</strong>
-          </summary>
-          <div className="context-preview-list">
-            {workMemoryCards.map((card) => (
-              <ContextCard
-                key={`memory-${card.id}`}
-                card={card}
-                compact
-                expanded={expandedCards.has(card.id)}
-                showDebugMetadata={showDebugMetadata}
-                onToggle={() => onToggle(card.id)}
-                onJumpToEvidence={() => onJumpToEvidence(card)}
-                onPin={() => onPin(card)}
-                onDismiss={() => onDismiss(card)}
-                onCopy={() => onCopy(card)}
-              />
-            ))}
-          </div>
-        </details>
-      )}
-
       {contextCards.length > 0 && (
-        <details className="session-context-preview context-output" aria-label="Context cards">
+        <details className="session-context-preview context-output reference-context-output" aria-label="Reference context">
           <summary>
-            <span>Context / past transcript / web</span>
+            <span>Reference context</span>
             <strong>{contextCards.length}</strong>
           </summary>
           <div className="context-preview-list">
@@ -4031,36 +5744,39 @@ function QualityStrip({
   showDebugMetadata: boolean;
 }) {
   return (
-    <section className="quality-strip" aria-label="Sidecar quality status">
-      <span><strong>{metrics.acceptedCurrentCount}</strong> current</span>
-      <span><strong>{metrics.workMemoryCount}</strong> memory</span>
-      <span><strong>{metrics.manualCount}</strong> manual</span>
-      {diagnostics && (
-        <>
-          <span><strong>{diagnostics.generated_candidate_count}</strong> generated</span>
-          <span><strong>{diagnostics.suppressed_count}</strong> suppressed</span>
-        </>
-      )}
-      <span><strong>{formatPercent(metrics.evidenceQuoteCoverage)}</strong> evidence</span>
-      <span><strong>{formatPercent(metrics.sourceIdCoverage)}</strong> sources</span>
-      <span>{qualityGateActive ? "Quality gate active" : "Quality gate off"}</span>
-      <span className="quiet">{rawCount} raw</span>
-      {showDebugMetadata && diagnostics?.top_suppression_reasons.length ? (
-        <span className="quiet">Reasons: {diagnostics.top_suppression_reasons.map((item) => `${item.reason} ${item.count}`).join("; ")}</span>
-      ) : null}
-    </section>
+    <details className="quality-strip-details" aria-label="Meeting output details">
+      <summary>Details</summary>
+      <section className="quality-strip" aria-label="Sidecar quality status">
+        <span><strong>{metrics.acceptedCurrentCount}</strong> current</span>
+        <span><strong>{metrics.contextCount}</strong> context</span>
+        <span><strong>{metrics.manualCount}</strong> manual</span>
+        {diagnostics && (
+          <>
+            <span><strong>{diagnostics.generated_candidate_count}</strong> generated</span>
+            <span><strong>{diagnostics.suppressed_count}</strong> suppressed</span>
+          </>
+        )}
+        <span><strong>{formatPercent(metrics.evidenceQuoteCoverage)}</strong> evidence</span>
+        <span><strong>{formatPercent(metrics.sourceIdCoverage)}</strong> sources</span>
+        <span>{qualityGateActive ? "Quality gate active" : "Quality gate off"}</span>
+        <span className="quiet">{rawCount} raw</span>
+        {showDebugMetadata && diagnostics?.top_suppression_reasons.length ? (
+          <span className="quiet">Reasons: {diagnostics.top_suppression_reasons.map((item) => `${item.reason} ${item.count}`).join("; ")}</span>
+        ) : null}
+      </section>
+    </details>
   );
 }
 
 function ConsultingBriefPane({
   markdown,
   currentCount,
-  memoryCount,
+  contextCount,
   onCopy,
 }: {
   markdown: string;
   currentCount: number;
-  memoryCount: number;
+  contextCount: number;
   onCopy: () => void;
 }) {
   return (
@@ -4073,7 +5789,7 @@ function ConsultingBriefPane({
         <button className="secondary" type="button" onClick={onCopy}>Copy Markdown</button>
       </div>
       <p className="tool-note">
-        Built from {currentCount} current-meeting cards and {memoryCount} separated work-memory cards.
+        Built from {currentCount} current-meeting cards and {contextCount} reference/web context cards.
       </p>
       <pre>{markdown}</pre>
     </section>
@@ -4084,9 +5800,13 @@ function ManualSourceSections({ cards }: { cards: SidecarDisplayCard[] }) {
   if (cards.length === 0) {
     return null;
   }
+  const isTechnicalReference = (card: SidecarDisplayCard) => (
+    card.sourceType === "local_file" || card.sourceType === "document_chunk" || card.sourceType === "file"
+  );
   const sections = [
-    { title: "Prior transcript", cards: cards.filter((card) => card.sourceType === "saved_transcript" || card.sourceType === "session" || card.category === "memory") },
-    { title: "Work memory", cards: cards.filter((card) => isWorkMemoryCard(card)) },
+    { title: "Company refs", cards: cards.filter(isCompanyReferenceCard) },
+    { title: "Technical references", cards: cards.filter(isTechnicalReference) },
+    { title: "Prior transcript", cards: cards.filter((card) => !isCompanyReferenceCard(card) && !isTechnicalReference(card) && (card.sourceType === "saved_transcript" || card.sourceType === "session" || card.category === "memory")) },
     { title: "Web", cards: cards.filter((card) => card.category === "web" || card.sourceType === "brave_web") },
     { title: "Suggested meeting contribution", cards: cards.filter((card) => card.category === "contribution") },
   ].filter((section) => section.cards.length > 0);
@@ -4143,7 +5863,7 @@ function ContextCard({
   const qualityLabel = card.qualityLabel ?? "";
   return (
     <article
-      className={`context-card field-bubble ${compact ? "compact" : ""} ${card.provisional ? "provisional" : ""} ${confidenceClass(card)} ${card.category === "work" || card.category === "work_memory" ? "memory" : card.category}`}
+      className={`context-card field-bubble ${compact ? "compact" : ""} ${card.provisional ? "provisional" : ""} ${confidenceClass(card)} ${card.category}`}
       aria-label={`${categoryLabel(card.category)} context card`}
     >
       <div className="context-card-head">
@@ -4245,25 +5965,6 @@ function ContextCard({
       )}
     </article>
   );
-}
-
-function workCardFromHit(hit: RecallHit): WorkMemoryCard {
-  const metadata = hit.metadata;
-  const citations = Array.isArray(metadata.citations)
-    ? metadata.citations.map((item) => String(item))
-    : [];
-  return {
-    project_id: hit.source_id,
-    title: String(metadata.title ?? "Prior project"),
-    organization: String(metadata.organization ?? "work history"),
-    date_range: String(metadata.date_range ?? ""),
-    score: hit.score,
-    confidence: Number(metadata.confidence ?? hit.score),
-    reason: String(metadata.reason ?? ""),
-    lesson: String(metadata.lesson ?? ""),
-    citations,
-    text: hit.text,
-  };
 }
 
 function displayCardForSidecarPayload(payload: Record<string, unknown>, envelope: EventEnvelope): SidecarDisplayCard | null {
@@ -4470,48 +6171,6 @@ function displayCardForRecall(hit: RecallHit, options: BackendItemOptions = {}):
   };
 }
 
-function displayCardForWorkCard(card: WorkMemoryCard, options: BackendItemOptions = {}): SidecarDisplayCard {
-  const sourceSegmentIds = options.sourceSegmentIds ?? [];
-  const sourceType = "work_memory_project";
-  const explicitlyRequested = options.origin === "manual";
-  const at = Date.now();
-  const draftCard = {
-    sourceType,
-    sourceSegmentIds,
-    explicitlyRequested,
-    confidence: card.confidence,
-    category: "work_memory",
-  } as SidecarDisplayCard;
-  return {
-    id: `work-${card.project_id}-${at}`,
-    cardKey: `work:${card.project_id}`,
-    category: "work_memory",
-    title: readableTitle(card.title, "Prior work"),
-    summary: card.lesson || card.text,
-    whyRelevant: card.reason ? `Similar pattern: ${card.reason}` : "Relevant prior work pattern.",
-    source: sourceLabel(sourceType, explicitlyRequested),
-    sourceType,
-    sourceLabel: sourceLabel(sourceType, explicitlyRequested),
-    qualityLabel: qualityLabelForCard(draftCard),
-    date: [card.organization, card.date_range].filter(Boolean).join(" / "),
-    at,
-    score: card.score,
-    rawText: card.text,
-    citations: card.citations,
-    sourceSegmentIds,
-    explicitlyRequested,
-    priority: card.score < 0.45 && options.origin !== "manual" ? "low" : card.score >= 0.72 || card.confidence >= 0.9 ? "high" : "normal",
-    debugMetadata: {
-      sourceType,
-      sourceId: card.project_id,
-      score: card.score,
-      confidence: card.confidence,
-      retrievalReason: card.reason,
-      sourceSegmentIds,
-    },
-  };
-}
-
 function areCardsEquivalent(left: SidecarDisplayCard, right: SidecarDisplayCard): boolean {
   const leftKey = left.cardKey ?? "";
   const rightKey = right.cardKey ?? "";
@@ -4532,7 +6191,6 @@ function areCardsEquivalent(left: SidecarDisplayCard, right: SidecarDisplayCard)
 
 function categoryLabel(category: SidecarDisplayCard["category"]): string {
   if (category === "web") return "Web";
-  if (category === "work" || category === "work_memory") return "Work memory";
   if (category === "action") return "Follow-up";
   if (category === "decision") return "Decision";
   if (category === "question") return "Ask this";
@@ -4541,6 +6199,7 @@ function categoryLabel(category: SidecarDisplayCard["category"]): string {
   if (category === "contribution") return "Say this";
   if (category === "status") return "Status";
   if (category === "memory") return "Memory";
+  if (category === "reference") return "Reference";
   return "Note";
 }
 
@@ -4652,8 +6311,7 @@ function sidecarCategoryFromPayload(value: unknown): SidecarDisplayCard["categor
       "clarification",
       "contribution",
       "memory",
-      "work",
-      "work_memory",
+      "reference",
       "web",
       "status",
       "note",
@@ -4684,8 +6342,18 @@ function stringOrUndefined(value: unknown): string | undefined {
   return text ? text : undefined;
 }
 
+function arrayOfStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean);
+}
+
 function asrBackendNameFromPayload(payload: Record<string, unknown>): string {
-  return String(payload.asr_backend ?? "") === "nemotron_streaming" ? "Nemotron Streaming" : "Faster-Whisper";
+  void payload;
+  return "Faster-Whisper";
 }
 
 function replaceTranscriptLine(
@@ -4948,13 +6616,32 @@ function formatSeconds(value: number): string {
   return `${Number(value).toFixed(1)}s`;
 }
 
+function formatSecondsFromMs(value: number | undefined): string {
+  return formatSeconds((value ?? 0) / 1000);
+}
+
+function formatPlaybackClock(value: number): string {
+  const totalSeconds = Math.max(0, Math.round(Number.isFinite(value) ? value : 0));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
 function PathLabel(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.at(-1) ?? path;
 }
 
+function PathHint(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) {
+    return path;
+  }
+  return parts.slice(Math.max(0, parts.length - 3), -1).join(" / ");
+}
+
 function isAppPage(value: string | null): value is AppPage {
-  return value === "live" || value === "sessions" || value === "tools" || value === "models" || value === "memory";
+  return value === "live" || value === "review" || value === "sessions" || value === "tools" || value === "models" || value === "references";
 }
 
 function formatOllamaHostLabel(host?: string): string {
@@ -5054,6 +6741,7 @@ function defaultMeetingFocus(): MeetingFocusState {
   return {
     goal: "",
     mode: "quiet",
+    webContextMode: "default",
     reminders: MEETING_REMINDER_OPTIONS.reduce((result, option) => ({
       ...result,
       [option.key]: true,
@@ -5098,6 +6786,11 @@ function normalizeMicTuning(value?: Partial<MicTuning> | null): MicTuning {
 function normalizeMeetingFocus(value?: Partial<MeetingFocusState> | null): MeetingFocusState {
   const fallback = defaultMeetingFocus();
   const mode = value?.mode === "balanced" || value?.mode === "assertive" ? value.mode : "quiet";
+  const webContextMode = (
+    value?.webContextMode === "on" || value?.webContextMode === "off"
+      ? value.webContextMode
+      : "default"
+  );
   const reminders = { ...fallback.reminders };
   if (value?.reminders && typeof value.reminders === "object") {
     for (const option of MEETING_REMINDER_OPTIONS) {
@@ -5107,6 +6800,7 @@ function normalizeMeetingFocus(value?: Partial<MeetingFocusState> | null): Meeti
   return {
     goal: String(value?.goal ?? "").slice(0, 420),
     mode,
+    webContextMode,
     reminders,
   };
 }
@@ -5120,6 +6814,33 @@ function buildMeetingContractPayload(focus: MeetingFocusState): MeetingContractP
     mode: focus.mode,
     reminders,
   };
+}
+
+function webContextEnabledForStart(focus: MeetingFocusState): boolean | undefined {
+  if (focus.webContextMode === "on") {
+    return true;
+  }
+  if (focus.webContextMode === "off") {
+    return false;
+  }
+  return undefined;
+}
+
+function webContextSummary(
+  mode: WebContextMode,
+  configured: boolean,
+  globalEnabled: boolean,
+): string {
+  if (!configured) {
+    return "Brave key missing";
+  }
+  if (mode === "on") {
+    return "Brave on";
+  }
+  if (mode === "off") {
+    return "Brave off";
+  }
+  return globalEnabled ? "Brave default on" : "Brave default off";
 }
 
 function meetingContractFromPayload(value: unknown): MeetingContractPayload | null {
@@ -5155,6 +6876,28 @@ function meetingDiagnosticsFromPayload(value: unknown): MeetingDiagnostics | nul
     evidence_quote_coverage: safeRatio(value.evidence_quote_coverage),
     source_id_coverage: safeRatio(value.source_id_coverage),
   };
+}
+
+function energyFrameFromPayload(payload: Record<string, unknown>): EnergyFrame | null {
+  const active = Boolean(payload.energy_lens_active);
+  const confidence = energyConfidenceFromPayload(payload.energy_lens_confidence);
+  if (!active || confidence === "low") {
+    return null;
+  }
+  return {
+    active,
+    score: Number(payload.energy_lens_score ?? 0),
+    confidence,
+    categories: parseStringList(payload.energy_lens_categories),
+    keywords: parseStringList(payload.energy_lens_keywords),
+    evidenceSegmentIds: parseStringList(payload.energy_lens_evidence_segment_ids),
+    evidenceQuote: String(payload.energy_lens_evidence_quote ?? ""),
+    summaryLabel: String(payload.energy_lens_summary_label ?? "Energy lens"),
+  };
+}
+
+function energyConfidenceFromPayload(value: unknown): EnergyFrame["confidence"] {
+  return value === "high" || value === "medium" || value === "low" ? value : "low";
 }
 
 function capitalize(value: string): string {

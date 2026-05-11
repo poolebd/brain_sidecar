@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -8,6 +9,73 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from brain_sidecar.core.models import NoteCard, SessionRecord, TranscriptSegment, new_id
+
+
+def _item_value(item: Any, name: str, default: Any = None) -> Any:
+    if isinstance(item, dict):
+        return item.get(name, default)
+    return getattr(item, name, default)
+
+
+def _normalize_search_text(value: object) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())).strip()
+
+
+def _review_steps_for_payload(status: str, phase: str, message: str, progress: int) -> list[dict[str, Any]]:
+    specs = [
+        ("conditioning", "Conditioning"),
+        ("transcribing", "High-accuracy ASR"),
+        ("reviewing", "Segment review"),
+        ("evaluating", "Meeting output"),
+        ("completed", "Validation"),
+    ]
+    active_index = 0
+    if status in {"queued", "paused_for_live"}:
+        active_index = -1
+    elif status == "running_asr":
+        active_index = 1 if phase == "asr" else 0
+    elif status == "running_cards":
+        active_index = 2
+    elif status == "running_summary":
+        active_index = 3
+    elif status in {"completed_awaiting_validation", "approved", "discarded"}:
+        active_index = 4
+    elif status in {"canceled", "error"}:
+        active_index = min(4, max(0, progress // 25))
+
+    steps: list[dict[str, Any]] = []
+    for index, (key, label) in enumerate(specs):
+        if active_index < 0:
+            step_status = "pending"
+            step_progress = 0
+            step_message = "Queued." if index == 0 and status == "queued" else ""
+        elif index < active_index:
+            step_status = "completed"
+            step_progress = 100
+            step_message = "Completed."
+        elif index == active_index:
+            if status == "error":
+                step_status = "error"
+            elif status == "canceled":
+                step_status = "canceled"
+            elif status in {"completed_awaiting_validation", "approved", "discarded"}:
+                step_status = "completed"
+            else:
+                step_status = "running"
+            step_progress = max(0, min(100, progress))
+            step_message = message
+        else:
+            step_status = "pending"
+            step_progress = 0
+            step_message = ""
+        steps.append({
+            "key": key,
+            "label": label,
+            "status": step_status,
+            "message": step_message,
+            "progress": step_progress,
+        })
+    return steps
 
 
 class Storage:
@@ -224,57 +292,6 @@ class Storage:
                   metadata_json text not null
                 );
                 create index if not exists idx_speaker_feedback_session on speaker_label_feedback(session_id, created_at);
-                create table if not exists work_memory_sources (
-                  id text primary key,
-                  path text not null unique,
-                  source_group text not null,
-                  sensitivity text not null,
-                  status text not null,
-                  title text not null,
-                  content_hash text not null,
-                  metadata text not null,
-                  disabled integer not null,
-                  created_at real not null,
-                  updated_at real not null
-                );
-                create index if not exists idx_work_memory_sources_group on work_memory_sources(source_group, status);
-                create table if not exists work_memory_projects (
-                  id text primary key,
-                  project_key text not null unique,
-                  title text not null,
-                  organization text not null,
-                  date_range text not null,
-                  role text not null,
-                  domain text not null,
-                  summary text not null,
-                  lessons_json text not null,
-                  triggers_json text not null,
-                  source_group text not null,
-                  confidence real not null,
-                  updated_at real not null
-                );
-                create index if not exists idx_work_memory_projects_group on work_memory_projects(source_group);
-                create table if not exists work_memory_evidence (
-                  id text primary key,
-                  project_id text not null,
-                  source_id text,
-                  source_path text not null,
-                  snippet text not null,
-                  artifact_type text not null,
-                  weight real not null,
-                  created_at real not null
-                );
-                create index if not exists idx_work_memory_evidence_project on work_memory_evidence(project_id, weight);
-                create table if not exists work_memory_recall_events (
-                  id text primary key,
-                  session_id text,
-                  project_id text not null,
-                  query text not null,
-                  score real not null,
-                  reason text not null,
-                  created_at real not null
-                );
-                create index if not exists idx_work_memory_recall_session on work_memory_recall_events(session_id, created_at);
                 create table if not exists session_memory_summaries (
                   session_id text primary key,
                   title text not null,
@@ -286,9 +303,77 @@ class Storage:
                   entities_json text not null,
                   lessons_json text not null,
                   source_segment_ids_json text not null,
+                  review_standard text not null default '',
+                  key_points_json text not null default '[]',
+                  projects_json text not null default '[]',
+                  project_workstreams_json text not null default '[]',
+                  technical_findings_json text not null default '[]',
+                  portfolio_rollup_json text not null default '{}',
+                  review_metrics_json text not null default '{}',
+                  risks_json text not null default '[]',
+                  coverage_notes_json text not null default '[]',
+                  reference_context_json text not null default '[]',
+                  context_diagnostics_json text not null default '{}',
+                  meeting_digest_json text not null default '{}',
                   created_at real not null,
                   updated_at real not null
                 );
+                create table if not exists review_jobs (
+                  id text primary key,
+                  source text not null,
+                  title text not null,
+                  status text not null,
+                  validation_status text not null,
+                  phase text,
+                  progress_pct real not null default 0,
+                  message text,
+                  queue_position integer,
+                  session_id text,
+                  live_id text,
+                  source_filename text,
+                  temporary_audio_path text,
+                  temporary_audio_retained integer not null default 0,
+                  audio_deleted_at real,
+                  audio_delete_error text,
+                  cleanup_status text,
+                  result_json text,
+                  error_message text,
+                  created_at real not null,
+                  updated_at real not null,
+                  started_at real,
+                  completed_at real,
+                  approved_at real,
+                  discarded_at real,
+                  canceled_at real
+                );
+                create index if not exists idx_review_jobs_status on review_jobs(status, created_at);
+                create index if not exists idx_review_jobs_updated on review_jobs(updated_at);
+                create table if not exists company_refs (
+                  id text primary key,
+                  canonical_name text not null,
+                  entity_type text not null default 'company',
+                  domain text not null default '',
+                  description text not null,
+                  website text,
+                  metadata_json text not null default '{}',
+                  sources_json text not null default '[]',
+                  active integer not null default 1,
+                  updated_at real not null
+                );
+                create table if not exists company_ref_aliases (
+                  id text primary key,
+                  ref_id text not null,
+                  alias text not null,
+                  normalized_alias text not null,
+                  alias_type text not null,
+                  weight real not null default 1.0,
+                  requires_context integer not null default 0,
+                  context_terms_json text not null default '[]',
+                  negative_terms_json text not null default '[]'
+                );
+                create index if not exists idx_company_ref_aliases_normalized on company_ref_aliases(normalized_alias);
+                create index if not exists idx_company_ref_aliases_ref on company_ref_aliases(ref_id);
+                create index if not exists idx_company_refs_active on company_refs(active);
                 """
             )
             self._ensure_column("voice_corrections", "quarantined", "integer not null default 0")
@@ -301,16 +386,36 @@ class Storage:
         self._ensure_column("transcript_segments", "speaker_role", "text")
         self._ensure_column("transcript_segments", "speaker_label", "text")
         self._ensure_column("transcript_segments", "speaker_confidence", "real")
+        self._ensure_column("transcript_segments", "speaker_match_score", "real")
         self._ensure_column("transcript_segments", "speaker_match_reason", "text")
         self._ensure_column("transcript_segments", "speaker_low_confidence", "integer")
+        self._ensure_column("transcript_segments", "diarization_speaker_id", "text")
         self._ensure_column("note_cards", "evidence_quote", "text not null default ''")
         self._ensure_column("note_cards", "owner", "text")
         self._ensure_column("note_cards", "due_date", "text")
         self._ensure_column("note_cards", "missing_info", "text")
+        self._ensure_column("session_memory_summaries", "key_points_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "projects_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "review_standard", "text not null default ''")
+        self._ensure_column("session_memory_summaries", "project_workstreams_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "technical_findings_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "portfolio_rollup_json", "text not null default '{}'")
+        self._ensure_column("session_memory_summaries", "review_metrics_json", "text not null default '{}'")
+        self._ensure_column("session_memory_summaries", "risks_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "coverage_notes_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "reference_context_json", "text not null default '[]'")
+        self._ensure_column("session_memory_summaries", "context_diagnostics_json", "text not null default '{}'")
+        self._ensure_column("session_memory_summaries", "meeting_digest_json", "text not null default '{}'")
         self._record_migration("20260507_session_retention")
         self._record_migration("20260504_transcript_speaker_fields")
         self._record_migration("20260504_session_memory_summaries")
         self._record_migration("20260505_note_evidence_fields")
+        self._record_migration("20260510_review_jobs")
+        self._record_migration("20260510_review_summary_fields")
+        self._record_migration("20260510_review_summary_context_fields")
+        self._record_migration("20260510_energy_consultant_review_standard")
+        self._record_migration("20260510_review_terminal_summary_fields")
+        self._record_migration("20260511_review_meeting_digest")
 
     def _record_migration(self, name: str) -> None:
         self.conn.execute(
@@ -1230,6 +1335,318 @@ class Storage:
         ).fetchone()
         return self._session_memory_summary_row_to_dict(row) if row else None
 
+    def create_review_job(
+        self,
+        *,
+        job_id: str,
+        source: str,
+        title: str,
+        status: str,
+        validation_status: str,
+        source_filename: str | None,
+        temporary_audio_path: Path,
+        live_id: str | None = None,
+        message: str = "",
+    ) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                insert into review_jobs(
+                  id, source, title, status, validation_status, phase, progress_pct,
+                  message, queue_position, session_id, live_id, source_filename,
+                  temporary_audio_path, temporary_audio_retained, audio_deleted_at,
+                  audio_delete_error, cleanup_status, result_json, error_message,
+                  created_at, updated_at, started_at, completed_at, approved_at,
+                  discarded_at, canceled_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    source,
+                    title,
+                    status,
+                    validation_status,
+                    status,
+                    0.0,
+                    message,
+                    None,
+                    None,
+                    live_id,
+                    source_filename,
+                    str(temporary_audio_path),
+                    1,
+                    None,
+                    None,
+                    "retained",
+                    None,
+                    None,
+                    now,
+                    now,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(job_id)
+
+    def list_review_jobs(
+        self,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where = ""
+        params: list[Any] = []
+        if status:
+            where = "where status = ?"
+            params.append(status)
+        with self._lock:
+            rows = self.conn.execute(
+                f"""
+                select * from review_jobs
+                {where}
+                order by
+                  case when status in ('queued', 'paused_for_live') then 0
+                       when status like 'running_%' then 1
+                       when status = 'completed_awaiting_validation' then 2
+                       else 3 end,
+                  coalesce(queue_position, 999999),
+                  updated_at desc
+                limit ?
+                """,
+                (*params, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [self._review_job_row_to_dict(row) for row in rows]
+
+    def review_job(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self.conn.execute("select * from review_jobs where id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return self._review_job_row_to_dict(row)
+
+    def latest_review_job(self) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute(
+                """
+                select * from review_jobs
+                order by
+                  case when status not in ('approved', 'discarded', 'canceled', 'error') then 0 else 1 end,
+                  updated_at desc
+                limit 1
+                """
+            ).fetchone()
+        return self._review_job_row_to_dict(row) if row is not None else None
+
+    def refresh_review_queue_positions(self) -> None:
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                select id from review_jobs
+                where status in ('queued', 'paused_for_live')
+                order by created_at
+                """
+            ).fetchall()
+            for index, row in enumerate(rows, start=1):
+                self.conn.execute(
+                    "update review_jobs set queue_position = ? where id = ?",
+                    (index, row["id"]),
+                )
+            self.conn.execute(
+                "update review_jobs set queue_position = null where status not in ('queued', 'paused_for_live')"
+            )
+            self.conn.commit()
+
+    def claim_next_review_job(self) -> dict[str, Any] | None:
+        now = time.time()
+        with self._lock:
+            row = self.conn.execute(
+                """
+                select * from review_jobs
+                where status in ('queued', 'paused_for_live')
+                order by created_at
+                limit 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, phase = ?, progress_pct = ?, message = ?,
+                    queue_position = null, started_at = coalesce(started_at, ?),
+                    updated_at = ?
+                where id = ? and status in ('queued', 'paused_for_live')
+                """,
+                ("running_asr", "asr", 5.0, "Preparing high-accuracy Review ASR.", now, now, row["id"]),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(str(row["id"]))
+
+    def update_review_job_progress(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        phase: str | None,
+        progress_pct: float,
+        message: str = "",
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, phase = ?, progress_pct = ?, message = ?,
+                    error_message = ?, updated_at = ?
+                where id = ?
+                """,
+                (status, phase, float(max(0.0, min(100.0, progress_pct))), message, error_message, now, job_id),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(job_id)
+
+    def complete_review_job(self, job_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, validation_status = ?, phase = ?, progress_pct = ?,
+                    message = ?, result_json = ?, completed_at = ?, updated_at = ?
+                where id = ?
+                """,
+                (
+                    "completed_awaiting_validation",
+                    "pending",
+                    "awaiting_validation",
+                    100.0,
+                    "Review output ready for validation.",
+                    json.dumps(result, sort_keys=True),
+                    now,
+                    now,
+                    job_id,
+                ),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
+    def approve_review_job(self, job_id: str, session_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            current = self.review_job(job_id)
+            if current["status"] == "approved":
+                return current
+            if current["status"] != "completed_awaiting_validation":
+                raise ValueError(f"Cannot approve review job in status {current['status']}.")
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, validation_status = ?, session_id = ?, approved_at = ?,
+                    phase = ?, message = ?, updated_at = ?
+                where id = ?
+                """,
+                ("approved", "approved", session_id, now, "approved", "Review approved and saved.", now, job_id),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
+    def discard_review_job(self, job_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            current = self.review_job(job_id)
+            if current["status"] == "discarded":
+                return current
+            if current["status"] not in {"queued", "paused_for_live", "completed_awaiting_validation", "error"}:
+                raise ValueError(f"Cannot discard review job in status {current['status']}.")
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, validation_status = ?, discarded_at = ?,
+                    phase = ?, message = ?, updated_at = ?
+                where id = ?
+                """,
+                ("discarded", "discarded", now, "discarded", "Review discarded.", now, job_id),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(job_id)
+
+    def cancel_review_job(self, job_id: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            current = self.review_job(job_id)
+            if current["status"] == "canceled":
+                return current
+            if current["status"] not in {"queued", "paused_for_live"}:
+                raise ValueError(f"Cannot cancel review job in status {current['status']}.")
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, validation_status = ?, canceled_at = ?,
+                    phase = ?, message = ?, updated_at = ?
+                where id = ?
+                """,
+                ("canceled", "canceled", now, "canceled", "Review canceled.", now, job_id),
+            )
+            self.conn.commit()
+        self.refresh_review_queue_positions()
+        return self.review_job(job_id)
+
+    def error_review_job(self, job_id: str, message: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set status = ?, phase = ?, progress_pct = ?, message = ?,
+                    error_message = ?, completed_at = coalesce(completed_at, ?), updated_at = ?
+                where id = ?
+                """,
+                ("error", "error", 100.0, message, message, now, now, job_id),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
+    def mark_review_audio_deleted(self, job_id: str, deleted_at: float | None = None) -> dict[str, Any]:
+        now = deleted_at or time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set temporary_audio_retained = 0, audio_deleted_at = ?,
+                    audio_delete_error = null, cleanup_status = ?, updated_at = ?
+                where id = ?
+                """,
+                (now, "deleted", now, job_id),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
+    def mark_review_audio_cleanup_error(self, job_id: str, error: str) -> dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            self.conn.execute(
+                """
+                update review_jobs
+                set temporary_audio_retained = 1, audio_delete_error = ?,
+                    cleanup_status = ?, updated_at = ?
+                where id = ?
+                """,
+                (error, "error", now, job_id),
+            )
+            self.conn.commit()
+        return self.review_job(job_id)
+
     def add_transcript_segment(self, segment: TranscriptSegment) -> None:
         with self._lock:
             self.conn.execute(
@@ -1238,9 +1655,10 @@ class Storage:
                 (
                   id, session_id, start_s, end_s, text, is_final, created_at,
                   speaker_role, speaker_label, speaker_confidence,
-                  speaker_match_reason, speaker_low_confidence
+                  speaker_match_score, speaker_match_reason, speaker_low_confidence,
+                  diarization_speaker_id
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     segment.id,
@@ -1253,8 +1671,10 @@ class Storage:
                     segment.speaker_role,
                     segment.speaker_label,
                     segment.speaker_confidence,
+                    segment.speaker_match_score,
                     segment.speaker_match_reason,
                     None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                    segment.diarization_speaker_id,
                 ),
             )
             self.conn.commit()
@@ -1267,8 +1687,9 @@ class Storage:
                 update transcript_segments
                 set id = ?, start_s = ?, end_s = ?, text = ?, is_final = ?,
                     created_at = ?, speaker_role = ?, speaker_label = ?,
-                    speaker_confidence = ?, speaker_match_reason = ?,
-                    speaker_low_confidence = ?
+                    speaker_confidence = ?, speaker_match_score = ?,
+                    speaker_match_reason = ?, speaker_low_confidence = ?,
+                    diarization_speaker_id = ?
                 where session_id = ? and id = ?
                 """,
                 (
@@ -1281,8 +1702,10 @@ class Storage:
                     segment.speaker_role,
                     segment.speaker_label,
                     segment.speaker_confidence,
+                    segment.speaker_match_score,
                     segment.speaker_match_reason,
                     None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                    segment.diarization_speaker_id,
                     segment.session_id,
                     target_id,
                 ),
@@ -1293,8 +1716,9 @@ class Storage:
                     update transcript_segments
                     set start_s = ?, end_s = ?, text = ?, is_final = ?,
                         created_at = ?, speaker_role = ?, speaker_label = ?,
-                        speaker_confidence = ?, speaker_match_reason = ?,
-                        speaker_low_confidence = ?
+                        speaker_confidence = ?, speaker_match_score = ?,
+                        speaker_match_reason = ?, speaker_low_confidence = ?,
+                        diarization_speaker_id = ?
                     where session_id = ? and id = ?
                     """,
                     (
@@ -1306,8 +1730,10 @@ class Storage:
                         segment.speaker_role,
                         segment.speaker_label,
                         segment.speaker_confidence,
+                        segment.speaker_match_score,
                         segment.speaker_match_reason,
                         None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                        segment.diarization_speaker_id,
                         segment.session_id,
                         segment.id,
                     ),
@@ -1319,9 +1745,10 @@ class Storage:
                     (
                       id, session_id, start_s, end_s, text, is_final, created_at,
                       speaker_role, speaker_label, speaker_confidence,
-                      speaker_match_reason, speaker_low_confidence
+                      speaker_match_score, speaker_match_reason, speaker_low_confidence,
+                      diarization_speaker_id
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         segment.id,
@@ -1334,8 +1761,10 @@ class Storage:
                         segment.speaker_role,
                         segment.speaker_label,
                         segment.speaker_confidence,
+                        segment.speaker_match_score,
                         segment.speaker_match_reason,
                         None if segment.speaker_low_confidence is None else 1 if segment.speaker_low_confidence else 0,
+                        segment.diarization_speaker_id,
                     ),
                 )
             self.conn.commit()
@@ -1376,6 +1805,34 @@ class Storage:
                     note.missing_info,
                 ),
             )
+            self.conn.commit()
+
+    def replace_session_notes(self, session_id: str, notes: list[NoteCard]) -> None:
+        with self._lock:
+            self.conn.execute("delete from note_cards where session_id = ?", (session_id,))
+            for note in notes:
+                self.conn.execute(
+                    """
+                    insert into note_cards(
+                      id, session_id, kind, title, body, source_segment_ids, created_at,
+                      evidence_quote, owner, due_date, missing_info
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        note.id,
+                        note.session_id,
+                        note.kind,
+                        note.title,
+                        note.body,
+                        json.dumps(note.source_segment_ids),
+                        note.created_at,
+                        note.evidence_quote,
+                        note.owner,
+                        note.due_date,
+                        note.missing_info,
+                    ),
+                )
             self.conn.commit()
 
     def add_library_root(self, path: Path) -> str:
@@ -1531,6 +1988,172 @@ class Storage:
         ).fetchone()
         return int(row["count"]), float(row["updated_at"])
 
+    def upsert_company_refs(self, refs: Iterable[Any]) -> int:
+        count = 0
+        with self._lock:
+            for ref in refs:
+                ref_id = str(_item_value(ref, "id") or "").strip()
+                canonical_name = str(_item_value(ref, "canonical_name") or "").strip()
+                description = str(_item_value(ref, "description") or "").strip()
+                if not ref_id or not canonical_name or not description:
+                    continue
+                updated_at = float(_item_value(ref, "updated_at") or time.time())
+                self.conn.execute(
+                    """
+                    insert into company_refs(
+                      id, canonical_name, entity_type, domain, description, website,
+                      metadata_json, sources_json, active, updated_at
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    on conflict(id) do update set
+                      canonical_name = excluded.canonical_name,
+                      entity_type = excluded.entity_type,
+                      domain = excluded.domain,
+                      description = excluded.description,
+                      website = excluded.website,
+                      metadata_json = excluded.metadata_json,
+                      sources_json = excluded.sources_json,
+                      active = excluded.active,
+                      updated_at = excluded.updated_at
+                    """,
+                    (
+                        ref_id,
+                        canonical_name,
+                        str(_item_value(ref, "entity_type") or "company").strip() or "company",
+                        str(_item_value(ref, "domain") or "").strip(),
+                        description,
+                        _item_value(ref, "website"),
+                        json.dumps(_item_value(ref, "metadata") or {}, sort_keys=True),
+                        json.dumps(_item_value(ref, "sources") or []),
+                        1 if bool(_item_value(ref, "active", True)) else 0,
+                        updated_at,
+                    ),
+                )
+                self.conn.execute("delete from company_ref_aliases where ref_id = ?", (ref_id,))
+                for alias in list(_item_value(ref, "aliases") or []):
+                    alias_text = str(_item_value(alias, "alias") or "").strip()
+                    normalized_alias = str(_item_value(alias, "normalized_alias") or "").strip()
+                    if not alias_text or not normalized_alias:
+                        continue
+                    self.conn.execute(
+                        """
+                        insert into company_ref_aliases(
+                          id, ref_id, alias, normalized_alias, alias_type, weight,
+                          requires_context, context_terms_json, negative_terms_json
+                        )
+                        values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(_item_value(alias, "id") or new_id("calias")),
+                            ref_id,
+                            alias_text,
+                            normalized_alias,
+                            str(_item_value(alias, "alias_type") or "name").strip() or "name",
+                            float(_item_value(alias, "weight") or 1.0),
+                            1 if bool(_item_value(alias, "requires_context", False)) else 0,
+                            json.dumps(_item_value(alias, "context_terms") or []),
+                            json.dumps(_item_value(alias, "negative_terms") or []),
+                        ),
+                    )
+                count += 1
+            self.conn.commit()
+        return count
+
+    def company_refs(self, active_only: bool = True) -> list[dict[str, Any]]:
+        where = "where active = 1" if active_only else ""
+        rows = self.conn.execute(
+            f"""
+            select *
+            from company_refs
+            {where}
+            order by lower(canonical_name)
+            """
+        ).fetchall()
+        refs = [self._company_ref_row_to_dict(row) for row in rows]
+        aliases_by_ref = self._company_aliases_by_ref(active_only=active_only)
+        for ref in refs:
+            ref["aliases"] = aliases_by_ref.get(ref["id"], [])
+        return refs
+
+    def company_ref_aliases(self, active_only: bool = True) -> list[dict[str, Any]]:
+        if active_only:
+            rows = self.conn.execute(
+                """
+                select a.*
+                from company_ref_aliases a
+                join company_refs r on r.id = a.ref_id
+                where r.active = 1
+                order by lower(a.normalized_alias), lower(a.alias)
+                """
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                select *
+                from company_ref_aliases
+                order by lower(normalized_alias), lower(alias)
+                """
+            ).fetchall()
+        return [self._company_alias_row_to_dict(row) for row in rows]
+
+    def company_ref_status(self) -> dict[str, Any]:
+        row = self.conn.execute(
+            """
+            select
+              count(*) as ref_count,
+              sum(case when active = 1 then 1 else 0 end) as active_ref_count,
+              coalesce(max(updated_at), 0) as latest_updated_at
+            from company_refs
+            """
+        ).fetchone()
+        alias_row = self.conn.execute(
+            """
+            select count(*) as alias_count
+            from company_ref_aliases a
+            join company_refs r on r.id = a.ref_id
+            where r.active = 1
+            """
+        ).fetchone()
+        return {
+            "ref_count": int(row["ref_count"] or 0),
+            "active_ref_count": int(row["active_ref_count"] or 0),
+            "active_alias_count": int(alias_row["alias_count"] or 0),
+            "latest_updated_at": float(row["latest_updated_at"] or 0.0),
+        }
+
+    def search_company_refs(self, query: str, limit: int = 12) -> list[dict[str, Any]]:
+        clean_query = _normalize_search_text(query)
+        tokens = [
+            token for token in clean_query.split()
+            if len(token) >= 2 and token not in {"the", "and", "for", "what", "does", "who", "company"}
+        ]
+        needles = [clean_query, *tokens] if clean_query else []
+        if not needles:
+            return []
+        scored: list[tuple[int, str, dict[str, Any]]] = []
+        for ref in self.company_refs(active_only=True):
+            canonical = _normalize_search_text(ref["canonical_name"])
+            aliases = [_normalize_search_text(alias["alias"]) for alias in ref.get("aliases", [])]
+            haystack = " ".join([
+                canonical,
+                _normalize_search_text(ref["domain"]),
+                _normalize_search_text(ref["description"]),
+                *aliases,
+            ])
+            score = 0
+            if clean_query == canonical or clean_query in aliases:
+                score = 100
+            elif any(needle and needle in aliases for needle in needles):
+                score = 90
+            elif any(needle and needle in canonical for needle in needles):
+                score = 80
+            elif any(needle and needle in haystack for needle in needles):
+                score = 60
+            if score:
+                scored.append((score, canonical, ref))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [item[2] for item in scored[: max(1, min(int(limit), 50))]]
+
     def upsert_session_memory_summary(
         self,
         *,
@@ -1544,6 +2167,18 @@ class Storage:
         entities: list[str],
         lessons: list[str],
         source_segment_ids: list[str],
+        review_standard: str | None = None,
+        key_points: list[str] | None = None,
+        projects: list[str] | None = None,
+        project_workstreams: list[dict[str, Any]] | None = None,
+        technical_findings: list[dict[str, Any]] | None = None,
+        portfolio_rollup: dict[str, Any] | None = None,
+        review_metrics: dict[str, Any] | None = None,
+        risks: list[str] | None = None,
+        coverage_notes: list[str] | None = None,
+        reference_context: list[dict[str, Any]] | None = None,
+        context_diagnostics: dict[str, Any] | None = None,
+        meeting_digest: dict[str, Any] | None = None,
     ) -> None:
         now = time.time()
         with self._lock:
@@ -1552,9 +2187,14 @@ class Storage:
                 insert into session_memory_summaries(
                   session_id, title, summary, topics_json, decisions_json, actions_json,
                   unresolved_questions_json, entities_json, lessons_json,
-                  source_segment_ids_json, created_at, updated_at
+                  source_segment_ids_json, review_standard, key_points_json, projects_json,
+                  project_workstreams_json, technical_findings_json, portfolio_rollup_json,
+                  review_metrics_json, risks_json,
+                  coverage_notes_json, reference_context_json, context_diagnostics_json,
+                  meeting_digest_json,
+                  created_at, updated_at
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(session_id) do update set
                   title = excluded.title,
                   summary = excluded.summary,
@@ -1565,6 +2205,18 @@ class Storage:
                   entities_json = excluded.entities_json,
                   lessons_json = excluded.lessons_json,
                   source_segment_ids_json = excluded.source_segment_ids_json,
+                  review_standard = excluded.review_standard,
+                  key_points_json = excluded.key_points_json,
+                  projects_json = excluded.projects_json,
+                  project_workstreams_json = excluded.project_workstreams_json,
+                  technical_findings_json = excluded.technical_findings_json,
+                  portfolio_rollup_json = excluded.portfolio_rollup_json,
+                  review_metrics_json = excluded.review_metrics_json,
+                  risks_json = excluded.risks_json,
+                  coverage_notes_json = excluded.coverage_notes_json,
+                  reference_context_json = excluded.reference_context_json,
+                  context_diagnostics_json = excluded.context_diagnostics_json,
+                  meeting_digest_json = excluded.meeting_digest_json,
                   updated_at = excluded.updated_at
                 """,
                 (
@@ -1578,6 +2230,18 @@ class Storage:
                     json.dumps(entities),
                     json.dumps(lessons),
                     json.dumps(source_segment_ids),
+                    review_standard or "",
+                    json.dumps(key_points or []),
+                    json.dumps(projects or []),
+                    json.dumps(project_workstreams or []),
+                    json.dumps(technical_findings or []),
+                    json.dumps(portfolio_rollup or {}),
+                    json.dumps(review_metrics or {}),
+                    json.dumps(risks or []),
+                    json.dumps(coverage_notes or []),
+                    json.dumps(reference_context or []),
+                    json.dumps(context_diagnostics or {}),
+                    json.dumps(meeting_digest or {}),
                     now,
                     now,
                 ),
@@ -1598,225 +2262,6 @@ class Storage:
         journal_mode = self.conn.execute("pragma journal_mode").fetchone()[0]
         busy_timeout = self.conn.execute("pragma busy_timeout").fetchone()[0]
         return {"journal_mode": journal_mode, "busy_timeout": int(busy_timeout)}
-
-    def clear_work_memory(self) -> None:
-        with self._lock:
-            self.conn.execute("delete from work_memory_recall_events")
-            self.conn.execute("delete from work_memory_evidence")
-            self.conn.execute("delete from work_memory_projects")
-            self.conn.execute("delete from work_memory_sources")
-            self.conn.execute("delete from embedding_records where source_type = ?", ("work_memory_project",))
-            self.conn.commit()
-
-    def upsert_work_memory_source(
-        self,
-        *,
-        path: str,
-        source_group: str,
-        sensitivity: str,
-        status: str,
-        title: str,
-        content_hash: str,
-        metadata: dict[str, Any],
-        disabled: bool,
-    ) -> str:
-        source_id = new_id("wsrc")
-        now = time.time()
-        with self._lock:
-            self.conn.execute(
-                """
-                insert into work_memory_sources(
-                  id, path, source_group, sensitivity, status, title, content_hash,
-                  metadata, disabled, created_at, updated_at
-                )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(path) do update set
-                  source_group = excluded.source_group,
-                  sensitivity = excluded.sensitivity,
-                  status = excluded.status,
-                  title = excluded.title,
-                  content_hash = excluded.content_hash,
-                  metadata = excluded.metadata,
-                  disabled = excluded.disabled,
-                  updated_at = excluded.updated_at
-                """,
-                (
-                    source_id,
-                    path,
-                    source_group,
-                    sensitivity,
-                    status,
-                    title,
-                    content_hash,
-                    json.dumps(metadata),
-                    1 if disabled else 0,
-                    now,
-                    now,
-                ),
-            )
-            row = self.conn.execute("select id from work_memory_sources where path = ?", (path,)).fetchone()
-            self.conn.commit()
-        return str(row["id"])
-
-    def upsert_work_memory_project(
-        self,
-        *,
-        key: str,
-        title: str,
-        organization: str,
-        date_range: str,
-        role: str,
-        domain: str,
-        summary: str,
-        lessons: list[str],
-        triggers: list[str],
-        source_group: str,
-        confidence: float,
-    ) -> str:
-        project_id = new_id("wproj")
-        now = time.time()
-        with self._lock:
-            self.conn.execute(
-                """
-                insert into work_memory_projects(
-                  id, project_key, title, organization, date_range, role, domain,
-                  summary, lessons_json, triggers_json, source_group, confidence, updated_at
-                )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(project_key) do update set
-                  title = excluded.title,
-                  organization = excluded.organization,
-                  date_range = excluded.date_range,
-                  role = excluded.role,
-                  domain = excluded.domain,
-                  summary = excluded.summary,
-                  lessons_json = excluded.lessons_json,
-                  triggers_json = excluded.triggers_json,
-                  source_group = excluded.source_group,
-                  confidence = excluded.confidence,
-                  updated_at = excluded.updated_at
-                """,
-                (
-                    project_id,
-                    key,
-                    title,
-                    organization,
-                    date_range,
-                    role,
-                    domain,
-                    summary,
-                    json.dumps(lessons),
-                    json.dumps(triggers),
-                    source_group,
-                    confidence,
-                    now,
-                ),
-            )
-            row = self.conn.execute("select id from work_memory_projects where project_key = ?", (key,)).fetchone()
-            self.conn.commit()
-        return str(row["id"])
-
-    def add_work_memory_evidence(
-        self,
-        *,
-        project_id: str,
-        source_id: str | None,
-        source_path: str,
-        snippet: str,
-        artifact_type: str,
-        weight: float,
-    ) -> str:
-        evidence_id = new_id("wevd")
-        with self._lock:
-            self.conn.execute(
-                """
-                insert into work_memory_evidence(
-                  id, project_id, source_id, source_path, snippet, artifact_type, weight, created_at
-                )
-                values (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (evidence_id, project_id, source_id, source_path, snippet, artifact_type, weight, time.time()),
-            )
-            self.conn.commit()
-        return evidence_id
-
-    def work_memory_projects(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            select * from work_memory_projects
-            order by date_range, title
-            """
-        ).fetchall()
-        return [self._work_memory_project_row_to_dict(row) for row in rows]
-
-    def work_memory_sources(self, limit: int = 120) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            select * from work_memory_sources
-            order by updated_at desc
-            limit ?
-            """,
-            (limit,),
-        ).fetchall()
-        return [self._work_memory_source_row_to_dict(row) for row in rows]
-
-    def work_memory_evidence(self, project_id: str, limit: int = 12) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            select * from work_memory_evidence
-            where project_id = ?
-            order by weight desc, created_at desc
-            limit ?
-            """,
-            (project_id, limit),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def add_work_memory_recall_event(
-        self,
-        *,
-        session_id: str | None,
-        project_id: str,
-        query: str,
-        score: float,
-        reason: str,
-    ) -> str:
-        event_id = new_id("wrec")
-        with self._lock:
-            self.conn.execute(
-                """
-                insert into work_memory_recall_events(id, session_id, project_id, query, score, reason, created_at)
-                values (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (event_id, session_id, project_id, query, score, reason, time.time()),
-            )
-            self.conn.commit()
-        return event_id
-
-    def work_memory_summary(self) -> dict[str, Any]:
-        project_count = self.conn.execute("select count(*) as count from work_memory_projects").fetchone()["count"]
-        evidence_count = self.conn.execute("select count(*) as count from work_memory_evidence").fetchone()["count"]
-        source_count = self.conn.execute("select count(*) as count from work_memory_sources").fetchone()["count"]
-        disabled_count = self.conn.execute(
-            "select count(*) as count from work_memory_sources where disabled = 1"
-        ).fetchone()["count"]
-        latest_row = self.conn.execute("select max(updated_at) as latest from work_memory_sources").fetchone()
-        rows = self.conn.execute(
-            """
-            select source_group, count(*) as count
-            from work_memory_sources
-            group by source_group
-            order by source_group
-            """
-        ).fetchall()
-        return {
-            "projects": int(project_count),
-            "evidence": int(evidence_count),
-            "sources": int(source_count),
-            "disabled_sources": int(disabled_count),
-            "latest_index_at": latest_row["latest"],
-            "source_groups": {row["source_group"]: int(row["count"]) for row in rows},
-        }
 
     def _session_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         transcript_count = int(row["transcript_count"])
@@ -1846,6 +2291,78 @@ class Storage:
             "raw_audio_retained": False,
         }
 
+    def _review_job_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        result = None
+        result_json = row["result_json"]
+        if result_json:
+            try:
+                result = json.loads(result_json)
+            except json.JSONDecodeError:
+                result = None
+        temporary_audio_retained = bool(row["temporary_audio_retained"])
+        payload = {
+            "id": row["id"],
+            "job_id": row["id"],
+            "source": row["source"],
+            "title": row["title"],
+            "status": row["status"],
+            "validation_status": row["validation_status"],
+            "phase": row["phase"],
+            "progress_pct": float(row["progress_pct"] or 0.0),
+            "progress_percent": int(round(float(row["progress_pct"] or 0.0))),
+            "message": row["message"] or "",
+            "queue_position": row["queue_position"],
+            "session_id": row["session_id"],
+            "live_id": row["live_id"],
+            "source_filename": row["source_filename"],
+            "filename": row["source_filename"] or "",
+            "temporary_audio_path": row["temporary_audio_path"],
+            "temporary_audio_retained": temporary_audio_retained,
+            "raw_audio_retained": temporary_audio_retained,
+            "audio_deleted_at": row["audio_deleted_at"],
+            "audio_delete_error": row["audio_delete_error"],
+            "cleanup_status": row["cleanup_status"] or ("retained" if temporary_audio_retained else "deleted"),
+            "result": result,
+            "error": row["error_message"],
+            "error_message": row["error_message"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "approved_at": row["approved_at"],
+            "discarded_at": row["discarded_at"],
+            "canceled_at": row["canceled_at"],
+            "active": row["status"] not in {"approved", "discarded", "canceled", "error", "completed_awaiting_validation"},
+        }
+        if result:
+            payload["clean_segments"] = result.get("clean_transcript") or []
+            payload["meeting_cards"] = result.get("meeting_cards") or []
+            payload["summary"] = result.get("summary")
+            diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
+            payload["duration_seconds"] = diagnostics.get("duration_seconds")
+            payload["raw_segment_count"] = diagnostics.get("raw_segment_count", len(payload["clean_segments"]))
+            payload["corrected_segment_count"] = diagnostics.get("corrected_segment_count", len(payload["clean_segments"]))
+            payload["asr_backend"] = diagnostics.get("asr_backend")
+            payload["asr_model"] = diagnostics.get("asr_model")
+            payload["diagnostics"] = diagnostics
+        else:
+            payload["clean_segments"] = []
+            payload["meeting_cards"] = []
+            payload["summary"] = None
+            payload["duration_seconds"] = None
+            payload["raw_segment_count"] = 0
+            payload["corrected_segment_count"] = 0
+            payload["asr_backend"] = None
+            payload["asr_model"] = None
+            payload["diagnostics"] = {}
+        payload["steps"] = _review_steps_for_payload(
+            str(payload["status"]),
+            str(payload.get("phase") or ""),
+            str(payload.get("message") or ""),
+            int(payload["progress_percent"]),
+        )
+        return payload
+
     def _transcript_row_to_segment(self, row: sqlite3.Row) -> TranscriptSegment:
         return TranscriptSegment(
             id=row["id"],
@@ -1858,12 +2375,14 @@ class Storage:
             speaker_role=row["speaker_role"],
             speaker_label=row["speaker_label"],
             speaker_confidence=row["speaker_confidence"],
+            speaker_match_score=row["speaker_match_score"],
             speaker_match_reason=row["speaker_match_reason"],
             speaker_low_confidence=(
                 bool(row["speaker_low_confidence"])
                 if row["speaker_low_confidence"] is not None
                 else None
             ),
+            diarization_speaker_id=row["diarization_speaker_id"],
         )
 
     def _note_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -1894,49 +2413,63 @@ class Storage:
             "raw_audio_retained": False,
         }
 
-    def _work_memory_project_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _company_ref_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row["id"],
-            "project_key": row["project_key"],
-            "title": row["title"],
-            "organization": row["organization"],
-            "date_range": row["date_range"],
-            "role": row["role"],
+            "canonical_name": row["canonical_name"],
+            "entity_type": row["entity_type"],
             "domain": row["domain"],
-            "summary": row["summary"],
-            "lessons": json.loads(row["lessons_json"]),
-            "triggers": json.loads(row["triggers_json"]),
-            "source_group": row["source_group"],
-            "confidence": float(row["confidence"]),
-            "updated_at": row["updated_at"],
+            "description": row["description"],
+            "website": row["website"],
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "sources": json.loads(row["sources_json"] or "[]"),
+            "active": bool(row["active"]),
+            "updated_at": float(row["updated_at"]),
+            "raw_audio_retained": False,
         }
 
-    def _work_memory_source_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _company_alias_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row["id"],
-            "path": row["path"],
-            "source_group": row["source_group"],
-            "sensitivity": row["sensitivity"],
-            "status": row["status"],
-            "title": row["title"],
-            "content_hash": row["content_hash"],
-            "metadata": json.loads(row["metadata"]),
-            "disabled": bool(row["disabled"]),
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
+            "ref_id": row["ref_id"],
+            "alias": row["alias"],
+            "normalized_alias": row["normalized_alias"],
+            "alias_type": row["alias_type"],
+            "weight": float(row["weight"]),
+            "requires_context": bool(row["requires_context"]),
+            "context_terms": json.loads(row["context_terms_json"] or "[]"),
+            "negative_terms": json.loads(row["negative_terms_json"] or "[]"),
         }
+
+    def _company_aliases_by_ref(self, *, active_only: bool) -> dict[str, list[dict[str, Any]]]:
+        aliases: dict[str, list[dict[str, Any]]] = {}
+        for alias in self.company_ref_aliases(active_only=active_only):
+            aliases.setdefault(alias["ref_id"], []).append(alias)
+        return aliases
 
     def _session_memory_summary_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "session_id": row["session_id"],
+            "review_standard": row["review_standard"] or "",
             "title": row["title"],
             "summary": row["summary"],
+            "key_points": json.loads(row["key_points_json"] or "[]"),
             "topics": json.loads(row["topics_json"]),
+            "projects": json.loads(row["projects_json"] or "[]"),
+            "project_workstreams": json.loads(row["project_workstreams_json"] or "[]"),
+            "technical_findings": json.loads(row["technical_findings_json"] or "[]"),
+            "portfolio_rollup": json.loads(row["portfolio_rollup_json"] or "{}"),
+            "review_metrics": json.loads(row["review_metrics_json"] or "{}"),
             "decisions": json.loads(row["decisions_json"]),
             "actions": json.loads(row["actions_json"]),
             "unresolved_questions": json.loads(row["unresolved_questions_json"]),
+            "risks": json.loads(row["risks_json"] or "[]"),
             "entities": json.loads(row["entities_json"]),
             "lessons": json.loads(row["lessons_json"]),
+            "coverage_notes": json.loads(row["coverage_notes_json"] or "[]"),
+            "reference_context": json.loads(row["reference_context_json"] or "[]"),
+            "context_diagnostics": json.loads(row["context_diagnostics_json"] or "{}"),
+            "meeting_digest": json.loads(row["meeting_digest_json"] or "{}"),
             "source_segment_ids": json.loads(row["source_segment_ids_json"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

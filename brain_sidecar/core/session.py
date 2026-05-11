@@ -9,18 +9,16 @@ import wave
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-import numpy as np
-
 from brain_sidecar.config import Settings
+from brain_sidecar.core.audio_spool import AudioSpoolResult, AudioSpoolWriter
 from brain_sidecar.core.audio import AudioCapture, FFmpegAudioCapture, FixtureWavAudioCapture, MAX_INPUT_GAIN_DB, MIN_INPUT_GAIN_DB
-from brain_sidecar.core.asr import (
-    ASR_BACKEND_NEMOTRON_STREAMING,
-    StreamingAsrEvent,
-    StreamingAsrSession,
-)
+from brain_sidecar.core.asr import ASR_BACKEND_FASTER_WHISPER
 from brain_sidecar.core.asr_factory import create_asr_backend
+from brain_sidecar.core.company_refs import CompanyRefService
 from brain_sidecar.core.dedupe import TranscriptDeduplicator, TranscriptFinalConsolidator
 from brain_sidecar.core.devices import find_device
+from brain_sidecar.core.domain_keywords import EnergyConversationDetector, EnergyConversationFrame, inactive_energy_frame
+from brain_sidecar.core.energy_lens import EnergyConsultingAgent
 from brain_sidecar.core.event_bus import EventBus
 from brain_sidecar.core.events import (
     EVENT_AUDIO_STATUS,
@@ -39,13 +37,11 @@ from brain_sidecar.core.meeting_agents import ContractCriticAgent, diagnostics_f
 from brain_sidecar.core.meeting_contract import MeetingContract, normalize_meeting_contract
 from brain_sidecar.core.models import SidecarCard, TranscriptSegment, new_id
 from brain_sidecar.core.note_quality import NoteQualityGate
-from brain_sidecar.core.notes import NoteSynthesizer, note_from_sidecar
+from brain_sidecar.core.notes import NoteSynthesizer, heuristic_meeting_cards, note_from_sidecar
 from brain_sidecar.core.ollama import OllamaClient
 from brain_sidecar.core.recall import RecallIndex
 from brain_sidecar.core.speaker_identity import SpeakerIdentityService, analyze_pcm16
 from brain_sidecar.core.storage import Storage
-from brain_sidecar.core.nemotron_streaming import StreamingPcmChunker
-from brain_sidecar.core.transcription import audio_rms
 from brain_sidecar.core.web_context import (
     BraveSearchClient,
     WebContextCandidate,
@@ -53,12 +49,12 @@ from brain_sidecar.core.web_context import (
     WebTriggerDetector,
 )
 from brain_sidecar.core.sidecar_cards import (
+    company_mention_to_sidecar_card,
     create_sidecar_card,
     note_payload_to_sidecar_card,
     recall_payload_to_sidecar_card,
     status_sidecar_card,
 )
-from brain_sidecar.core.work_memory import WorkMemoryService
 
 
 @dataclass(frozen=True)
@@ -67,53 +63,6 @@ class AudioWindow:
     start_offset_s: float
     final: bool = False
     preview: bool = False
-
-
-class InMemoryPcmRingBuffer:
-    def __init__(self, *, sample_rate: int, seconds: float = 45.0) -> None:
-        self.sample_rate = sample_rate
-        self.bytes_per_second = sample_rate * 2
-        self.max_bytes = int(self.bytes_per_second * seconds)
-        self._buffer = bytearray()
-        self._start_offset_s = 0.0
-        self._initialized = False
-
-    def append(self, pcm: bytes, start_offset_s: float) -> None:
-        if not pcm:
-            return
-        if not self._initialized:
-            self._start_offset_s = start_offset_s
-            self._initialized = True
-        expected_start = self.end_offset_s
-        if start_offset_s > expected_start + 0.02:
-            silence_bytes = int((start_offset_s - expected_start) * self.bytes_per_second)
-            silence_bytes -= silence_bytes % 2
-            self._buffer.extend(b"\0" * max(0, silence_bytes))
-        self._buffer.extend(pcm)
-        self._trim()
-
-    @property
-    def end_offset_s(self) -> float:
-        return self._start_offset_s + (len(self._buffer) / self.bytes_per_second)
-
-    def slice(self, start_s: float, end_s: float) -> bytes:
-        if not self._initialized or end_s <= start_s:
-            return b""
-        start_byte = int((start_s - self._start_offset_s) * self.bytes_per_second)
-        end_byte = int((end_s - self._start_offset_s) * self.bytes_per_second)
-        start_byte = max(0, start_byte - (start_byte % 2))
-        end_byte = min(len(self._buffer), end_byte - (end_byte % 2))
-        if end_byte <= start_byte:
-            return b""
-        return bytes(self._buffer[start_byte:end_byte])
-
-    def _trim(self) -> None:
-        if len(self._buffer) <= self.max_bytes:
-            return
-        excess = len(self._buffer) - self.max_bytes
-        excess += excess % 2
-        del self._buffer[:excess]
-        self._start_offset_s += excess / self.bytes_per_second
 
 
 @dataclass(frozen=True)
@@ -133,10 +82,16 @@ class ActiveSession:
     transcript_consolidator: TranscriptFinalConsolidator | None = None
     note_quality_gate: NoteQualityGate | None = None
     web_context_queue: asyncio.Queue[WebContextCandidate] | None = None
+    web_context_enabled: bool = False
     audio_source: str = "server_device"
+    playback_paused: bool = False
     selected_device_id: str | None = None
     input_gain_db: float = 0.0
     save_transcript: bool = True
+    persist_session: bool = True
+    live_title: str | None = None
+    audio_spool: AudioSpoolWriter | None = None
+    spooled_audio_bytes: int = 0
     recent_segments: list[TranscriptSegment] = field(default_factory=list)
     final_segment_count: int = 0
     next_note_segment_count: int = 3
@@ -144,6 +99,7 @@ class ActiveSession:
     web_context_pending_queries: set[str] = field(default_factory=set)
     web_context_seen_queries: set[str] = field(default_factory=set)
     web_context_last_at: float = 0.0
+    company_ref_last_seen_by_ref_id: dict[str, float] = field(default_factory=dict)
     last_partial_enqueued_at: float = 0.0
     last_partial_text: str = ""
     transcriber_busy: bool = False
@@ -156,20 +112,8 @@ class ActiveSession:
     last_audio_rms: float | None = None
     silent_windows: int = 0
     asr_empty_windows: int = 0
-    asr_backend: str = ASR_BACKEND_NEMOTRON_STREAMING
+    asr_backend: str = ASR_BACKEND_FASTER_WHISPER
     asr_model: str | None = None
-    streaming_session: StreamingAsrSession | None = None
-    streaming_chunk_ms: int | None = None
-    streaming_partial_count: int = 0
-    streaming_final_count: int = 0
-    streaming_flush_count: int = 0
-    streaming_latency_ms: float | None = None
-    streaming_realtime_factor: float | None = None
-    streaming_started_at: float | None = None
-    total_audio_offset_s: float = 0.0
-    pcm_ring_buffer: InMemoryPcmRingBuffer = field(
-        default_factory=lambda: InMemoryPcmRingBuffer(sample_rate=16_000, seconds=45.0)
-    )
     note_segments: list[TranscriptSegment] = field(default_factory=list)
     final_segments_collapsed: int = 0
     final_segments_replaced: int = 0
@@ -179,6 +123,9 @@ class ActiveSession:
     meeting_diagnostics: dict[str, object] = field(
         default_factory=lambda: diagnostics_for_cards([], accepted_count=0, suppressed_count=0).to_dict()
     )
+    energy_conversation_frame: EnergyConversationFrame | None = None
+    energy_lens_last_active_at: float | None = None
+    energy_lens_last_card_at: float | None = None
 
 
 class SessionManager:
@@ -187,10 +134,17 @@ class SessionManager:
         self.bus = EventBus()
         self.storage = Storage(settings.data_dir)
         self.storage.connect()
+        self.company_refs = CompanyRefService(self.storage, settings)
+        self.company_refs.ensure_seeded()
         self.ollama = OllamaClient(settings)
         self.recall = RecallIndex(self.storage, self.ollama, settings)
-        self.work_memory = WorkMemoryService(self.storage, self.recall, settings)
         self.notes = NoteSynthesizer(self.ollama)
+        self.energy_detector = EnergyConversationDetector(
+            enabled=settings.energy_lens_enabled,
+            min_confidence=settings.energy_lens_min_confidence,
+            max_keywords=settings.energy_lens_max_keywords,
+        )
+        self.energy_agent = EnergyConsultingAgent()
         self.speaker_identity = SpeakerIdentityService(self.storage, settings)
         self.transcriber = create_asr_backend(settings)
         self.web_trigger_detector = WebTriggerDetector()
@@ -226,17 +180,26 @@ class SessionManager:
         save_transcript: bool = True,
         mic_tuning: dict[str, object] | None = None,
         meeting_contract: object | None = None,
+        web_context_enabled: bool | None = None,
+        persist_session: bool = True,
+        audio_spool: AudioSpoolWriter | None = None,
+        live_title: str | None = None,
     ) -> None:
         async with self._lock:
             if session_id in self._active:
                 return
             normalized_contract = normalize_meeting_contract(meeting_contract)
+            session_web_context_enabled = (
+                self.settings.web_context_enabled
+                if web_context_enabled is None
+                else bool(web_context_enabled)
+            )
             if not self._asr_loaded():
                 await self._publish_asr_start_status(session_id)
-                await asyncio.to_thread(prepare_asr_gpu, self.settings)
+                if self.settings.asr_device == "cuda":
+                    await asyncio.to_thread(prepare_asr_gpu, self.settings)
                 await self._publish_audio_status(session_id, "loading_asr")
             await self.transcriber.load()
-            streaming = self._asr_streaming_supported()
             capture = self._build_capture(
                 device_id=device_id,
                 fixture_wav=fixture_wav,
@@ -259,35 +222,31 @@ class SessionManager:
                 transcript_consolidator=TranscriptFinalConsolidator(max_recent=48),
                 note_quality_gate=self._new_note_quality_gate(),
                 web_context_queue=web_context_queue,
+                web_context_enabled=session_web_context_enabled,
                 audio_source=audio_source,
                 selected_device_id=capture.device.id if isinstance(capture, FFmpegAudioCapture) else None,
                 input_gain_db=capture.input_gain_db if isinstance(capture, FFmpegAudioCapture) else 0.0,
                 save_transcript=save_transcript,
+                persist_session=persist_session,
+                live_title=live_title,
+                audio_spool=audio_spool,
                 next_note_segment_count=self.settings.notes_every_segments,
                 asr_backend=self._asr_backend_name(),
                 asr_model=self._asr_model_name(),
-                streaming_chunk_ms=self.settings.nemotron_chunk_ms if streaming else None,
-                pcm_ring_buffer=InMemoryPcmRingBuffer(sample_rate=self.settings.audio_sample_rate, seconds=45.0),
                 meeting_contract=normalized_contract,
             )
             self._active[session_id] = active
-            if streaming:
-                active.tasks = [
-                    asyncio.create_task(self._run_streaming_capture_loop(session_id, capture, window_queue)),
-                    asyncio.create_task(self._run_streaming_transcription_loop(session_id, window_queue, postprocess_queue)),
-                    asyncio.create_task(self._run_postprocess_loop(session_id, postprocess_queue)),
-                ]
-            else:
-                active.tasks = [
-                    asyncio.create_task(self._run_capture_loop(session_id, capture, window_queue)),
-                    asyncio.create_task(self._run_transcription_loop(session_id, window_queue, postprocess_queue)),
-                    asyncio.create_task(self._run_postprocess_loop(session_id, postprocess_queue)),
-                ]
-            if self._web_context_configured():
+            active.tasks = [
+                asyncio.create_task(self._run_capture_loop(session_id, capture, window_queue)),
+                asyncio.create_task(self._run_transcription_loop(session_id, window_queue, postprocess_queue)),
+                asyncio.create_task(self._run_postprocess_loop(session_id, postprocess_queue)),
+            ]
+            if self._web_context_configured(active):
                 active.tasks.append(asyncio.create_task(self._run_web_context_loop(session_id, web_context_queue)))
             for task in active.tasks:
                 task.add_done_callback(lambda done_task, sid=session_id: self._surface_task_exception(sid, done_task))
-            self.storage.set_session_status(session_id, "running", save_transcript=save_transcript)
+            if persist_session:
+                self.storage.set_session_status(session_id, "running", save_transcript=save_transcript)
 
         await self.bus.publish(
             SidecarEvent(
@@ -297,6 +256,7 @@ class SessionManager:
                     **read_gpu_status().to_dict(),
                     **self._asr_status_fields(active),
                     "asr_model": self._asr_model_name(),
+                    "asr_device": self.settings.asr_device,
                     "asr_compute_type": self.settings.asr_compute_type,
                     "asr_beam_size": self.settings.asr_beam_size,
                     "queue_size": self.settings.transcription_queue_size,
@@ -307,6 +267,10 @@ class SessionManager:
                     "selected_device_id": active.selected_device_id,
                     "input_gain_db": active.input_gain_db,
                     "save_transcript": active.save_transcript,
+                    "persist_session": active.persist_session,
+                    "temporary_audio_retained": active.audio_spool is not None,
+                    "web_context_enabled": active.web_context_enabled,
+                    "web_context_configured": bool(self.settings.brave_search_api_key.strip()),
                     "raw_audio_retained": False,
                     **self._meeting_status(active),
                 },
@@ -322,26 +286,12 @@ class SessionManager:
     def _asr_loaded(self) -> bool:
         return self._asr_model_name() is not None
 
-    def _asr_streaming_supported(self) -> bool:
-        return bool(getattr(self.transcriber, "streaming_supported", False))
-
     def _asr_status_fields(self, active: ActiveSession | None = None) -> dict[str, object]:
-        streaming = self._asr_streaming_supported()
-        chunk_ms = (
-            active.streaming_chunk_ms
-            if active is not None and active.streaming_chunk_ms is not None
-            else self.settings.nemotron_chunk_ms
-            if streaming or self.settings.asr_backend == ASR_BACKEND_NEMOTRON_STREAMING
-            else None
-        )
         return {
             "asr_backend": self._asr_backend_name(),
-            "asr_streaming_supported": streaming,
-            "asr_streaming_chunk_ms": chunk_ms,
-            "nemotron_model_id": self.settings.nemotron_model_id,
-            "nemotron_loaded": self._asr_backend_name() == ASR_BACKEND_NEMOTRON_STREAMING and self._asr_loaded(),
             "asr_model": self._asr_model_name(),
-            "asr_dtype": self.settings.nemotron_dtype if self._asr_backend_name() == ASR_BACKEND_NEMOTRON_STREAMING else self.settings.asr_compute_type,
+            "asr_dtype": self.settings.asr_compute_type,
+            "asr_device": self.settings.asr_device,
             "asr_backend_error": getattr(self.transcriber, "last_error", None),
         }
 
@@ -359,12 +309,13 @@ class SessionManager:
     ) -> None:
         gpu_status = gpu_status or read_gpu_status()
         active = self._active.get(session_id)
+        reported_status = "paused" if active is not None and active.playback_paused and status == "listening" else status
         await self.bus.publish(
             SidecarEvent(
                 type=EVENT_AUDIO_STATUS,
                 session_id=session_id,
                 payload={
-                    "status": status,
+                    "status": reported_status,
                     "memory_free_mb": gpu_status.memory_free_mb,
                     "memory_total_mb": gpu_status.memory_total_mb,
                     "gpu_pressure": gpu_status.gpu_pressure,
@@ -389,21 +340,29 @@ class SessionManager:
             return False
         return bool(status.ollama_gpu_models)
 
-    async def stop_session(self, session_id: str) -> None:
+    def has_active_capture(self) -> bool:
+        return bool(self._active)
+
+    async def stop_session(self, session_id: str) -> dict[str, object]:
         async with self._lock:
             active = self._active.get(session_id)
         if active is None:
-            return
-        if active.asr_backend == ASR_BACKEND_NEMOTRON_STREAMING:
-            await self._stop_streaming_session(active)
-        else:
-            async with self._lock:
-                self._active.pop(session_id, None)
-            await active.capture.stop()
+            return {"status": "stopped", "session_id": session_id, "audio_path": None, "spooled_audio_bytes": 0}
+        async with self._lock:
+            self._active.pop(session_id, None)
+        await active.capture.stop()
         for task in active.tasks:
             task.cancel()
         await asyncio.gather(*active.tasks, return_exceptions=True)
-        self.storage.set_session_status(session_id, "stopped", ended_at=time.time())
+        spool_result: AudioSpoolResult | None = None
+        if active.audio_spool is not None:
+            try:
+                spool_result = await asyncio.to_thread(active.audio_spool.finalize)
+            except Exception:
+                active.audio_spool.abort()
+                spool_result = active.audio_spool.result(path=None)
+        if active.persist_session:
+            self.storage.set_session_status(session_id, "stopped", ended_at=time.time())
         await self.bus.publish(
             SidecarEvent(
                 type=EVENT_AUDIO_STATUS,
@@ -411,26 +370,63 @@ class SessionManager:
                 payload={
                     "status": "stopped",
                     "raw_audio_retained": False,
+                    "temporary_audio_retained": bool(spool_result and spool_result.path),
                     "save_transcript": active.save_transcript,
+                    "persist_session": active.persist_session,
                     "dropped_windows": active.dropped_windows,
+                    "spooled_audio_bytes": active.spooled_audio_bytes,
                     **self._pipeline_metrics(active),
                     **self._meeting_status(active),
                 },
             )
         )
-        if active.save_transcript and active.recent_segments:
+        if active.persist_session and active.save_transcript and active.recent_segments:
             await self._safe_store_session_memory_summary(session_id, active.recent_segments)
+        return {
+            "status": "stopped",
+            "session_id": session_id,
+            "audio_path": str(spool_result.path) if spool_result and spool_result.path else None,
+            "spooled_audio_bytes": active.spooled_audio_bytes,
+            "duration_seconds": spool_result.duration_seconds if spool_result else 0.0,
+            "live_title": active.live_title,
+        }
 
-    async def _stop_streaming_session(self, active: ActiveSession) -> None:
-        await active.capture.stop()
-        try:
-            await active.window_queue.put(AudioWindow(b"", active.total_audio_offset_s, final=True))
-            await asyncio.wait_for(active.window_queue.join(), timeout=8.0)
-            await asyncio.wait_for(active.postprocess_queue.join(), timeout=8.0)
-        except (asyncio.TimeoutError, RuntimeError):
-            pass
+    async def pause_session(self, session_id: str) -> bool:
         async with self._lock:
-            self._active.pop(active.id, None)
+            active = self._active.get(session_id)
+        if active is None or active.audio_source != "fixture":
+            return False
+        active.playback_paused = True
+        if not await active.capture.pause():
+            active.playback_paused = False
+            return False
+        await self._publish_audio_status(
+            session_id,
+            "paused",
+            extra={
+                "playback_paused": True,
+                "raw_audio_retained": False,
+            },
+        )
+        return True
+
+    async def resume_session(self, session_id: str) -> bool:
+        async with self._lock:
+            active = self._active.get(session_id)
+        if active is None or active.audio_source != "fixture" or not active.playback_paused:
+            return False
+        if not await active.capture.resume():
+            return False
+        active.playback_paused = False
+        await self._publish_audio_status(
+            session_id,
+            "listening",
+            extra={
+                "playback_paused": False,
+                "raw_audio_retained": False,
+            },
+        )
+        return True
 
     async def add_library_root(self, path: Path) -> dict:
         root_id = await asyncio.to_thread(self.storage.add_library_root, path.expanduser().resolve())
@@ -439,7 +435,8 @@ class SessionManager:
     async def search_web_context(self, query: str, *, session_id: str | None = None) -> dict:
         decision = self.web_trigger_detector.decision_for_manual_query(query)
         cleaned_query = decision.sanitized_query
-        enabled = self.settings.web_context_enabled
+        active = self._active.get(session_id or "")
+        enabled = active.web_context_enabled if active is not None else self.settings.web_context_enabled
         configured = bool(self.settings.brave_search_api_key.strip())
         skip_reason = decision.skip_reason
         if not enabled:
@@ -488,11 +485,22 @@ class SessionManager:
     async def ask_sidecar(self, query: str, *, session_id: str | None = None) -> dict:
         cards: list[SidecarCard] = []
         sections: dict[str, list[dict]] = {
+            "company_refs": [],
             "prior_transcript": [],
-            "pas_past_work": [],
+            "technical_references": [],
             "current_public_web": [],
             "suggested_meeting_contribution": [],
         }
+        for mention in self.company_refs.mentions_for_query(query, limit=6):
+            card = company_mention_to_sidecar_card(
+                session_id or "",
+                mention,
+                explicitly_requested=True,
+                priority="normal",
+            )
+            card = replace(card, card_key=f"manual:{card.card_key}")
+            cards.append(card)
+            sections["company_refs"].append(card.to_dict())
         recall_hits = await self.recall.search(query, limit=8, manual=True)
         for hit in recall_hits:
             payload = hit.to_dict()
@@ -500,18 +508,12 @@ class SessionManager:
             card = recall_payload_to_sidecar_card(session_id or "", payload)
             card = replace(card, priority="high", card_key=f"manual:{card.card_key}")
             cards.append(card)
-            sections["prior_transcript"].append(card.to_dict())
-        work_cards = await asyncio.wait_for(
-            asyncio.to_thread(self.work_memory.search, query, 5, manual=True),
-            timeout=self.settings.work_memory_search_timeout_seconds,
-        )
-        for work_card in work_cards:
-            payload = work_card.to_search_hit().to_dict()
-            payload["explicitly_requested"] = True
-            card = recall_payload_to_sidecar_card(session_id or "", payload)
-            card = replace(card, priority="high", card_key=f"manual:{card.card_key}")
-            cards.append(card)
-            sections["pas_past_work"].append(card.to_dict())
+            section_key = (
+                "technical_references"
+                if hit.source_type in {"document_chunk", "file", "local_file"}
+                else "prior_transcript"
+            )
+            sections[section_key].append(card.to_dict())
         web_payload = await self.search_web_context(query, session_id=session_id)
         for raw_card in web_payload.get("cards", []):
             if isinstance(raw_card, dict):
@@ -535,15 +537,16 @@ class SessionManager:
                 )
                 cards.append(card)
                 sections["current_public_web"].append(card.to_dict())
-        if cards:
-            top = cards[0]
+        contribution_candidates = [card for card in cards if card.source_type != "company_ref"]
+        if contribution_candidates:
+            top = contribution_candidates[0]
             contribution = create_sidecar_card(
                 session_id=session_id or "",
                 category="contribution",
                 title="Suggested meeting contribution",
                 body="Use the highest-confidence source above to add a grounded point without overclaiming.",
                 suggested_say=top.suggested_say or f"I found relevant context in {top.title}; it may be worth checking against the current plan.",
-                why_now="BP explicitly asked Sidecar to combine local, work-memory, and public context.",
+                why_now="BP explicitly asked Sidecar to combine local technical references and public context.",
                 priority="high",
                 confidence=min(0.82, max(0.55, top.confidence)),
                 source_segment_ids=top.source_segment_ids,
@@ -751,6 +754,7 @@ class SessionManager:
                 payload={
                     "status": "listening",
                     "raw_audio_retained": False,
+                    "temporary_audio_retained": active.audio_spool is not None if active is not None else False,
                     **(self._pipeline_metrics(active) if active is not None else {}),
                     **(self._meeting_status(active) if active is not None else {}),
                 },
@@ -760,6 +764,9 @@ class SessionManager:
         try:
             async for chunk in capture.chunks():
                 total_bytes += len(chunk)
+                if active is not None and active.audio_spool is not None:
+                    active.audio_spool.write_pcm16(chunk)
+                    active.spooled_audio_bytes += len(chunk)
                 buffer.extend(chunk)
                 if self.settings.partial_transcripts_enabled and len(buffer) >= partial_bytes:
                     buffer_seconds = len(buffer) / bytes_per_second
@@ -786,63 +793,6 @@ class SessionManager:
             if buffer:
                 start_offset_s = max(0.0, (total_bytes / bytes_per_second) - (len(buffer) / bytes_per_second))
                 await self._enqueue_window(session_id, window_queue, AudioWindow(bytes(buffer), start_offset_s, final=True))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self._publish_error(session_id, str(exc), fatal=True)
-
-    async def _run_streaming_capture_loop(
-        self,
-        session_id: str,
-        capture: AudioCapture,
-        window_queue: asyncio.Queue[AudioWindow],
-    ) -> None:
-        bytes_per_second = self.settings.audio_sample_rate * 2
-        total_bytes = 0
-        chunker = StreamingPcmChunker(
-            sample_rate=self.settings.audio_sample_rate,
-            chunk_ms=self.settings.nemotron_chunk_ms,
-        )
-        active = self._active.get(session_id)
-
-        await self.bus.publish(
-            SidecarEvent(
-                type=EVENT_AUDIO_STATUS,
-                session_id=session_id,
-                payload={
-                    "status": "listening",
-                    "raw_audio_retained": False,
-                    **(self._pipeline_metrics(active) if active is not None else {}),
-                    **(self._meeting_status(active) if active is not None else {}),
-                },
-            )
-        )
-
-        try:
-            async for chunk in capture.chunks():
-                active = self._active.get(session_id)
-                if active is None:
-                    break
-                start_offset_s = total_bytes / bytes_per_second
-                total_bytes += len(chunk)
-                active.total_audio_offset_s = total_bytes / bytes_per_second
-                active.pcm_ring_buffer.append(chunk, start_offset_s)
-                for streaming_chunk in chunker.accept(chunk, start_offset_s):
-                    await self._enqueue_window(
-                        session_id,
-                        window_queue,
-                        AudioWindow(streaming_chunk.pcm, streaming_chunk.start_offset_s),
-                    )
-
-            active = self._active.get(session_id)
-            if active is not None:
-                for streaming_chunk in chunker.flush():
-                    await self._enqueue_window(
-                        session_id,
-                        window_queue,
-                        AudioWindow(streaming_chunk.pcm, streaming_chunk.start_offset_s),
-                    )
-                await self._enqueue_window(session_id, window_queue, AudioWindow(b"", active.total_audio_offset_s, final=True))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -944,72 +894,6 @@ class SessionManager:
                     await self._put_latest(postprocess_queue, batch)
             finally:
                 window_queue.task_done()
-
-    async def _run_streaming_transcription_loop(
-        self,
-        session_id: str,
-        window_queue: asyncio.Queue[AudioWindow],
-        postprocess_queue: asyncio.Queue[SegmentBatch],
-    ) -> None:
-        active = self._active.get(session_id)
-        if active is None:
-            return
-        stream = await self.transcriber.open_stream(session_id, start_offset_s=0.0)
-        active.streaming_session = stream
-        active.streaming_started_at = time.monotonic()
-        try:
-            while True:
-                window = await window_queue.get()
-                try:
-                    active = self._active.get(session_id)
-                    if active is None:
-                        return
-                    started_at = time.monotonic()
-                    active.transcriber_busy = True
-                    events: list[StreamingAsrEvent] = []
-                    if window.pcm:
-                        samples = np.frombuffer(window.pcm, dtype=np.int16).astype(np.float32) / 32768.0
-                        active.last_audio_rms = audio_rms(samples)
-                        events.extend(await stream.accept_pcm16(window.pcm, window.start_offset_s))
-                    if window.final:
-                        active.streaming_flush_count += 1
-                        events.extend(await stream.flush(final_offset_s=window.start_offset_s))
-                    elapsed_ms = round((time.monotonic() - started_at) * 1000, 1)
-                    active.streaming_latency_ms = elapsed_ms
-                    audio_seconds = len(window.pcm) / (self.settings.audio_sample_rate * 2) if window.pcm else 0.0
-                    if audio_seconds > 0:
-                        active.streaming_realtime_factor = round((elapsed_ms / 1000.0) / audio_seconds, 3)
-                    batch_segments: list[TranscriptSegment] = []
-                    refresh_notes = False
-                    for event in events:
-                        batch = await self._handle_streaming_asr_event(
-                            session_id,
-                            active,
-                            event,
-                            asr_duration_ms=elapsed_ms,
-                        )
-                        batch_segments.extend(batch.segments)
-                        refresh_notes = refresh_notes or batch.refresh_notes
-                    if batch_segments:
-                        await self._put_latest(
-                            postprocess_queue,
-                            SegmentBatch(segments=batch_segments, refresh_notes=refresh_notes),
-                        )
-                    elif window.pcm and not events:
-                        await self._record_empty_asr_window(session_id, active, asr_duration_ms=elapsed_ms)
-                    if window.final:
-                        return
-                finally:
-                    active = self._active.get(session_id)
-                    if active is not None:
-                        active.transcriber_busy = False
-                    window_queue.task_done()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self._publish_error(session_id, str(exc), fatal=True)
-        finally:
-            await stream.close()
 
     async def _transcribe_partial_window(self, session_id: str, window: AudioWindow) -> None:
         active = self._active.get(session_id)
@@ -1118,76 +1002,6 @@ class SessionManager:
             refresh_notes = refresh_notes or batch.refresh_notes
         return SegmentBatch(segments=segments, refresh_notes=refresh_notes)
 
-    async def _handle_streaming_asr_event(
-        self,
-        session_id: str,
-        active: ActiveSession,
-        event: StreamingAsrEvent,
-        *,
-        asr_duration_ms: float,
-    ) -> SegmentBatch:
-        if event.kind == "partial":
-            active.streaming_partial_count += 1
-            if not self.settings.streaming_partials_enabled:
-                return SegmentBatch(segments=[])
-            text_key = " ".join(event.text.lower().split())
-            if not text_key or text_key == active.last_partial_text:
-                return SegmentBatch(segments=[])
-            active.last_partial_text = text_key
-            segment = TranscriptSegment(
-                id=new_id("partial"),
-                session_id=session_id,
-                start_s=event.start_s,
-                end_s=event.end_s,
-                text=event.text,
-                is_final=False,
-            )
-            speaker_payload = {
-                "speaker_role": "unknown",
-                "speaker_label": "Unknown speaker",
-                "speaker_confidence": 0.0,
-                "speaker_match_reason": "streaming_partial",
-                "speaker_low_confidence": True,
-            }
-            await self.bus.publish(
-                SidecarEvent(
-                    type=EVENT_TRANSCRIPT_PARTIAL,
-                    session_id=session_id,
-                    payload=self._transcript_payload(
-                        active,
-                        segment,
-                        asr_model=event.model,
-                        is_final=False,
-                        speaker_payload=speaker_payload,
-                        asr_duration_ms=asr_duration_ms,
-                    ),
-                )
-            )
-            return SegmentBatch(segments=[])
-
-        active.streaming_final_count += 1
-        segment = TranscriptSegment(
-            id=new_id("seg"),
-            session_id=session_id,
-            start_s=event.start_s,
-            end_s=event.end_s,
-            text=event.text,
-        )
-        speaker_payload = self._speaker_payload_for_streaming_span(
-            active,
-            segment,
-            persist=active.save_transcript,
-        )
-        segment = _segment_with_speaker_payload(segment, speaker_payload)
-        return await self._accept_final_segment(
-            session_id,
-            active,
-            segment,
-            asr_model=event.model,
-            speaker_payload=speaker_payload,
-            asr_duration_ms=asr_duration_ms,
-        )
-
     async def _accept_final_segment(
         self,
         session_id: str,
@@ -1218,6 +1032,7 @@ class SessionManager:
         self._accept_transcript_segment(active, segment, replaces_segment_id=replaces_segment_id)
         if active.save_transcript:
             self.storage.upsert_transcript_segment(segment, replaces_segment_id=replaces_segment_id)
+        self._update_energy_lens_frame(active)
         active.last_partial_text = ""
         if not consolidation.collapsed:
             active.final_segment_count += 1
@@ -1264,12 +1079,16 @@ class SessionManager:
             "asr_model": asr_model,
             "speaker_identity_active": self.speaker_identity.status()["ready"],
             "save_transcript": active.save_transcript,
+            "persist_session": active.persist_session,
+            "temporary_audio_retained": active.audio_spool is not None,
             "transcript_retention": "saved" if active.save_transcript else "temporary",
             "raw_audio_retained": False,
             **speaker_payload,
         }
         if replaces_segment_id:
             payload["replaces_segment_id"] = replaces_segment_id
+        if is_final:
+            payload.update(self._energy_status(active))
         return payload
 
     def _pipeline_metrics(self, active: ActiveSession) -> dict:
@@ -1278,13 +1097,6 @@ class SessionManager:
             "dropped_windows": active.dropped_windows,
             "asr_backend": active.asr_backend,
             "asr_model": active.asr_model or self._asr_model_name(),
-            "asr_streaming_chunk_ms": active.streaming_chunk_ms,
-            "asr_streaming_queue_depth": active.window_queue.qsize() if active.asr_backend == ASR_BACKEND_NEMOTRON_STREAMING else None,
-            "asr_streaming_partial_count": active.streaming_partial_count,
-            "asr_streaming_final_count": active.streaming_final_count,
-            "asr_streaming_flush_count": active.streaming_flush_count,
-            "asr_streaming_latency_ms": active.streaming_latency_ms,
-            "asr_streaming_realtime_factor": active.streaming_realtime_factor,
             "partial_windows_enqueued": active.partial_windows_enqueued,
             "partial_windows_skipped_busy": active.partial_windows_skipped_busy,
             "partial_windows_skipped_queue": active.partial_windows_skipped_queue,
@@ -1308,6 +1120,22 @@ class SessionManager:
         return {
             "meeting_contract": active.meeting_contract.to_dict(),
             "meeting_diagnostics": active.meeting_diagnostics,
+            **self._energy_status(active),
+        }
+
+    def _energy_status(self, active: ActiveSession) -> dict[str, object]:
+        frame = active.energy_conversation_frame or inactive_energy_frame()
+        payload = frame.to_dict()
+        return {
+            "energy_lens_active": payload["active"],
+            "energy_lens_score": payload["score"],
+            "energy_lens_confidence": payload["confidence"],
+            "energy_lens_categories": [item["category"] for item in payload["top_categories"]],
+            "energy_lens_keywords": [item["phrase"] for item in payload["top_keywords"]],
+            "energy_lens_evidence_segment_ids": payload["evidence_segment_ids"],
+            "energy_lens_evidence_quote": payload["evidence_quote"],
+            "energy_lens_summary_label": payload["summary_label"],
+            "raw_audio_retained": False,
         }
 
     async def _record_empty_asr_window(
@@ -1369,6 +1197,16 @@ class SessionManager:
     def _sync_note_evidence_segments(self, active: ActiveSession) -> None:
         active.note_segments = self._transcript_consolidator_for(active).segments()[-48:]
 
+    def _update_energy_lens_frame(self, active: ActiveSession) -> None:
+        frame = self.energy_detector.detect(
+            active.note_segments[-12:] if active.note_segments else active.recent_segments[-12:],
+            meeting_contract=active.meeting_contract,
+            save_transcript=active.save_transcript,
+        )
+        active.energy_conversation_frame = frame
+        if frame.active:
+            active.energy_lens_last_active_at = time.time()
+
     def _new_note_quality_gate(self) -> NoteQualityGate:
         return NoteQualityGate(
             min_evidence_segments=self.settings.sidecar_min_evidence_segments,
@@ -1398,24 +1236,6 @@ class SessionManager:
         start_byte -= start_byte % 2
         end_byte -= end_byte % 2
         pcm = window.pcm[start_byte:end_byte]
-        return self._speaker_payload_for_pcm(active, segment, pcm, persist=persist)
-
-    def _speaker_payload_for_streaming_span(
-        self,
-        active: ActiveSession,
-        segment: TranscriptSegment,
-        *,
-        persist: bool,
-    ) -> dict:
-        pcm = active.pcm_ring_buffer.slice(segment.start_s, segment.end_s)
-        if len(pcm) < int(self.settings.audio_sample_rate * 2 * 0.25):
-            return {
-                "speaker_role": "unknown",
-                "speaker_label": "Unknown speaker",
-                "speaker_confidence": 0.0,
-                "speaker_match_reason": "streaming_pcm_slice_too_short",
-                "speaker_low_confidence": True,
-            }
         return self._speaker_payload_for_pcm(active, segment, pcm, persist=persist)
 
     def _speaker_payload_for_pcm(
@@ -1470,6 +1290,8 @@ class SessionManager:
                 for segment in batch.segments:
                     if save_transcript and not self.settings.disable_live_embeddings:
                         await self._safe_embed_transcript(segment)
+                if active is not None and batch.segments:
+                    await self._publish_company_reference_cards(session_id, active)
                 if active is not None and batch.refresh_notes:
                     await self._refresh_notes(session_id)
             finally:
@@ -1486,17 +1308,37 @@ class SessionManager:
         except Exception as exc:
             await self._publish_error(segment.session_id, f"Embedding skipped: {exc}", fatal=False)
 
+    async def _publish_company_reference_cards(self, session_id: str, active: ActiveSession) -> None:
+        if not self.settings.company_refs_enabled:
+            return
+        recent_segments = active.note_segments[-12:] if active.note_segments else active.recent_segments[-12:]
+        if not recent_segments:
+            return
+        try:
+            mentions = self.company_refs.match_segments(recent_segments)
+        except Exception as exc:
+            await self._publish_error(session_id, f"Company reference matching skipped: {exc}", fatal=False)
+            return
+        now = time.time()
+        duplicate_window = self.settings.company_refs_duplicate_window_seconds
+        for mention in mentions:
+            last_seen = active.company_ref_last_seen_by_ref_id.get(mention.ref_id)
+            if last_seen is not None and now - last_seen < duplicate_window:
+                continue
+            active.company_ref_last_seen_by_ref_id[mention.ref_id] = now
+            await self._publish_sidecar_card(company_mention_to_sidecar_card(session_id, mention))
+
     async def _refresh_notes(self, session_id: str) -> None:
         active = self._active.get(session_id)
         save_transcript = True if active is None else active.save_transcript
         if active is not None and active.note_segments:
-            recent_segments = active.note_segments[-12:]
+            recent_segments = active.note_segments[-24:]
         elif active is not None and active.recent_segments:
-            recent_segments = active.recent_segments[-10:]
+            recent_segments = active.recent_segments[-24:]
         else:
-            recent_segments = self.storage.recent_segments(session_id, limit=10)
+            recent_segments = self.storage.recent_segments(session_id, limit=24)
         source_segment_ids = source_ids_for_segments(recent_segments)
-        query = " ".join(segment.text for segment in recent_segments[-4:])
+        query = " ".join(segment.text for segment in recent_segments[-6:])
         self._maybe_enqueue_web_context(session_id, recent_segments)
         recall_hits = []
         note_context_hits = []
@@ -1520,27 +1362,27 @@ class SessionManager:
             except Exception as exc:
                 await self._publish_error(session_id, f"Recall search skipped: {exc}", fatal=False)
                 recall_hits = []
-            note_context_hits = [
-                hit for hit in recall_hits if hit.source_type not in {"work_memory", "work_memory_project"}
-            ]
+            note_context_hits = recall_hits
 
-        try:
-            work_cards = await asyncio.wait_for(
-                asyncio.to_thread(self.work_memory.search, query, 3),
-                timeout=self.settings.work_memory_search_timeout_seconds,
+        fast_cards = heuristic_meeting_cards(session_id, recent_segments)
+        if active is not None and active.energy_conversation_frame is not None:
+            energy_cards = self.energy_agent.cards(
+                session_id,
+                recent_segments,
+                active.energy_conversation_frame,
+                active.meeting_contract,
+                max_cards=self.settings.energy_lens_max_cards_per_pass,
             )
-            for card in work_cards:
-                if save_transcript:
-                    self.work_memory.record_recall_event(session_id, card, query)
-                hit = card.to_search_hit()
-                payload = hit.to_dict()
-                payload["source_segment_ids"] = source_segment_ids
-                await self.bus.publish(
-                    SidecarEvent(type=EVENT_RECALL_HIT, session_id=session_id, payload=payload)
-                )
-                await self._publish_sidecar_card(self._sidecar_card_from_recall_payload(session_id, payload))
-        except Exception as exc:
-            await self._publish_error(session_id, f"Work memory recall skipped: {exc}", fatal=False)
+            if energy_cards:
+                active.energy_lens_last_card_at = time.time()
+                fast_cards = [*energy_cards, *fast_cards]
+        await self._publish_accepted_generated_cards(
+            session_id,
+            active,
+            fast_cards,
+            recent_segments,
+            save_transcript=save_transcript,
+        )
 
         try:
             synthesize_params = inspect.signature(self.notes.synthesize).parameters
@@ -1549,12 +1391,33 @@ class SessionManager:
                 if active is not None and "meeting_contract" in synthesize_params
                 else {}
             )
+            if active is not None and "energy_frame" in synthesize_params:
+                synthesize_kwargs["energy_frame"] = active.energy_conversation_frame
             result = await self.notes.synthesize(session_id, recent_segments, note_context_hits, **synthesize_kwargs)
         except Exception as exc:
             await self._publish_error(session_id, f"Note synthesis failed: {exc}")
             return
 
         generated_cards = self._cards_from_note_result(session_id, result, save_transcript=save_transcript)
+        await self._publish_accepted_generated_cards(
+            session_id,
+            active,
+            generated_cards,
+            recent_segments,
+            save_transcript=save_transcript,
+        )
+
+    async def _publish_accepted_generated_cards(
+        self,
+        session_id: str,
+        active: ActiveSession | None,
+        generated_cards: list[SidecarCard],
+        recent_segments: list[TranscriptSegment],
+        *,
+        save_transcript: bool,
+    ) -> None:
+        if not generated_cards:
+            return
         accepted_cards = self._accepted_generated_cards(active, generated_cards, recent_segments)
         for card in accepted_cards:
             note = note_from_sidecar(card)
@@ -1635,14 +1498,13 @@ class SessionManager:
     def _sidecar_card_from_recall_payload(self, session_id: str, payload: dict) -> SidecarCard:
         return recall_payload_to_sidecar_card(session_id, payload)
 
-    def _web_context_configured(self) -> bool:
-        return self.settings.web_context_enabled and bool(self.settings.brave_search_api_key.strip())
+    def _web_context_configured(self, active: ActiveSession | None = None) -> bool:
+        enabled = active.web_context_enabled if active is not None else self.settings.web_context_enabled
+        return enabled and bool(self.settings.brave_search_api_key.strip())
 
     def _maybe_enqueue_web_context(self, session_id: str, recent_segments: list[TranscriptSegment]) -> None:
-        if not self._web_context_configured():
-            return
         active = self._active.get(session_id)
-        if active is None or active.web_context_queue is None:
+        if active is None or active.web_context_queue is None or not self._web_context_configured(active):
             return
         decision = self.web_trigger_detector.decision_for_segments(recent_segments)
         candidate = decision.candidate
@@ -1677,7 +1539,7 @@ class SessionManager:
                 active = self._active.get(session_id)
                 if active is not None:
                     active.web_context_pending_queries.discard(candidate.normalized_query)
-                if active is None or not self._web_context_configured():
+                if active is None or not self._web_context_configured(active):
                     continue
                 if candidate.normalized_query in active.web_context_seen_queries:
                     continue
@@ -1737,7 +1599,9 @@ class SessionManager:
 
     async def _publish_error(self, session_id: str, message: str, *, fatal: bool = False) -> None:
         if fatal:
-            self.storage.set_session_status(session_id, "error", ended_at=time.time())
+            active = self._active.get(session_id)
+            if active is None or active.persist_session:
+                self.storage.set_session_status(session_id, "error", ended_at=time.time())
         await self.bus.publish(
             SidecarEvent(type=EVENT_ERROR, session_id=session_id, payload={"message": message, "fatal": fatal})
         )
@@ -1780,12 +1644,14 @@ def _segment_with_speaker_payload(segment: TranscriptSegment, payload: dict) -> 
         speaker_role=payload.get("speaker_role") or segment.speaker_role,
         speaker_label=payload.get("speaker_label") or segment.speaker_label,
         speaker_confidence=payload.get("speaker_confidence") if payload.get("speaker_confidence") is not None else segment.speaker_confidence,
+        speaker_match_score=payload.get("speaker_match_score") if payload.get("speaker_match_score") is not None else segment.speaker_match_score,
         speaker_match_reason=payload.get("speaker_match_reason") or segment.speaker_match_reason,
         speaker_low_confidence=(
             bool(payload.get("speaker_low_confidence"))
             if payload.get("speaker_low_confidence") is not None
             else segment.speaker_low_confidence
         ),
+        diarization_speaker_id=payload.get("diarization_speaker_id") or segment.diarization_speaker_id,
     )
 
 
@@ -1948,18 +1814,14 @@ def _card_key(prefix: str, category: str, source_type: str, title: str, source_s
 
 
 def _source_title(source_type: str) -> str:
-    if source_type == "work_memory_project":
-        return "Relevant past work"
     if source_type in {"session", "transcript_segment"}:
         return "Relevant prior transcript"
     if source_type in {"file", "document_chunk"}:
-        return "Relevant local note"
+        return "Relevant technical reference"
     return "Relevant memory"
 
 
 def _card_source_type(source_type: str) -> str:
-    if source_type == "work_memory_project":
-        return "work_memory"
     if source_type in {"session", "transcript_segment"}:
         return "saved_transcript"
     if source_type in {"file", "document_chunk"}:

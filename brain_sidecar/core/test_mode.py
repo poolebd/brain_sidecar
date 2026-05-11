@@ -12,7 +12,7 @@ from brain_sidecar.config import Settings
 from brain_sidecar.core.models import new_id
 
 
-SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".m4a", ".mp3", ".ogg", ".flac"}
+SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".m4a", ".mp3", ".aac", ".mp4", ".ogg", ".flac", ".webm"}
 
 
 @dataclass(frozen=True)

@@ -33,7 +33,7 @@ def create_sidecar_card(
     suggested_say: object = None,
     suggested_ask: object = None,
     priority: object = "normal",
-    confidence: object = 0.6,
+    confidence: object = None,
     sources: object = None,
     citations: object = None,
     ephemeral: bool = True,
@@ -136,7 +136,7 @@ def recall_payload_to_sidecar_card(session_id: str, payload: dict[str, Any]) -> 
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     raw_source_type = str(payload.get("source_type") or "saved_transcript")
     source_type = normalize_sidecar_source_type(raw_source_type)
-    category = "work_memory" if source_type == "work_memory" else "memory"
+    category = "memory"
     source_id = str(payload.get("source_id") or "")
     score = clamp_confidence(payload.get("score"), default=0.65)
     reason = str(metadata.get("why_now") or metadata.get("reason") or metadata.get("retrieval_reason") or "").strip()
@@ -146,9 +146,7 @@ def recall_payload_to_sidecar_card(session_id: str, payload: dict[str, Any]) -> 
     suggested_say = metadata.get("suggested_say") or metadata.get("suggested_contribution")
     priority = metadata.get("priority")
     if not priority:
-        if source_type == "work_memory" and score < 0.45:
-            priority = "low"
-        elif score >= 0.88:
+        if score >= 0.88:
             priority = "high"
         else:
             priority = "normal"
@@ -169,6 +167,41 @@ def recall_payload_to_sidecar_card(session_id: str, payload: dict[str, Any]) -> 
         ephemeral=True,
         card_key=f"recall:{raw_source_type}:{source_id}",
         explicitly_requested=bool(payload.get("explicitly_requested") or metadata.get("explicitly_requested")),
+    )
+
+
+def company_mention_to_sidecar_card(
+    session_id: str,
+    mention: Any,
+    *,
+    explicitly_requested: bool = False,
+    priority: str | None = None,
+) -> SidecarCard:
+    domain = compact_text(getattr(mention, "domain", ""), limit=180)
+    description = compact_text(getattr(mention, "description", ""), limit=620)
+    body = description
+    if domain:
+        body = f"{description} Domain: {domain}."
+    return create_sidecar_card(
+        session_id=session_id,
+        category="reference",
+        title=getattr(mention, "canonical_name", "") or "Company reference",
+        body=body,
+        why_now=(
+            "Returned because BP explicitly asked for local company reference context."
+            if explicitly_requested
+            else default_why_now("reference", "company_ref")
+        ),
+        priority=priority or ("normal" if explicitly_requested else "low"),
+        confidence=getattr(mention, "confidence", 0.70),
+        source_segment_ids=getattr(mention, "source_segment_ids", []) or [],
+        source_type="company_ref",
+        sources=getattr(mention, "sources", []) or [],
+        citations=[],
+        ephemeral=True,
+        card_key=f"company_ref:{getattr(mention, 'ref_id', '')}",
+        explicitly_requested=explicitly_requested,
+        evidence_quote=getattr(mention, "evidence_quote", "") or "",
     )
 
 
@@ -217,7 +250,7 @@ def default_title(category: str) -> str:
         "clarification": "Clarify",
         "contribution": "Say this",
         "memory": "Relevant prior transcript",
-        "work_memory": "Relevant past work",
+        "reference": "Company reference",
         "web": "Current public web",
         "status": "Sidecar status",
     }.get(category, "Sidecar note")
@@ -234,18 +267,22 @@ def default_priority(category: str) -> str:
 def default_confidence(category: str) -> float:
     if category in {"status", "note"}:
         return 0.55
-    if category in {"web", "work_memory", "memory"}:
+    if category == "reference":
+        return 0.70
+    if category in {"web", "memory"}:
         return 0.72
     return 0.68
 
 
 def default_why_now(category: str, source_type: str) -> str:
+    if source_type == "company_ref":
+        return "This name or acronym appeared in the current transcript; this is local reference context only."
     if source_type == "brave_web":
         return "Sanitized public/current web context matched the meeting question."
-    if source_type == "work_memory":
-        return "Past-work context overlaps with the current discussion."
     if source_type == "saved_transcript":
         return "Saved transcript history overlaps with the current discussion."
+    if source_type == "local_file":
+        return "Local technical reference context overlaps with the current discussion."
     if category == "action":
         return "Recent speech contains a possible follow-up or owner."
     if category == "decision":
@@ -262,12 +299,12 @@ def default_why_now(category: str, source_type: str) -> str:
 
 
 def source_title(source_type: str) -> str:
-    if source_type == "work_memory_project":
-        return "Relevant past work"
     if source_type in {"session", "transcript_segment", "session_summary"}:
         return "Relevant prior transcript"
     if source_type in {"file", "document_chunk"}:
-        return "Relevant local note"
+        return "Relevant technical reference"
+    if source_type == "company_ref":
+        return "Company reference"
     return "Relevant memory"
 
 

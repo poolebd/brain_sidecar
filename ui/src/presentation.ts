@@ -25,8 +25,7 @@ export type SidecarCategory =
   | "clarification"
   | "contribution"
   | "memory"
-  | "work"
-  | "work_memory"
+  | "reference"
   | "web"
   | "status"
   | "note";
@@ -66,6 +65,30 @@ export type SidecarDisplayCard = {
   debugMetadata?: Record<string, unknown>;
 };
 
+export type LiveSignalKind =
+  | "thread"
+  | "attention"
+  | "question"
+  | "action"
+  | "risk"
+  | "decision"
+  | "suggestion";
+
+export type LiveSignal = {
+  id: string;
+  kind: LiveSignalKind;
+  title: string;
+  body: string;
+  evidenceQuote: string;
+  sourceEventIds: string[];
+  sourceSegmentIds: string[];
+  priority: SidecarPriority;
+  provisional: boolean;
+  at: number;
+  suggestedSay?: string;
+  suggestedAsk?: string;
+};
+
 export type SidecarFilterOptions = {
   maxCards?: number;
   minScore?: number;
@@ -82,7 +105,7 @@ export type MeetingOutputGroups = Record<MeetingOutputBucket, SidecarDisplayCard
 
 export type SidecarQualityMetrics = {
   acceptedCurrentCount: number;
-  workMemoryCount: number;
+  contextCount: number;
   manualCount: number;
   sourceIdCoverage: number;
   evidenceQuoteCoverage: number;
@@ -106,6 +129,17 @@ const HIGH_CONFIDENCE_USER_SPEAKER = 0.85;
 const DEFAULT_MIN_SCORE = 0.65;
 const RECENT_TRANSCRIPT_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_CARDS = 3;
+const DEFAULT_LIVE_SIGNAL_WINDOW_MS = 90_000;
+const DEFAULT_MAX_LIVE_SIGNALS = 5;
+const LIVE_SIGNAL_EVIDENCE_CHARS = 220;
+const DEFAULT_ADDRESSED_TO_NAMES = ["Brandon", "Brandon Poole", "BP"];
+const QUESTION_SIGNAL_RE = /(\?|(?:\bcan\s+we\b|\bshould\s+we\b|\bdo\s+we\b|\bare\s+we\b|\bwho\s+owns\b|\bwhat\b|\bwhen\b|\bwhere\b|\bwhy\b|\bhow\b|\bclarify\b|\bconfirm\b))/i;
+const ACTION_SIGNAL_RE = /\b(?:please|need\s+to|needs\s+to|will|i'?ll|i\s+will|we\s+should|send|review|confirm|follow\s+up|schedule|own(?:s|ed|er|ership)?)\b/i;
+const RISK_SIGNAL_RE = /\b(?:risk|blocked|blocking|dependency|depends\s+on|waiting\s+on|deadline|constraint|issue|concern|assumption)\b/i;
+const DECISION_SIGNAL_RE = /\b(?:decided|decision|agreed|approved|settled|sign-?off|we\s+will\s+proceed)\b/i;
+const DIRECT_ADDRESS_PREFIX_RE = "(?:hey|hi|hello|ok|okay|alright|all\\s+right)";
+const DIRECT_ADDRESS_REQUEST_RE = "(?:can|could|would|will\\s+you|please|do\\s+you|are\\s+you|have\\s+you|should\\s+you|need\\s+you|confirm|clarify|review|send|own|take|answer|handle|check|follow\\s+up)";
+const DIRECT_ADDRESS_THIRD_PERSON_RE = "(?:is|was|has|had|goes|said|says)\\b";
 
 export function getTranscriptDisplayLabel(event: TranscriptEvent): string {
   if (event.source === "typed") {
@@ -204,13 +238,12 @@ export function isCurrentMeetingCard(card: SidecarDisplayCard): boolean {
   return sourceType === "transcript" || sourceType === "model_fallback";
 }
 
-export function isWorkMemoryCard(card: SidecarDisplayCard): boolean {
-  const sourceType = card.sourceType ?? String(card.debugMetadata?.sourceType ?? "");
-  return card.category === "work_memory" || sourceType === "work_memory" || sourceType === "work_memory_project";
-}
-
 export function isManualCard(card: SidecarDisplayCard): boolean {
   return Boolean(card.explicitlyRequested);
+}
+
+export function isCompanyReferenceCard(card: SidecarDisplayCard): boolean {
+  return card.sourceType === "company_ref" || card.category === "reference";
 }
 
 export function displaySourceLabel(sourceType: string, explicitlyRequested = false): string {
@@ -218,12 +251,12 @@ export function displaySourceLabel(sourceType: string, explicitlyRequested = fal
   let label = "Local memory";
   if (normalized === "transcript" || normalized === "model_fallback") {
     label = "Current meeting";
-  } else if (normalized === "work_memory" || normalized === "work_memory_project") {
-    label = "Work memory";
   } else if (normalized === "saved_transcript" || normalized === "session") {
     label = "Past transcript";
   } else if (["local_file", "file", "document_chunk"].includes(normalized)) {
-    label = "Local file";
+    label = "Technical reference";
+  } else if (normalized === "company_ref") {
+    label = "Company reference";
   } else if (normalized === "brave_web" || normalized === "web") {
     label = "Web";
   }
@@ -231,11 +264,11 @@ export function displaySourceLabel(sourceType: string, explicitlyRequested = fal
 }
 
 export function qualityLabelForCard(card: SidecarDisplayCard): string {
+  if (isCompanyReferenceCard(card)) {
+    return "Reference context";
+  }
   if (isCurrentMeetingCard(card) && card.evidenceQuote && (card.sourceSegmentIds?.length ?? 0) > 0) {
     return "Evidence-backed";
-  }
-  if (isWorkMemoryCard(card)) {
-    return "Memory context";
   }
   if (card.explicitlyRequested) {
     return "Manual result";
@@ -250,7 +283,7 @@ export function buildSidecarQualityMetrics(cards: SidecarDisplayCard[]): Sidecar
   const currentCards = cards.filter(isCurrentMeetingCard);
   return {
     acceptedCurrentCount: currentCards.length,
-    workMemoryCount: cards.filter(isWorkMemoryCard).length,
+    contextCount: cards.filter((card) => !isCurrentMeetingCard(card) && !isManualCard(card)).length,
     manualCount: cards.filter(isManualCard).length,
     sourceIdCoverage: percentWith(currentCards, (card) => (card.sourceSegmentIds?.length ?? 0) > 0),
     evidenceQuoteCoverage: percentWith(currentCards, (card) => Boolean(card.evidenceQuote?.trim())),
@@ -263,10 +296,8 @@ export function buildConsultingBriefMarkdown(
   contract?: MeetingContractBrief | null,
 ): string {
   const currentCards = cards.filter((card) => isCurrentMeetingCard(card) && !card.provisional);
-  const memoryCards = cards.filter((card) => isWorkMemoryCard(card) && !card.provisional);
   const contextCards = cards.filter((card) => (
     !isCurrentMeetingCard(card)
-    && !isWorkMemoryCard(card)
     && !isManualCard(card)
     && !card.provisional
   ));
@@ -281,12 +312,97 @@ export function buildConsultingBriefMarkdown(
   appendBriefSection(lines, "Risks", groups.risks);
   appendSuggestedLanguageSection(lines, currentCards);
   appendBriefSection(lines, "Other Meeting Notes", groups.notes);
-  appendBriefSection(lines, "Relevant Work Memory", memoryCards, { memory: true });
-  appendBriefSection(lines, "Past / Web Context", contextCards, { memory: true });
+  appendBriefSection(lines, "Technical References / Web Context", contextCards, { memory: true });
   appendBriefSection(lines, "Manual Query Results", manualCards, { memory: true });
   appendEvidenceIndex(lines, currentCards);
 
   return `${lines.join("\n").trim()}\n`;
+}
+
+export function buildLiveSignals(
+  transcriptEvents: TranscriptEvent[],
+  cards: SidecarDisplayCard[],
+  options: {
+    now?: number;
+    windowMs?: number;
+    maxSignals?: number;
+    addressedToNames?: string[];
+  } = {},
+): LiveSignal[] {
+  const now = options.now ?? Date.now();
+  const windowMs = options.windowMs ?? DEFAULT_LIVE_SIGNAL_WINDOW_MS;
+  const maxSignals = Math.max(0, options.maxSignals ?? DEFAULT_MAX_LIVE_SIGNALS);
+  const addressedToNames = addressedToNamesForSignals(options.addressedToNames);
+  const recentEvents = transcriptEvents
+    .filter((event) => event.text.trim() && now - event.at <= windowMs)
+    .sort((left, right) => left.at - right.at);
+  const finalEvents = recentEvents.filter((event) => event.isFinal);
+  const partialEvents = recentEvents.filter((event) => !event.isFinal);
+  const signals: LiveSignal[] = [];
+  const seen = new Set<string>();
+
+  for (const event of [...finalEvents].reverse()) {
+    const text = event.text.trim();
+    if (isAddressedToMeEvent(event, addressedToNames)) {
+      appendSignal(signals, seen, signalFromTranscript(event, "attention", {
+        title: "Addressed to me",
+        body: "Someone appears to be speaking to Brandon/BP.",
+        priority: "high",
+      }));
+    }
+    if (QUESTION_SIGNAL_RE.test(text)) {
+      appendSignal(signals, seen, signalFromTranscript(event, "question", {
+        title: "Clarification cue",
+        body: "A question or clarification is active in the latest transcript.",
+        priority: "normal",
+      }));
+    }
+    if (hasActionSignalCue(text)) {
+      appendSignal(signals, seen, signalFromTranscript(event, "action", {
+        title: "Action cue",
+        body: "A follow-up, owner, or timing cue appeared in the transcript.",
+        priority: "high",
+      }));
+    }
+    if (RISK_SIGNAL_RE.test(text)) {
+      appendSignal(signals, seen, signalFromTranscript(event, "risk", {
+        title: "Risk cue",
+        body: "A risk, blocker, dependency, or assumption needs attention.",
+        priority: "high",
+      }));
+    }
+    if (DECISION_SIGNAL_RE.test(text)) {
+      appendSignal(signals, seen, signalFromTranscript(event, "decision", {
+        title: "Decision cue",
+        body: "The transcript sounds like a decision or approval was stated.",
+        priority: "high",
+      }));
+    }
+    if (signals.length >= maxSignals) {
+      break;
+    }
+  }
+
+  for (const card of [...cards].sort(compareSidecarCards)) {
+    const signal = signalFromCard(card);
+    if (signal) {
+      appendSignal(signals, seen, signal);
+    }
+    if (signals.length >= maxSignals) {
+      break;
+    }
+  }
+
+  const thread = finalEvents.length > 0
+    ? signalFromThread(finalEvents.slice(-4), false)
+    : partialEvents.length > 0
+      ? signalFromThread([partialEvents[partialEvents.length - 1]], true)
+      : null;
+  if (thread) {
+    appendSignal(signals, seen, thread);
+  }
+
+  return signals.slice(0, maxSignals);
 }
 
 export function buildLiveFieldRows(
@@ -349,6 +465,184 @@ export function normalizeDisplayText(text: string): string {
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function appendSignal(signals: LiveSignal[], seen: Set<string>, signal: LiveSignal | null): void {
+  if (!signal || !signal.evidenceQuote.trim()) {
+    return;
+  }
+  const key = `${signal.kind}:${normalizeDisplayText(signal.evidenceQuote)}`;
+  if (!key || seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  signals.push(signal);
+}
+
+function hasActionSignalCue(text: string): boolean {
+  const normalized = text.replace(/\brate\s+schedule\b/gi, "rate profile");
+  return ACTION_SIGNAL_RE.test(normalized);
+}
+
+function addressedToNamesForSignals(names: string[] | undefined): string[] {
+  const requestedNames = names && names.length > 0 ? names : DEFAULT_ADDRESSED_TO_NAMES;
+  return uniqueStrings(
+    requestedNames
+      .map((name) => name.trim())
+      .filter((name) => name.length >= 2),
+  ).sort((left, right) => right.length - left.length);
+}
+
+function isAddressedToMeEvent(event: TranscriptEvent, addressedToNames: string[]): boolean {
+  return event.isFinal
+    && event.source === "microphone"
+    && event.speakerRole !== "user"
+    && hasDirectAddressCue(event.text, addressedToNames);
+}
+
+function hasDirectAddressCue(text: string, addressedToNames: string[]): boolean {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return false;
+  }
+  for (const name of addressedToNames) {
+    const namePattern = nameRegexSource(name);
+    const optionalPrefix = `(?:${DIRECT_ADDRESS_PREFIX_RE}\\s+)?`;
+    const startName = `${optionalPrefix}\\b${namePattern}\\b`;
+    const punctuatedVocative = new RegExp(`^${startName}\\s*[,;:!-]\\s*(?!${DIRECT_ADDRESS_THIRD_PERSON_RE})\\S+`, "i");
+    const requestAfterName = new RegExp(`^${startName}\\s+${DIRECT_ADDRESS_REQUEST_RE}\\b`, "i");
+    const greetingOnly = new RegExp(`^\\s*(?:hey|hi|hello)\\s+\\b${namePattern}\\b(?:\\s*[,;:!-]|\\s*$|\\s+${DIRECT_ADDRESS_REQUEST_RE}\\b)`, "i");
+    const trailingVocative = new RegExp(`\\b${DIRECT_ADDRESS_REQUEST_RE}\\b[^.!?]{0,120}\\b${namePattern}\\b\\s*[?.!,]?$`, "i");
+    if (
+      punctuatedVocative.test(clean)
+      || requestAfterName.test(clean)
+      || greetingOnly.test(clean)
+      || trailingVocative.test(clean)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function nameRegexSource(name: string): string {
+  return name
+    .trim()
+    .split(/\s+/)
+    .map(escapeRegex)
+    .join("\\s+");
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function signalFromTranscript(
+  event: TranscriptEvent,
+  kind: Exclude<LiveSignalKind, "thread" | "suggestion">,
+  details: {
+    title: string;
+    body: string;
+    priority: SidecarPriority;
+  },
+): LiveSignal {
+  const evidenceQuote = compactSignalText(event.text);
+  return {
+    id: stableLiveSignalId(kind, event.id, evidenceQuote),
+    kind,
+    title: details.title,
+    body: details.body,
+    evidenceQuote,
+    sourceEventIds: [event.id],
+    sourceSegmentIds: sourceSegmentIdsForEvent(event),
+    priority: details.priority,
+    provisional: false,
+    at: event.at,
+  };
+}
+
+function signalFromCard(card: SidecarDisplayCard): LiveSignal | null {
+  if (!card.suggestedAsk && !card.suggestedSay) {
+    return null;
+  }
+  const evidenceQuote = compactSignalText(card.evidenceQuote ?? "");
+  if (!evidenceQuote) {
+    return null;
+  }
+  return {
+    id: stableLiveSignalId("suggestion", card.cardKey ?? card.id, evidenceQuote),
+    kind: "suggestion",
+    title: card.title || "Suggested contribution",
+    body: card.suggestedAsk ? "Suggested ask from current meeting evidence." : "Suggested say-this from current meeting evidence.",
+    evidenceQuote,
+    sourceEventIds: [],
+    sourceSegmentIds: [...(card.sourceSegmentIds ?? [])],
+    priority: card.priority ?? "normal",
+    provisional: Boolean(card.provisional),
+    at: card.at,
+    suggestedAsk: card.suggestedAsk,
+    suggestedSay: card.suggestedSay,
+  };
+}
+
+function signalFromThread(events: TranscriptEvent[], provisional: boolean): LiveSignal | null {
+  const usableEvents = events.filter((event) => event.text.trim());
+  if (usableEvents.length === 0) {
+    return null;
+  }
+  const latest = usableEvents[usableEvents.length - 1];
+  const evidenceQuote = compactSignalText(usableEvents.map((event) => event.text).join(" "));
+  if (!evidenceQuote) {
+    return null;
+  }
+  return {
+    id: stableLiveSignalId("thread", latest.id, evidenceQuote),
+    kind: "thread",
+    title: provisional ? "Live preview" : "Current thread",
+    body: evidenceQuote,
+    evidenceQuote,
+    sourceEventIds: usableEvents.map((event) => event.id),
+    sourceSegmentIds: uniqueStrings(usableEvents.flatMap(sourceSegmentIdsForEvent)),
+    priority: "low",
+    provisional,
+    at: latest.at,
+  };
+}
+
+function sourceSegmentIdsForEvent(event: TranscriptEvent): string[] {
+  return uniqueStrings([
+    event.segmentId,
+    ...(event.sourceSegmentIds ?? []),
+  ].filter(Boolean) as string[]);
+}
+
+function compactSignalText(text: string, limit = LIVE_SIGNAL_EVIDENCE_CHARS): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= limit) {
+    return clean;
+  }
+  const boundary = clean.lastIndexOf(" ", limit - 3);
+  const end = boundary > 80 ? boundary : limit - 3;
+  return `${clean.slice(0, end).trim()}...`;
+}
+
+function stableLiveSignalId(kind: LiveSignalKind, sourceId: string, evidenceQuote: string): string {
+  const evidence = normalizeDisplayText(evidenceQuote).slice(0, 72).replace(/\s+/g, "-");
+  const source = normalizeDisplayText(sourceId).slice(0, 48).replace(/\s+/g, "-") || "source";
+  return `signal:${kind}:${source}:${evidence || "evidence"}`;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
 }
 
 function isDisplayWorthy(card: SidecarDisplayCard, recentTranscript: string, minScore: number): boolean {
@@ -470,9 +764,9 @@ function cardRank(card: SidecarDisplayCard): number {
     ? 42
     : card.category === "web"
       ? 36
-      : card.category === "work" || card.category === "work_memory"
-        ? 32
-        : ["action", "decision", "risk", "clarification", "contribution"].includes(card.category)
+      : card.category === "reference"
+        ? 34
+      : ["action", "decision", "risk", "clarification", "contribution"].includes(card.category)
           ? 44
           : 20;
   const relevance = typeof card.score === "number" && Number.isFinite(card.score)

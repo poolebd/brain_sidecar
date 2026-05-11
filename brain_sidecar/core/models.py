@@ -14,7 +14,7 @@ SIDECAR_CATEGORIES = {
     "clarification",
     "contribution",
     "memory",
-    "work_memory",
+    "reference",
     "web",
     "status",
     "note",
@@ -23,8 +23,8 @@ SIDECAR_PRIORITIES = {"low", "normal", "high"}
 SIDECAR_SOURCE_TYPES = {
     "transcript",
     "saved_transcript",
-    "work_memory",
     "brave_web",
+    "company_ref",
     "local_file",
     "model_fallback",
 }
@@ -36,8 +36,6 @@ def new_id(prefix: str) -> str:
 
 def normalize_sidecar_category(value: object, *, default: str = "note") -> str:
     category = str(value or default).strip().lower().replace("-", "_")
-    if category == "work":
-        category = "work_memory"
     return category if category in SIDECAR_CATEGORIES else default
 
 
@@ -49,7 +47,6 @@ def normalize_sidecar_priority(value: object, *, default: str = "normal") -> str
 def normalize_sidecar_source_type(value: object, *, default: str = "transcript") -> str:
     source_type = str(value or default).strip().lower().replace("-", "_")
     aliases = {
-        "work_memory_project": "work_memory",
         "document_chunk": "local_file",
         "file": "local_file",
         "session": "saved_transcript",
@@ -129,8 +126,10 @@ class TranscriptSegment:
     speaker_role: str | None = None
     speaker_label: str | None = None
     speaker_confidence: float | None = None
+    speaker_match_score: float | None = None
     speaker_match_reason: str | None = None
     speaker_low_confidence: bool | None = None
+    diarization_speaker_id: str | None = None
     source_segment_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -149,10 +148,14 @@ class TranscriptSegment:
             payload["speaker_label"] = self.speaker_label
         if self.speaker_confidence is not None:
             payload["speaker_confidence"] = self.speaker_confidence
+        if self.speaker_match_score is not None:
+            payload["speaker_match_score"] = self.speaker_match_score
         if self.speaker_match_reason:
             payload["speaker_match_reason"] = self.speaker_match_reason
         if self.speaker_low_confidence is not None:
             payload["speaker_low_confidence"] = self.speaker_low_confidence
+        if self.diarization_speaker_id:
+            payload["diarization_speaker_id"] = self.diarization_speaker_id
         if self.source_segment_ids:
             payload["source_segment_ids"] = self.source_segment_ids
         return payload

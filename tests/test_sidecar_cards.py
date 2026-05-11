@@ -66,3 +66,20 @@ def test_note_payload_card_key_is_stable_for_legacy_dedupe() -> None:
 
     assert card.card_key == "note:question:clarify rollback"
     assert card.ephemeral is True
+
+
+def test_company_reference_category_and_source_type_normalize() -> None:
+    card = create_sidecar_card(
+        session_id="ses_1",
+        category="reference",
+        title="Siemens",
+        body="Industrial technology company with grid businesses.",
+        why_now="Local reference context only.",
+        source_type="company_ref",
+        source_segment_ids=["seg_1"],
+        evidence_quote="We need Siemens to answer.",
+    )
+
+    assert card.category == "reference"
+    assert card.source_type == "company_ref"
+    assert card.confidence == 0.70

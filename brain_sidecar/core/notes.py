@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from brain_sidecar.core.domain_keywords import EnergyConversationFrame
 from brain_sidecar.core.meeting_agents import MemoryBoundaryAgent, deterministic_meeting_cards
 from brain_sidecar.core.meeting_contract import MeetingContract, contract_prompt_block
 from brain_sidecar.core.models import NoteCard, SearchHit, SidecarCard, TranscriptSegment, compact_text, new_id
@@ -36,6 +37,7 @@ class NoteSynthesizer:
         recent_segments: list[TranscriptSegment],
         recall_hits: list[SearchHit],
         meeting_contract: MeetingContract | None = None,
+        energy_frame: EnergyConversationFrame | None = None,
     ) -> NoteSynthesisResult:
         if not recent_segments:
             return NoteSynthesisResult(notes=[])
@@ -56,8 +58,10 @@ class NoteSynthesizer:
             "something unless speaker_role=user with adequate confidence. If evidence is weak, return no cards."
         )
         contract_block = contract_prompt_block(meeting_contract)
+        energy_block = energy_prompt_block(energy_frame)
         user = f"""
 {contract_block}
+{energy_block}
 
 Transcript:
 {transcript}
@@ -85,7 +89,7 @@ Return JSON only:
 {{
   "cards": [
     {{
-      "category": "action|decision|question|risk|clarification|contribution|memory|work_memory|web|status|note",
+      "category": "action|decision|question|risk|clarification|contribution|memory|web|status|note",
       "title": "short title",
       "body": "one or two grounded sentences",
       "suggested_say": "optional concise sentence BP could say",
@@ -211,6 +215,20 @@ def heuristic_meeting_cards(session_id: str, recent_segments: list[TranscriptSeg
     return cards[:5]
 
 
+def energy_prompt_block(frame: EnergyConversationFrame | None) -> str:
+    if frame is None or not frame.active:
+        return ""
+    categories = ", ".join(str(item.get("category")) for item in frame.top_categories[:3]) or "unknown"
+    keywords = ", ".join(str(item.get("phrase")) for item in frame.top_keywords[:6]) or "unknown"
+    return f"""
+Energy consulting lens active.
+- Top categories: {categories}
+- Top keywords: {keywords}
+- Evidence quote: {frame.evidence_quote}
+- Use this only to choose better ask/say/do/watch cards. Do not turn keyword matches into facts. Current transcript evidence still controls what can be stated.
+"""
+
+
 def heuristic_project_review_cards(session_id: str, recent_segments: list[TranscriptSegment]) -> list[SidecarCard]:
     combined = " ".join(segment.text for segment in recent_segments)
     clean = combined.lower()
@@ -236,15 +254,29 @@ def heuristic_project_review_cards(session_id: str, recent_segments: list[Transc
                 priority="high",
             )
         )
-    if "rfi" in clean and ("comment" in clean or "comments" in clean or "scope" in clean or "deviation" in clean):
-        selected = select_evidence_segments(recent_segments, ["rfi", "comment", "comments", "scope", "deviation", "deviations"])
+    if "rfi" in clean and (
+        "comment" in clean
+        or "comments" in clean
+        or "scope" in clean
+        or "deviation" in clean
+        or "deviations" in clean
+        or "answer" in clean
+        or "answers" in clean
+        or "response" in clean
+        or "responses" in clean
+    ):
+        body = "Review the RFI responses." if any(term in clean for term in ["answer", "answers", "response", "responses"]) else "Review the RFI log."
+        selected = select_evidence_segments(
+            recent_segments,
+            ["rfi", "comment", "comments", "scope", "deviation", "deviations", "answer", "answers", "response", "responses"],
+        )
         cards.append(
             heuristic_card(
                 session_id,
                 selected,
                 category="action",
                 title="RFI log review",
-                body="Review the RFI log.",
+                body=body,
                 evidence_hint="rfi",
                 priority="normal",
             )
@@ -416,7 +448,7 @@ def dedupe_heuristic_cards(cards: list[SidecarCard]) -> list[SidecarCard]:
 
 
 def note_from_sidecar(card: SidecarCard) -> NoteCard:
-    kind = "context" if card.category in {"status", "memory", "work_memory", "web", "note"} else card.category
+    kind = "context" if card.category in {"status", "memory", "web", "note"} else card.category
     return NoteCard(
         id=new_id("note"),
         session_id=card.session_id,

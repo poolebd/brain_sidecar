@@ -17,25 +17,10 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
   set +a
 fi
 
-export BRAIN_SIDECAR_ASR_BACKEND="${BRAIN_SIDECAR_ASR_BACKEND:-nemotron_streaming}"
-export BRAIN_SIDECAR_NEMOTRON_CHUNK_MS="${BRAIN_SIDECAR_NEMOTRON_CHUNK_MS:-160}"
-export BRAIN_SIDECAR_NEMOTRON_DTYPE="${BRAIN_SIDECAR_NEMOTRON_DTYPE:-float32}"
+export BRAIN_SIDECAR_ASR_BACKEND="${BRAIN_SIDECAR_ASR_BACKEND:-faster_whisper}"
 
 PYTHON_EXTRAS="gpu,recall,dev"
-if [[ "$BRAIN_SIDECAR_ASR_BACKEND" == "nemotron_streaming" ]]; then
-  PYTHON_EXTRAS="$PYTHON_EXTRAS,nemotron"
-fi
 pip install -e ".[$PYTHON_EXTRAS]"
-
-if [[ "$BRAIN_SIDECAR_ASR_BACKEND" == "nemotron_streaming" ]]; then
-  if ! python - <<'PY' >/dev/null 2>&1
-import importlib.util
-raise SystemExit(0 if importlib.util.find_spec("nemo.collections.asr") else 1)
-PY
-  then
-    pip install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'
-  fi
-fi
 
 if [[ ! -d ui/node_modules ]]; then
   npm --prefix ui install

@@ -21,7 +21,7 @@ def test_trigger_detector_fires_for_current_tech_practice_question() -> None:
     assert candidate.freshness == "py"
 
 
-def test_trigger_detector_ignores_personal_work_memory_question() -> None:
+def test_trigger_detector_ignores_personal_history_question() -> None:
     detector = WebTriggerDetector()
 
     assert detector.detect([segment("seg_1", "What did we do on the T.A. Smith project?")]) is None

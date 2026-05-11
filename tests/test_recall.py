@@ -4,6 +4,7 @@ from brain_sidecar.core.recall import (
     RecallIndex,
     chunk_text,
     cosine_similarity,
+    is_electrical_reference_query,
     iter_supported_files,
     normalize_text,
     rank_recall_hits,
@@ -133,3 +134,78 @@ def test_manual_recall_override_still_respects_manual_floor() -> None:
     )
 
     assert [hit.source_id for hit in ranked] == ["useful_lower"]
+
+
+def test_electrical_reference_floor_applies_for_technical_queries() -> None:
+    hits = [
+        SearchHit(
+            "document_chunk",
+            "doe_breaker_reference",
+            "DOE Electrical Science reference text about circuit breakers, relays, and protection.",
+            0.50,
+            {"path": "/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science/doe.pdf"},
+        ),
+    ]
+
+    ranked = rank_recall_hits(
+        hits,
+        query="Need circuit breaker relay protection guidance for the transformer trip path.",
+        limit=2,
+        min_score=0.58,
+        prefer_summaries=True,
+        manual=False,
+    )
+
+    assert [hit.source_id for hit in ranked] == ["doe_breaker_reference"]
+
+
+def test_electrical_reference_floor_does_not_apply_to_generic_queries() -> None:
+    hits = [
+        SearchHit(
+            "document_chunk",
+            "generic_reference",
+            "DOE Electrical Science reference text about circuit breakers.",
+            0.50,
+            {"path": "/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science/doe.pdf"},
+        ),
+    ]
+
+    ranked = rank_recall_hits(
+        hits,
+        query="meeting agenda owner date and next steps",
+        limit=2,
+        min_score=0.58,
+        prefer_summaries=True,
+        manual=False,
+    )
+
+    assert ranked == []
+
+
+def test_assumed_technical_conversation_prioritizes_ee_reference_without_trigger_terms() -> None:
+    hits = [
+        SearchHit(
+            "document_chunk",
+            "ee_reference",
+            "DOE Electrical Science reference text about circuit breakers.",
+            0.50,
+            {"path": "/home/bp/project/brain-sidecar/runtime/reference/electrical-engineering/doe-electrical-science/doe.pdf"},
+        ),
+    ]
+
+    ranked = rank_recall_hits(
+        hits,
+        query="meeting agenda owner date and next steps",
+        limit=2,
+        min_score=0.58,
+        prefer_summaries=True,
+        manual=False,
+        assume_technical=True,
+    )
+
+    assert [hit.source_id for hit in ranked] == ["ee_reference"]
+
+
+def test_electrical_reference_query_ignores_current_by_itself() -> None:
+    assert is_electrical_reference_query("What is the current meeting status?") is False
+    assert is_electrical_reference_query("Current transformer protection settings need review.") is True

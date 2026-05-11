@@ -39,9 +39,11 @@ def test_start_session_request_accepts_and_normalizes_meeting_contract() -> None
             "goal": "  Track owners and close the brief. ",
             "mode": "balanced",
             "reminders": ["Owners", "Post-call brief", "", "Owners"],
-        }
+        },
+        web_context_enabled=True,
     )
 
+    assert request.web_context_enabled is True
     assert _meeting_contract_payload(request.meeting_contract) == {
         "goal": "Track owners and close the brief.",
         "mode": "balanced",

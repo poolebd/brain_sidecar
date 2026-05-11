@@ -7,13 +7,14 @@ headless and event-driven so a desktop GUI can reuse the same engine later.
 ## What v1 Does
 
 - Captures a USB mic through `ffmpeg`.
-- Transcribes locally with Nemotron Streaming on CUDA by default, with Faster-Whisper still available.
+- Transcribes locally with Faster-Whisper; CPU `small.en` is the default ASR path.
 - Generates meeting-intelligence sidecar cards with local Ollama.
-- Searches prior sessions and selected local files with local embeddings.
-- Surfaces fast work-memory parallels from a pre-indexed local career/project archive.
+- Searches prior sessions and selected EE reference files with local embeddings.
+- Recognizes local company/org references from transcript text and surfaces sparse context cards.
+- Adds sanitized, live-only Brave Search context for explicit current technical questions.
 - Learns local Speaker Identity embeddings so BP-owned follow-ups can be distinguished from other speakers.
 - Stores text artifacts only. Raw audio stays in memory and is discarded.
-- Fails visibly if GPU transcription is unavailable.
+- Fails visibly if the configured ASR or Ollama model is unavailable.
 
 ## Architecture
 
@@ -32,15 +33,14 @@ Python package directly.
 cd /home/bp/project/brain-sidecar
 python3.11 -m venv .venv
 . .venv/bin/activate
-pip install -e ".[gpu,recall,dev,nemotron]"
-pip install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'
+pip install -e ".[gpu,recall,dev]"
 npm --prefix ui install
 ```
 
-Make sure the local Ollama models exist:
+Make sure the local embedding model exists. The chat model can be local or an
+Ollama cloud model selected in the Models page.
 
 ```bash
-ollama pull phi3:mini
 ollama pull embeddinggemma
 ```
 
@@ -63,6 +63,18 @@ UI: `http://127.0.0.1:8766`
 Hosted access remains through the existing Caddy route at
 `https://notes.shoalstone.net/`.
 
+To smoke-test the actual local Caddy route, set
+`BRAIN_SIDECAR_CADDY_BASIC_PASSWORD` in your environment or local `.env`, then
+run:
+
+```bash
+./scripts/test_hosted_caddy.sh
+```
+
+This checks that `notes.shoalstone.net` resolves to the local Caddy listener,
+loads the app through Basic auth, opens Review, and reaches `/api/health/gpu`
+through Caddy.
+
 `./start.sh` runs the FastAPI backend and Vite UI detached, writes PID files
 under `runtime/dev/pids/`, and writes logs under `runtime/dev/logs/`:
 
@@ -83,31 +95,32 @@ For foreground debugging, use the developer runner instead:
 ./scripts/dev.sh
 ```
 
-## GPU Contract
+## Runtime Contract
 
-The app requires:
+The default app path requires:
 
-- NVIDIA GPU visible to `nvidia-smi`.
-- A selected CUDA ASR backend.
-- Ollama running locally, with the configured chat model on GPU.
+- Faster-Whisper installed in the Python environment.
+- A configured ASR device, default `cpu`.
+- Ollama reachable for chat/card synthesis and local embeddings.
 
-The default ASR backend is NVIDIA Nemotron Speech Streaming 0.6B, configured as
-local CUDA-only cache-aware streaming with 160 ms chunks and `float32`
-inference. Faster-Whisper remains available by setting
-`BRAIN_SIDECAR_ASR_BACKEND=faster_whisper`; if `medium.en` cannot load because
-of VRAM pressure, that fallback path may load `small.en`, but still on CUDA
-only. CPU fallback is intentionally not implemented.
+Faster-Whisper is the only ASR backend. The repo default is CPU `small.en` with
+`tiny.en` fallback and `int8` compute so local CUDA headroom is reserved for
+other desktop work. Set `BRAIN_SIDECAR_ASR_DEVICE=cuda` only when the GPU is
+stable and you want Faster-Whisper on CUDA.
 
 ## Speed And Quality Tuning
 
 The live pipeline is split into capture, transcription, and post-processing
-tasks. Capture keeps reading audio while CUDA ASR and Ollama work in the
+tasks. Capture keeps reading audio while ASR and Ollama work in the
 background. If transcription falls behind, stale audio windows are dropped and
 the UI shows the dropped-window count so the sidecar stays real-time.
 
 Useful knobs:
 
-- `BRAIN_SIDECAR_ASR_BACKEND`: `nemotron_streaming` by default, or `faster_whisper` for the older windowed ASR path.
+- `BRAIN_SIDECAR_ASR_BACKEND`: must be `faster_whisper`.
+- `BRAIN_SIDECAR_ASR_PRIMARY_MODEL`: primary Faster-Whisper model, default `small.en`.
+- `BRAIN_SIDECAR_ASR_FALLBACK_MODEL`: fallback Faster-Whisper model, default `tiny.en`.
+- `BRAIN_SIDECAR_ASR_COMPUTE_TYPE`: Faster-Whisper compute type, default `int8`.
 - `BRAIN_SIDECAR_ASR_BEAM_SIZE`: higher can improve transcript quality, lower is faster.
 - `BRAIN_SIDECAR_ASR_VAD_MIN_SILENCE_MS`: lower splits speech faster, higher creates steadier segments, default `300`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_WINDOW_SECONDS`: audio window before ASR emits a transcript, default `3.4`.
@@ -117,45 +130,59 @@ Useful knobs:
 - `BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD`: reject low-confidence ASR segments, default `-1.0`.
 - `BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD`: reject repetitive/compressed ASR spans, default `2.4`.
 - `BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS`: skip near-silent audio windows before ASR, default `0.006`.
+- `BRAIN_SIDECAR_ASR_DEVICE`: Faster-Whisper device, `cpu` or `cuda`, default `cpu`.
 - `BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB`: free VRAM target before loading the selected ASR backend, default `3500`.
-- `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before ASR load when VRAM is tight, default `false` so Nemotron and `phi3:mini` can stay resident together.
+- `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START`: stop GPU-resident Ollama models before CUDA ASR load when VRAM is tight, default `false`.
 - `BRAIN_SIDECAR_ASR_GPU_FREE_TIMEOUT_SECONDS`: wait budget after unloading Ollama, default `10`.
+- `BRAIN_SIDECAR_REVIEW_ASR_BACKEND`: batch Review ASR backend, default `nemo`; set `faster_whisper` only for compatibility testing.
+- `BRAIN_SIDECAR_REVIEW_ASR_MODEL`: Review ASR model, default `stt_en_fastconformer_ctc_xxlarge`.
+- `BRAIN_SIDECAR_REVIEW_ASR_DEVICE`: Review ASR device, `auto`, `cpu`, or `cuda`, default `auto`.
+- `BRAIN_SIDECAR_REVIEW_ASR_BATCH_SIZE`: Review ASR chunk batch size, default `2`.
+- `BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS`: Review ASR chunk length before NeMo batching, default `45`.
+- `BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS`: Review ASR chunk overlap for boundary protection, default `3`.
+- `BRAIN_SIDECAR_REVIEW_CORRECTION_BATCH_SIZE`: transcript segments sent per conservative Ollama correction call, default `12`.
+- `BRAIN_SIDECAR_REVIEW_CORRECTION_CONCURRENCY`: concurrent transcript correction calls, default `2`.
 - `BRAIN_SIDECAR_OLLAMA_HOST`: default Ollama host used when split hosts are unset, default `http://127.0.0.1:11434`.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_HOST`: Ollama host for note/card synthesis, default local `http://127.0.0.1:11434`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_HOST`: Ollama host for recall embeddings, default local.
 - `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`: fallback Ollama `keep_alive`, default `30m`.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE`: chat-specific keepalive, default follows `BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE`.
-- `BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE`: embedding-specific keepalive, default `0` so embeddings do not stay resident beside Nemotron and Phi.
+- `BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL`: optional smaller Ollama chat model used when the primary chat model is skipped by the VRAM guard. Leave blank to use deterministic Sidecar card fallback instead.
+- `BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB`: if greater than `0`, skip the primary chat model when free local VRAM is below this value before a chat request, default `0`.
+- `BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE`: embedding-specific keepalive, default `0` so embeddings do not stay resident unnecessarily.
 - `BRAIN_SIDECAR_OLLAMA_CHAT_TIMEOUT_SECONDS`: local note/card synthesis timeout, default `20`.
 - `BRAIN_SIDECAR_OLLAMA_EMBED_TIMEOUT_SECONDS`: local embedding timeout, default `12`.
 - `BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE`: number of pending audio windows before stale windows are dropped, default `8`.
+- `BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS`: final transcript cadence for live Meeting Output refreshes, default `2`.
 - `BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED`: publish guarded provisional transcript previews, default `false`. Preview ASR is opt-in because final windows must never wait behind preview work.
 - `BRAIN_SIDECAR_PARTIAL_WINDOW_SECONDS`: preview ASR window length, capped to the final ASR window, default `2.0`.
 - `BRAIN_SIDECAR_PARTIAL_MIN_INTERVAL_SECONDS`: minimum spacing between preview ASR jobs, default `2.0`.
-- `BRAIN_SIDECAR_NEMOTRON_MODEL_ID`: default `nvidia/nemotron-speech-streaming-en-0.6b`.
-- `BRAIN_SIDECAR_NEMOTRON_CHUNK_MS`: Nemotron streaming chunk size, one of `80`, `160`, `560`, or `1120`; default `160`.
-- `BRAIN_SIDECAR_NEMOTRON_DTYPE`: cache-aware inference dtype, currently `float32`.
-- `BRAIN_SIDECAR_NEMOTRON_LOCAL_FILES_ONLY`: use cached Hugging Face files only, default `false`.
-- `BRAIN_SIDECAR_STREAMING_PARTIALS_ENABLED`: emit streaming partial captions for Nemotron, default `true` when selected.
-- `BRAIN_SIDECAR_STREAMING_STABLE_FINAL_CHUNKS`: trailing words held back before finalizing cumulative streaming text, default `3`.
 - `BRAIN_SIDECAR_DEDUPE_SIMILARITY_THRESHOLD`: suppresses repeated text from overlapping windows.
 - `BRAIN_SIDECAR_ASR_INITIAL_PROMPT`: optional vocabulary/context hint for names, projects, or jargon.
 - `BRAIN_SIDECAR_SPEAKER_ENROLLMENT_SAMPLE_SECONDS`: USB-mic recording window for each Speaker Identity sample, default `8`.
+- `BRAIN_SIDECAR_SPEAKER_ENROLLMENT_MINIMUM_SECONDS`: usable BP-only speech required before the BP label is active, default `60`.
+- `BRAIN_SIDECAR_SPEAKER_ENROLLMENT_TARGET_SECONDS`: stronger BP-only training target shown in the UI, default `120`.
 - `BRAIN_SIDECAR_SPEAKER_IDENTITY_LABEL`: display label for BP's own voice, default `BP`.
 - `BRAIN_SIDECAR_SPEAKER_RETAIN_RAW_ENROLLMENT_AUDIO`: must remain `false` unless explicitly changing the privacy contract; default `false`.
 - `BRAIN_SIDECAR_RECALL_MIN_SCORE`: minimum passive live recall score, default `0.58`.
 - `BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS`: max passive live recall cards, default `4`.
 - `BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES`: prefer saved-session summaries over raw transcript snippets when scores are comparable, default `true`.
-- `BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT`: configured job-history root, default `/home/bp/Nextcloud2/Job Hunting`.
-- `BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT`: configured past-work root, default `/home/bp/Nextcloud2/_library/_shoalstone/past work`.
-- `BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT`: optional distinct PAS archive root.
-- `BRAIN_SIDECAR_WORK_MEMORY_SEARCH_TIMEOUT_SECONDS`: live work-memory search budget, default `1.5`.
+- `BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION`: treat live meetings as technical so indexed EE references can surface even when the spoken query is brief, default `true`.
+- `BRAIN_SIDECAR_COMPANY_REFS_ENABLED`: enable local company/org reference matching, default `true`.
+- `BRAIN_SIDECAR_COMPANY_REFS_SEED_PATH`: optional JSONL seed override for local company references.
+- `BRAIN_SIDECAR_COMPANY_REFS_MIN_CONFIDENCE`: minimum confidence for live company reference cards, default `0.70`.
+- `BRAIN_SIDECAR_COMPANY_REFS_MAX_LIVE_CARDS`: max live company reference cards per pass, default `3`.
+- `BRAIN_SIDECAR_COMPANY_REFS_DUPLICATE_WINDOW_SECONDS`: live duplicate suppression window for the same company ref, default `900`.
 - `BRAIN_SIDECAR_SIDECAR_QUALITY_GATE_ENABLED`: require evidence-backed generated live cards, default `true`.
 - `BRAIN_SIDECAR_SIDECAR_MIN_EVIDENCE_SEGMENTS`: supporting transcript segments normally required for generated live cards, default `2`.
 - `BRAIN_SIDECAR_SIDECAR_DUPLICATE_WINDOW_SECONDS`: duplicate-card suppression window, default `120`.
 - `BRAIN_SIDECAR_SIDECAR_GENERIC_CLARIFY_WINDOW_SECONDS`: rate limit for generic clarification cards, default `300`.
-- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN`: rolling live-card volume cap, default `8`.
-- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS`: maximum generated cards emitted from one note refresh, default `3`.
+- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN`: rolling live-card volume cap, default `12`.
+- `BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS`: maximum generated cards emitted from one note refresh, default `4`.
+- `BRAIN_SIDECAR_ENERGY_LENS_ENABLED`: enables the local Energy Consulting Lens, default `true`.
+- `BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE`: minimum confidence shown in Live, default `medium`.
+- `BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS`: compact status keyword cap, default `6`.
+- `BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS`: deterministic energy-card cap, default `2`.
 - `BRAIN_SIDECAR_WEB_CONTEXT_ENABLED`: set to `true` to allow selective Brave web context for explicit current-tech questions.
 - `BRAIN_SIDECAR_BRAVE_SEARCH_API_KEY`: Brave Search API key; without this, web context stays disabled.
 - `BRAIN_SIDECAR_WEB_CONTEXT_MIN_INTERVAL_SECONDS`: cooldown between live web lookups, default `90`.
@@ -238,36 +265,26 @@ contract:
 - `audio_status` and `gpu_status`: operational state such as queue depth,
   dropped windows, preview metrics, `last_audio_rms`, `silent_windows`,
   `asr_empty_windows`, `final_segments_replaced`, event-drop counts, ASR
-  backend, streaming chunk/latency metrics, settings, and GPU pressure. SSE streams send heartbeats and keep a bounded
+  backend, ASR timing metrics, settings, and GPU pressure. SSE streams send heartbeats and keep a bounded
   replay buffer for reconnects using `Last-Event-ID`.
 
 Raw audio is never written to disk. Temporary/listen-only sessions do not store
-transcript text, note cards, embeddings, diarization rows, work-memory recall
-events, memory summaries, or web context. Web cards remain sanitized,
-Brave-backed, live-only, and ephemeral.
+transcript text, note cards, embeddings, diarization rows, memory summaries, or
+web context. Web cards remain sanitized, Brave-backed, live-only, and ephemeral.
 
-## Work Memory
+## Technical References
 
-The Work Memory layer is for PAS/past-work recall support during meetings. It
-uses high-signal historical documents under the configured job-history root as a
-canonical timeline, then correlates evidence from the configured past-work and
-optional PAS roots into compact project cards.
-
-Live conversations do not scan folders, parse files, or call an extra model for
-this feature. Reindexing is explicit and can use embeddings offline; real-time
-matching uses the precomputed project cards so recall stays cheap.
-
-Current-employer/client material is treated as guardrail context by default.
-Medical, disability, clearance, HR/admin, executables, archives, and large media
-are excluded or metadata-only.
-
-Useful endpoints:
+The local reference layer indexes open EE material under
+`runtime/reference/electrical-engineering`, including DOE Electrical Science,
+Kuphaldt Lessons in Electric Circuits, and selected NEETS modules. Reindex it
+with the References page or:
 
 ```bash
-curl http://127.0.0.1:8765/api/work-memory/status
-curl -X POST http://127.0.0.1:8765/api/work-memory/reindex -H 'Content-Type: application/json' -d '{}'
-curl -X POST http://127.0.0.1:8765/api/work-memory/search -H 'Content-Type: application/json' -d '{"query":"generator monitoring failure modes"}'
+curl -X POST http://127.0.0.1:8765/api/library/reindex
 ```
+
+Brave web context stays separate from the local reference index. It is sanitized,
+live-only, and never persisted to recall storage.
 
 ## Speaker Identity
 
@@ -282,11 +299,13 @@ finalization uses only the current training
 attempt and can ignore an outlier sample when enough consistent single-speaker
 speech remains, so a failed attempt should not poison the next one.
 
-When ready, transcript events can label high-confidence BP speech with
-`speaker_role: "user"` and the configured label. Meeting-intelligence cards use
-that metadata conservatively: BP-owned first-person commitments can become
-follow-ups, other-speaker commitments do not become BP actions, and unknown or
-low-confidence speakers are worded cautiously.
+When ready, Live and Review transcript events can label high-confidence BP
+speech with `speaker_role: "user"` and the configured label. Non-matches are
+only treated as `Other speaker` or `Unknown speaker`; Brain Sidecar is not meant
+to identify everyone in the room. Meeting-intelligence cards use that metadata
+conservatively: BP-owned first-person commitments can become follow-ups,
+other-speaker commitments do not become BP actions, and unknown or low-confidence
+speakers are worded cautiously.
 
 ## Useful Checks
 
@@ -327,45 +346,46 @@ asyncio.run(main())
 PY
 ```
 
-## Nemotron Streaming ASR
+## Energy Consulting Lens
 
-Nemotron streaming is local/GPU only and is the normal launcher default. The
-verified integration path is NVIDIA NeMo/PyTorch using
-`nvidia/nemotron-speech-streaming-en-0.6b`, a 600M parameter cache-aware
-FastConformer-RNNT checkpoint. The model card lists mono audio input and
-non-overlapping streaming chunks at 80 ms, 160 ms, 560 ms, and 1120 ms.
-The normal local model pair is Nemotron for ASR plus Ollama `phi3:mini` for
-note/card synthesis on the same GPU. Brain Sidecar does not unload Ollama before
-ASR by default; set `BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true` only if VRAM
-pressure makes co-residency unstable.
+Brain Sidecar includes a local deterministic Energy Consulting Lens derived from
+`docs/research/energy-keyword-framework.md`. It detects energy-consulting
+meetings from final transcript evidence only, then helps Dross choose better
+ask/say/do/watch cards for categories such as tariffs, audits, procurement,
+flexibility, carbon accounting, finance, and scoping.
 
-`./start.sh` installs the Nemotron Python extras and NeMo ASR stack when the
-backend is set to `nemotron_streaming`, which is now the default. For manual
-setup, use:
+The lens is not SEO, not a cloud classifier, and not a factual source. Report
+weights are heuristic probabilities that a phrase indicates an energy-consulting
+conversation; keyword matches never become facts by themselves. Current
+transcript evidence and the normal Sidecar quality gate still control every
+card.
 
-```bash
-sudo apt-get install -y libsndfile1 ffmpeg
-. .venv/bin/activate
-pip install -e ".[nemotron]"
-pip install 'git+https://github.com/NVIDIA/NeMo.git@main#egg=nemo_toolkit[asr]'
-```
-
-Smoke test without storing raw audio:
+Disable it with:
 
 ```bash
-BRAIN_SIDECAR_NEMOTRON_CHUNK_MS=160 \
-python scripts/test_nemotron_streaming.py runtime/test-audio/osr-us-female-harvard.wav
+BRAIN_SIDECAR_ENERGY_LENS_ENABLED=false
 ```
 
-If Nemotron or model loading fails, session start fails visibly with the
-dependency or model-access error. Switch `BRAIN_SIDECAR_ASR_BACKEND=faster_whisper`
-to return to the windowed ASR path.
+The compact frame is ephemeral runtime status. Raw audio is never saved, partial
+transcripts do not trigger the lens, and listen-only sessions do not persist
+keyword artifacts.
+
+## Faster-Whisper ASR
+
+Faster-Whisper is the supported ASR runtime. The normal launcher uses
+`small.en` on CPU with `int8` compute, and falls back to `tiny.en` if the
+primary model cannot load. This keeps raw audio in memory only, keeps final
+transcript windows evidence-gated, and avoids reserving CUDA memory for ASR
+unless `BRAIN_SIDECAR_ASR_DEVICE=cuda` is explicitly configured.
+
+For a quick ASR smoke test without saving raw audio, run the app in test mode or
+use the Playwright user-audio lane against a fixture WAV.
 
 ## Split Ollama Over LAN
 
-The default path keeps Nemotron and `phi3:mini` on the desktop GPU. If that GPU
-is too tight for a longer call, keep Nemotron on the desktop and run the chat
-model on another machine. On the laptop, expose Ollama on the LAN:
+If local GPU headroom is tight, run the chat model on another machine or use an
+Ollama cloud model while keeping Faster-Whisper local. On the laptop, expose
+Ollama on the LAN:
 
 ```bash
 OLLAMA_HOST=0.0.0.0:11434 ollama serve
@@ -385,6 +405,21 @@ BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE=0
 
 `/api/health/gpu` reports the chat/embed hosts and reachability so the System
 panel can show whether the laptop model is online.
+
+For call stability on a single GPU, keep ASR on CPU or let note synthesis fall
+back instead of forcing a large local chat model into a tight CUDA context:
+
+```bash
+BRAIN_SIDECAR_ASR_MIN_FREE_VRAM_MB=9000
+BRAIN_SIDECAR_ASR_UNLOAD_OLLAMA_ON_START=true
+BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE=0
+BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB=9000
+BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL=
+```
+
+With `BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL` blank, a low-VRAM chat pass
+uses the existing deterministic `model_fallback` card path. Set it to a smaller
+local Ollama model only if that model is known to fit the same reserve.
 
 ## Tests
 
@@ -406,17 +441,15 @@ for clearer speech, uses `tiny.en` for fast local validation, and sources the
 same GPU library path helper used by `scripts/dev.sh`.
 
 Run the user-style validation lane against the polished UI, GPU ASR, wide
-screenshots, and a controlled work-memory audio source with:
+screenshots, and a controlled technical-reference audio source with:
 
 ```bash
-./scripts/make_work_memory_known_audio.sh
-BRAIN_SIDECAR_USER_TEST_SOURCE=/home/bp/project/brain-sidecar/runtime/user-tests/work-memory-known/source.wav \
-BRAIN_SIDECAR_USER_TEST_DIR=/home/bp/project/brain-sidecar/runtime/user-tests/work-memory-known \
+BRAIN_SIDECAR_USER_TEST_SOURCE=/home/bp/project/brain-sidecar/runtime/user-tests/technical-reference/source.wav \
+BRAIN_SIDECAR_USER_TEST_DIR=/home/bp/project/brain-sidecar/runtime/user-tests/technical-reference \
 BRAIN_SIDECAR_USER_TEST_SCREENSHOT_INTERVAL_MS=20000 \
-BRAIN_SIDECAR_EXPECT_WORK_MEMORY=1 \
-BRAIN_SIDECAR_EXPECT_RESPONSE_TERMS="Online Generator Monitoring,T.A. Smith,500kV breaker,relay modernization,PG&E gas mains,SaskPower workforce planning" \
+BRAIN_SIDECAR_EXPECT_RESPONSE_TERMS="circuit breaker,relay,protection,voltage,current,transformer" \
 BRAIN_SIDECAR_EXPECT_TERM_MIN_HITS=4 \
 npm --prefix ui run test:user-audio
 ```
 
-The report and screenshots land in `runtime/user-tests/work-memory-known/artifacts/`.
+The report and screenshots land in `runtime/user-tests/technical-reference/artifacts/`.

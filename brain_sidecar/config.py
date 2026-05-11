@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from brain_sidecar.core.asr import (
-    ASR_BACKEND_NEMOTRON_STREAMING,
+    ASR_BACKEND_FASTER_WHISPER,
     validate_asr_backend,
-    validate_nemotron_chunk_ms,
-    validate_nemotron_device,
-    validate_nemotron_dtype,
 )
 
 _DEFAULT_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+_DOTENV_SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:@+-]+$")
 
 
 def _env(name: str, default: str) -> str:
@@ -24,6 +23,14 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_choice(name: str, default: str, allowed: set[str]) -> str:
+    value = _env(name, default).strip().lower()
+    if value not in allowed:
+        allowed_values = ", ".join(sorted(allowed))
+        raise ValueError(f"Unsupported {name}={value!r}; expected one of: {allowed_values}.")
+    return value
 
 
 def _load_dotenv(path: Path | None = None) -> None:
@@ -44,6 +51,37 @@ def _load_dotenv(path: Path | None = None) -> None:
         os.environ.setdefault(name, value)
 
 
+def _configured_env_path() -> Path:
+    return Path(os.environ.get("BRAIN_SIDECAR_ENV_PATH", str(_DEFAULT_ENV_PATH))).expanduser()
+
+
+def _dotenv_literal(value: str) -> str:
+    if _DOTENV_SAFE_VALUE_RE.match(value):
+        return value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def update_dotenv_value(name: str, value: str, path: Path | None = None) -> None:
+    env_path = (path or _configured_env_path()).expanduser()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    prefix_pattern = re.compile(rf"^(\s*(?:export\s+)?{re.escape(name)}\s*=).*$")
+    replacement = f"{name}={_dotenv_literal(value)}"
+    if not env_path.exists():
+        env_path.write_text(f"{replacement}\n", encoding="utf-8")
+        return
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        match = prefix_pattern.match(line)
+        if match:
+            lines[index] = f"{match.group(1)}{_dotenv_literal(value)}"
+            break
+    else:
+        lines.append(replacement)
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -55,26 +93,22 @@ class Settings:
     ollama_host: str
     ollama_chat_model: str
     ollama_embed_model: str
+    env_path: Path = _DEFAULT_ENV_PATH
+    ollama_chat_fallback_model: str = ""
+    ollama_chat_min_free_vram_mb: int = 0
     ollama_chat_host: str = ""
     ollama_embed_host: str = ""
     ollama_chat_keep_alive: str = ""
     ollama_embed_keep_alive: str = ""
-    asr_backend: str = ASR_BACKEND_NEMOTRON_STREAMING
-    nemotron_model_id: str = "nvidia/nemotron-speech-streaming-en-0.6b"
-    nemotron_chunk_ms: int = 160
-    nemotron_device: str = "cuda"
-    nemotron_dtype: str = "float32"
-    nemotron_hf_token: str = ""
-    nemotron_local_files_only: bool = False
-    streaming_partials_enabled: bool = True
-    streaming_stable_final_chunks: int = 3
+    asr_backend: str = ASR_BACKEND_FASTER_WHISPER
+    asr_device: str = "cpu"
     audio_sample_rate: int = 16_000
     audio_chunk_ms: int = 250
     transcription_window_seconds: float = 3.4
     transcription_overlap_seconds: float = 0.8
     transcription_queue_size: int = 8
     postprocess_queue_size: int = 8
-    notes_every_segments: int = 3
+    notes_every_segments: int = 2
     min_segment_chars: int = 8
     dedupe_recent_segments: int = 18
     dedupe_similarity_threshold: float = 0.88
@@ -86,22 +120,35 @@ class Settings:
     asr_log_prob_threshold: float = -1.0
     asr_compression_ratio_threshold: float = 2.4
     asr_min_audio_rms: float = 0.006
+    review_asr_backend: str = "nemo"
+    review_asr_model: str = "stt_en_fastconformer_ctc_xxlarge"
+    review_asr_device: str = "auto"
+    review_asr_batch_size: int = 2
+    review_asr_chunk_seconds: float = 45.0
+    review_asr_chunk_overlap_seconds: float = 3.0
+    review_correction_batch_size: int = 12
+    review_correction_concurrency: int = 2
     partial_transcripts_enabled: bool = False
     partial_window_seconds: float = 2.0
     partial_min_interval_seconds: float = 2.0
     ollama_chat_timeout_seconds: float = 20.0
     ollama_embed_timeout_seconds: float = 12.0
-    work_memory_search_timeout_seconds: float = 1.5
     sidecar_quality_gate_enabled: bool = True
     sidecar_min_evidence_segments: int = 2
     sidecar_duplicate_window_seconds: float = 120.0
     sidecar_generic_clarify_window_seconds: float = 300.0
-    sidecar_max_cards_per_5min: int = 8
-    sidecar_max_cards_per_generation_pass: int = 3
+    sidecar_max_cards_per_5min: int = 12
+    sidecar_max_cards_per_generation_pass: int = 4
+    energy_lens_enabled: bool = True
+    energy_lens_min_confidence: str = "medium"
+    energy_lens_max_keywords: int = 6
+    energy_lens_max_cards_per_pass: int = 2
     asr_min_free_vram_mb: int = 3500
     asr_unload_ollama_on_start: bool = False
     asr_gpu_free_timeout_seconds: float = 10.0
     speaker_enrollment_sample_seconds: float = 8.0
+    speaker_enrollment_minimum_seconds: float = 60.0
+    speaker_enrollment_target_seconds: float = 120.0
     speaker_identity_label: str = "BP"
     speaker_retain_raw_enrollment_audio: bool = False
     disable_live_embeddings: bool = False
@@ -114,17 +161,21 @@ class Settings:
     recall_min_score: float = 0.58
     recall_max_live_hits: int = 4
     recall_prefer_summaries: bool = True
-    work_memory_job_history_root: Path = Path("/home/bp/Nextcloud2/Job Hunting")
-    work_memory_past_work_root: Path = Path("/home/bp/Nextcloud2/_library/_shoalstone/past work")
-    work_memory_pas_root: Path | None = None
+    assume_technical_conversation: bool = True
+    company_refs_enabled: bool = True
+    company_refs_seed_path: Path | None = None
+    company_refs_min_confidence: float = 0.70
+    company_refs_max_live_cards: int = 3
+    company_refs_duplicate_window_seconds: float = 900.0
     test_mode_enabled: bool = False
     test_audio_run_dir: Path = Path("runtime/test-mode-runs")
 
 
 def load_settings() -> Settings:
-    _load_dotenv()
+    env_path = _configured_env_path()
+    _load_dotenv(env_path)
     cwd_runtime = Path.cwd() / "runtime"
-    asr_backend = validate_asr_backend(_env("BRAIN_SIDECAR_ASR_BACKEND", ASR_BACKEND_NEMOTRON_STREAMING))
+    asr_backend = validate_asr_backend(_env("BRAIN_SIDECAR_ASR_BACKEND", ASR_BACKEND_FASTER_WHISPER))
     ollama_host = _env("BRAIN_SIDECAR_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
     ollama_keep_alive = _env("BRAIN_SIDECAR_OLLAMA_KEEP_ALIVE", "30m")
     transcription_window_seconds = max(
@@ -135,38 +186,36 @@ def load_settings() -> Settings:
         max(0.0, float(_env("BRAIN_SIDECAR_TRANSCRIPTION_OVERLAP_SECONDS", "0.8"))),
         max(0.0, transcription_window_seconds - 0.1),
     )
+    review_asr_chunk_seconds = max(5.0, float(_env("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_SECONDS", "45")))
+    review_asr_chunk_overlap_seconds = min(
+        max(0.0, float(_env("BRAIN_SIDECAR_REVIEW_ASR_CHUNK_OVERLAP_SECONDS", "3"))),
+        max(0.0, review_asr_chunk_seconds - 0.1),
+    )
     return Settings(
+        env_path=env_path,
         data_dir=Path(_env("BRAIN_SIDECAR_DATA_DIR", str(cwd_runtime))).expanduser(),
         host=_env("BRAIN_SIDECAR_HOST", "127.0.0.1"),
         port=int(_env("BRAIN_SIDECAR_PORT", "8765")),
-        asr_primary_model=_env("BRAIN_SIDECAR_ASR_PRIMARY_MODEL", "medium.en"),
-        asr_fallback_model=_env("BRAIN_SIDECAR_ASR_FALLBACK_MODEL", "small.en"),
-        asr_compute_type=_env("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "float16"),
+        asr_primary_model=_env("BRAIN_SIDECAR_ASR_PRIMARY_MODEL", "small.en"),
+        asr_fallback_model=_env("BRAIN_SIDECAR_ASR_FALLBACK_MODEL", "tiny.en"),
+        asr_compute_type=_env("BRAIN_SIDECAR_ASR_COMPUTE_TYPE", "int8"),
+        asr_device=_env_choice("BRAIN_SIDECAR_ASR_DEVICE", "cpu", {"cuda", "cpu"}),
         ollama_host=ollama_host,
-        ollama_chat_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", "phi3:mini"),
+        ollama_chat_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_MODEL", "qwen3.5:397b-cloud"),
+        ollama_chat_fallback_model=_env("BRAIN_SIDECAR_OLLAMA_CHAT_FALLBACK_MODEL", ""),
+        ollama_chat_min_free_vram_mb=max(0, int(_env("BRAIN_SIDECAR_OLLAMA_CHAT_MIN_FREE_VRAM_MB", "0"))),
         ollama_embed_model=_env("BRAIN_SIDECAR_OLLAMA_EMBED_MODEL", "embeddinggemma"),
         ollama_chat_host=_env("BRAIN_SIDECAR_OLLAMA_CHAT_HOST", ollama_host).rstrip("/"),
         ollama_embed_host=_env("BRAIN_SIDECAR_OLLAMA_EMBED_HOST", ollama_host).rstrip("/"),
         ollama_chat_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_CHAT_KEEP_ALIVE", ollama_keep_alive),
         ollama_embed_keep_alive=_env("BRAIN_SIDECAR_OLLAMA_EMBED_KEEP_ALIVE", "0"),
         asr_backend=asr_backend,
-        nemotron_model_id=_env("BRAIN_SIDECAR_NEMOTRON_MODEL_ID", "nvidia/nemotron-speech-streaming-en-0.6b"),
-        nemotron_chunk_ms=validate_nemotron_chunk_ms(int(_env("BRAIN_SIDECAR_NEMOTRON_CHUNK_MS", "160"))),
-        nemotron_device=validate_nemotron_device(_env("BRAIN_SIDECAR_NEMOTRON_DEVICE", "cuda")),
-        nemotron_dtype=validate_nemotron_dtype(_env("BRAIN_SIDECAR_NEMOTRON_DTYPE", "float32")),
-        nemotron_hf_token=_env("BRAIN_SIDECAR_NEMOTRON_HF_TOKEN", ""),
-        nemotron_local_files_only=_env_bool("BRAIN_SIDECAR_NEMOTRON_LOCAL_FILES_ONLY", False),
-        streaming_partials_enabled=_env_bool(
-            "BRAIN_SIDECAR_STREAMING_PARTIALS_ENABLED",
-            asr_backend == ASR_BACKEND_NEMOTRON_STREAMING,
-        ),
-        streaming_stable_final_chunks=max(1, int(_env("BRAIN_SIDECAR_STREAMING_STABLE_FINAL_CHUNKS", "3"))),
         audio_chunk_ms=max(50, int(_env("BRAIN_SIDECAR_AUDIO_CHUNK_MS", "250"))),
         transcription_window_seconds=transcription_window_seconds,
         transcription_overlap_seconds=transcription_overlap_seconds,
         transcription_queue_size=max(1, int(_env("BRAIN_SIDECAR_TRANSCRIPTION_QUEUE_SIZE", "8"))),
         postprocess_queue_size=max(1, int(_env("BRAIN_SIDECAR_POSTPROCESS_QUEUE_SIZE", "8"))),
-        notes_every_segments=max(1, int(_env("BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS", "3"))),
+        notes_every_segments=max(1, int(_env("BRAIN_SIDECAR_NOTES_EVERY_SEGMENTS", "2"))),
         min_segment_chars=max(1, int(_env("BRAIN_SIDECAR_MIN_SEGMENT_CHARS", "8"))),
         dedupe_recent_segments=max(1, int(_env("BRAIN_SIDECAR_DEDUPE_RECENT_SEGMENTS", "18"))),
         dedupe_similarity_threshold=float(_env("BRAIN_SIDECAR_DEDUPE_SIMILARITY_THRESHOLD", "0.88")),
@@ -178,6 +227,14 @@ def load_settings() -> Settings:
         asr_log_prob_threshold=float(_env("BRAIN_SIDECAR_ASR_LOG_PROB_THRESHOLD", "-1.0")),
         asr_compression_ratio_threshold=float(_env("BRAIN_SIDECAR_ASR_COMPRESSION_RATIO_THRESHOLD", "2.4")),
         asr_min_audio_rms=max(0.0, float(_env("BRAIN_SIDECAR_ASR_MIN_AUDIO_RMS", "0.006"))),
+        review_asr_backend=_env_choice("BRAIN_SIDECAR_REVIEW_ASR_BACKEND", "nemo", {"nemo", "faster_whisper"}),
+        review_asr_model=_env("BRAIN_SIDECAR_REVIEW_ASR_MODEL", "stt_en_fastconformer_ctc_xxlarge"),
+        review_asr_device=_env_choice("BRAIN_SIDECAR_REVIEW_ASR_DEVICE", "auto", {"auto", "cuda", "cpu"}),
+        review_asr_batch_size=max(1, int(_env("BRAIN_SIDECAR_REVIEW_ASR_BATCH_SIZE", "2"))),
+        review_asr_chunk_seconds=review_asr_chunk_seconds,
+        review_asr_chunk_overlap_seconds=review_asr_chunk_overlap_seconds,
+        review_correction_batch_size=max(1, int(_env("BRAIN_SIDECAR_REVIEW_CORRECTION_BATCH_SIZE", "12"))),
+        review_correction_concurrency=max(1, int(_env("BRAIN_SIDECAR_REVIEW_CORRECTION_CONCURRENCY", "2"))),
         partial_transcripts_enabled=_env_bool("BRAIN_SIDECAR_PARTIAL_TRANSCRIPTS_ENABLED", False),
         partial_window_seconds=min(
             transcription_window_seconds,
@@ -201,10 +258,6 @@ def load_settings() -> Settings:
             0.5,
             float(_env("BRAIN_SIDECAR_OLLAMA_EMBED_TIMEOUT_SECONDS", "12")),
         ),
-        work_memory_search_timeout_seconds=max(
-            0.1,
-            float(_env("BRAIN_SIDECAR_WORK_MEMORY_SEARCH_TIMEOUT_SECONDS", "1.5")),
-        ),
         sidecar_quality_gate_enabled=_env_bool("BRAIN_SIDECAR_SIDECAR_QUALITY_GATE_ENABLED", True),
         sidecar_min_evidence_segments=max(1, int(_env("BRAIN_SIDECAR_SIDECAR_MIN_EVIDENCE_SEGMENTS", "2"))),
         sidecar_duplicate_window_seconds=max(
@@ -215,14 +268,26 @@ def load_settings() -> Settings:
             1.0,
             float(_env("BRAIN_SIDECAR_SIDECAR_GENERIC_CLARIFY_WINDOW_SECONDS", "300")),
         ),
-        sidecar_max_cards_per_5min=max(1, int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN", "8"))),
+        sidecar_max_cards_per_5min=max(1, int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_5MIN", "12"))),
         sidecar_max_cards_per_generation_pass=max(
             1,
-            int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS", "3")),
+            int(_env("BRAIN_SIDECAR_SIDECAR_MAX_CARDS_PER_GENERATION_PASS", "4")),
         ),
+        energy_lens_enabled=_env_bool("BRAIN_SIDECAR_ENERGY_LENS_ENABLED", True),
+        energy_lens_min_confidence=_env("BRAIN_SIDECAR_ENERGY_LENS_MIN_CONFIDENCE", "medium").strip().lower(),
+        energy_lens_max_keywords=max(1, int(_env("BRAIN_SIDECAR_ENERGY_LENS_MAX_KEYWORDS", "6"))),
+        energy_lens_max_cards_per_pass=max(1, int(_env("BRAIN_SIDECAR_ENERGY_LENS_MAX_CARDS_PER_PASS", "2"))),
         speaker_enrollment_sample_seconds=max(
             2.0,
             float(_env("BRAIN_SIDECAR_SPEAKER_ENROLLMENT_SAMPLE_SECONDS", "8.0")),
+        ),
+        speaker_enrollment_minimum_seconds=max(
+            15.0,
+            float(_env("BRAIN_SIDECAR_SPEAKER_ENROLLMENT_MINIMUM_SECONDS", "60.0")),
+        ),
+        speaker_enrollment_target_seconds=max(
+            20.0,
+            float(_env("BRAIN_SIDECAR_SPEAKER_ENROLLMENT_TARGET_SECONDS", "120.0")),
         ),
         speaker_identity_label=_env("BRAIN_SIDECAR_SPEAKER_IDENTITY_LABEL", "BP"),
         speaker_retain_raw_enrollment_audio=_env_bool("BRAIN_SIDECAR_SPEAKER_RETAIN_RAW_ENROLLMENT_AUDIO", False),
@@ -242,19 +307,21 @@ def load_settings() -> Settings:
         recall_min_score=max(0.0, min(1.0, float(_env("BRAIN_SIDECAR_RECALL_MIN_SCORE", "0.58")))),
         recall_max_live_hits=max(0, int(_env("BRAIN_SIDECAR_RECALL_MAX_LIVE_HITS", "4"))),
         recall_prefer_summaries=_env_bool("BRAIN_SIDECAR_RECALL_PREFER_SUMMARIES", True),
-        work_memory_job_history_root=Path(
-            _env("BRAIN_SIDECAR_WORK_MEMORY_JOB_HISTORY_ROOT", "/home/bp/Nextcloud2/Job Hunting")
-        ).expanduser(),
-        work_memory_past_work_root=Path(
-            _env(
-                "BRAIN_SIDECAR_WORK_MEMORY_PAST_WORK_ROOT",
-                "/home/bp/Nextcloud2/_library/_shoalstone/past work",
-            )
-        ).expanduser(),
-        work_memory_pas_root=(
-            Path(os.environ["BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT"]).expanduser()
-            if os.environ.get("BRAIN_SIDECAR_WORK_MEMORY_PAS_ROOT")
+        assume_technical_conversation=_env_bool("BRAIN_SIDECAR_ASSUME_TECHNICAL_CONVERSATION", True),
+        company_refs_enabled=_env_bool("BRAIN_SIDECAR_COMPANY_REFS_ENABLED", True),
+        company_refs_seed_path=(
+            Path(seed_path).expanduser()
+            if (seed_path := _env("BRAIN_SIDECAR_COMPANY_REFS_SEED_PATH", "").strip())
             else None
+        ),
+        company_refs_min_confidence=max(
+            0.0,
+            min(1.0, float(_env("BRAIN_SIDECAR_COMPANY_REFS_MIN_CONFIDENCE", "0.70"))),
+        ),
+        company_refs_max_live_cards=max(0, int(_env("BRAIN_SIDECAR_COMPANY_REFS_MAX_LIVE_CARDS", "3"))),
+        company_refs_duplicate_window_seconds=max(
+            1.0,
+            float(_env("BRAIN_SIDECAR_COMPANY_REFS_DUPLICATE_WINDOW_SECONDS", "900")),
         ),
         test_mode_enabled=_env_bool("BRAIN_SIDECAR_TEST_MODE_ENABLED", False),
         test_audio_run_dir=Path(

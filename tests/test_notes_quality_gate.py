@@ -194,6 +194,7 @@ def test_identity_specific_bp_card_requires_literal_name_or_enrolled_identity() 
 
     assert gate().evaluate(item, evidence, status()).reason == "identity_claim_not_supported"
     assert accepted(gate().evaluate(item, evidence, status(ready=True, enrolled=True)))
+    assert accepted(gate().evaluate(item, evidence, {"ready": True, "enrollment_status": "ready"}))
 
 
 def test_repeated_owner_unclear_is_rate_limited() -> None:
@@ -234,3 +235,30 @@ def test_asr_aliases_do_not_generate_facts() -> None:
     unsupported = card("Siemens relay settings", "Review Siemens relay settings.", ["seg_1", "seg_2"], "demons client agreement")
 
     assert gate().evaluate(unsupported, unrelated, status()).action == "suppress"
+
+
+def test_company_reference_context_does_not_bypass_current_meeting_gate() -> None:
+    evidence = [seg("seg_1", "We need Siemens to answer the power quality question.")]
+    reference = create_sidecar_card(
+        session_id="ses_1",
+        category="reference",
+        title="Siemens",
+        body="Industrial technology company with grid-related businesses.",
+        why_now="Local reference context only.",
+        priority="low",
+        confidence=0.9,
+        source_segment_ids=["seg_1"],
+        source_type="company_ref",
+        evidence_quote="We need Siemens to answer the power quality question.",
+    )
+    unsupported = card(
+        "Siemens relay settings",
+        "Review Siemens relay settings.",
+        ["seg_1"],
+        "We need Siemens to answer",
+        category="action",
+        priority="high",
+    )
+
+    assert gate().evaluate(reference, evidence, status()).reason == "generated_note_must_use_live_transcript_evidence"
+    assert gate().evaluate(unsupported, evidence, status()).action == "suppress"

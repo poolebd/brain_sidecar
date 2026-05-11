@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from brain_sidecar.core.models import TranscriptSegment
+from brain_sidecar.core.company_refs import company_ref_from_seed_row
 from brain_sidecar.core.storage import Storage
 
 
@@ -71,6 +72,8 @@ def test_storage_uses_wal_busy_timeout_and_speaker_migration(tmp_path: Path) -> 
     columns = {row["name"] for row in storage.conn.execute("pragma table_info(transcript_segments)").fetchall()}
     assert "speaker_role" in columns
     assert "speaker_low_confidence" in columns
+    assert "speaker_match_score" in columns
+    assert "diarization_speaker_id" in columns
 
 
 def test_session_memory_summary_round_trip(tmp_path: Path) -> None:
@@ -89,8 +92,51 @@ def test_session_memory_summary_round_trip(tmp_path: Path) -> None:
         entities=["Apollo"],
         lessons=["Make owner explicit."],
         source_segment_ids=["seg_1"],
+        review_standard="energy_consultant_v1",
+        project_workstreams=[{"project": "Apollo", "actions": ["BP will send checklist."], "source_segment_ids": ["seg_1"]}],
+        technical_findings=[{"topic": "Rollback validation", "findings": ["Validation needs owner."], "source_segment_ids": ["seg_1"]}],
+        portfolio_rollup={
+            "bp_next_actions": ["BP will send checklist."],
+            "open_loops": ["Who owns validation?"],
+            "risk_posture": "watch",
+            "source_segment_ids": ["seg_1"],
+        },
+        review_metrics={"workstream_count": 1, "action_count": 1, "source_count": 1},
     )
 
     summary = storage.session_memory_summaries()[0]
     assert summary["session_id"] == session.id
+    assert summary["review_standard"] == "energy_consultant_v1"
     assert summary["topics"] == ["rollback"]
+    assert summary["project_workstreams"][0]["project"] == "Apollo"
+    assert summary["technical_findings"][0]["topic"] == "Rollback validation"
+    assert summary["portfolio_rollup"]["bp_next_actions"] == ["BP will send checklist."]
+    assert summary["review_metrics"]["workstream_count"] == 1
+
+
+def test_company_refs_round_trip_and_status(tmp_path: Path) -> None:
+    storage = Storage(tmp_path)
+    storage.connect()
+    ref = company_ref_from_seed_row(
+        {
+            "id": "siemens",
+            "canonical_name": "Siemens",
+            "entity_type": "company",
+            "domain": "industrial technology / electrical equipment",
+            "description": "Industrial technology company with automation and grid businesses.",
+            "aliases": ["Siemens Energy"],
+            "acronyms": ["SIE"],
+            "context_terms": ["grid"],
+            "sources": [{"title": "Seed reference", "url": "https://example.com/siemens"}],
+        }
+    )
+
+    assert storage.upsert_company_refs([ref]) == 1
+    assert storage.upsert_company_refs([ref]) == 1
+
+    refs = storage.company_refs()
+    assert len(refs) == 1
+    assert refs[0]["canonical_name"] == "Siemens"
+    assert {alias["alias"] for alias in refs[0]["aliases"]} >= {"Siemens", "Siemens Energy", "SIE"}
+    assert storage.company_ref_status()["active_ref_count"] == 1
+    assert storage.search_company_refs("SIE")[0]["id"] == "siemens"
